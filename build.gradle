@@ -1,0 +1,73 @@
+plugins {
+    id 'application'
+    id 'com.gradleup.shadow' version '9.0.0-beta12'
+}
+
+group = 'qhybrid.linux'
+version = '0.1.0'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+application {
+    mainClass = 'qhybrid.linux.Main'
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'info.picocli:picocli:4.7.6'
+    implementation 'org.slf4j:slf4j-api:2.0.9'
+    implementation 'org.slf4j:slf4j-simple:2.0.9'
+    implementation 'com.google.code.gson:gson:2.10.1'
+}
+
+sourceSets {
+    main {
+        java {
+            srcDirs = ['src/main/java', 'gadgetbridge/app/src/main/java']
+
+            // === fossil_hr subdirectories: exclude everything except fossil_hr/file/ ===
+            // These are copied as part of requests/ tree but are HR-only
+            exclude '**/fossil_hr/adapter/**'
+            exclude '**/fossil_hr/alexa/**'
+            exclude '**/fossil_hr/application/**'
+            exclude '**/fossil_hr/async/**'
+            exclude '**/fossil_hr/authentication/**'
+            exclude '**/fossil_hr/buttons/**'
+            exclude '**/fossil_hr/commute/**'
+            exclude '**/fossil_hr/configuration/**'
+            exclude '**/fossil_hr/image/**'
+            exclude '**/fossil_hr/json/**'
+            exclude '**/fossil_hr/menu/**'
+            exclude '**/fossil_hr/music/**'
+            exclude '**/fossil_hr/notification/**'
+            exclude '**/fossil_hr/quickreply/**'
+            exclude '**/fossil_hr/theme/**'
+            exclude '**/fossil_hr/translation/**'
+            exclude '**/fossil_hr/widget/**'
+            exclude '**/fossil_hr/workout/**'
+
+            // === fossil_hr/file/: keep ResultCode.java + FileEncryptedInterface.java only ===
+            exclude '**/fossil_hr/file/FileEncryptedGetRequest.java'
+            exclude '**/fossil_hr/file/FileEncryptedPutRequest.java'
+            exclude '**/fossil_hr/file/FileEncryptedLookupAndGetRequest.java'
+            exclude '**/fossil_hr/file/AssetFile.java'
+            exclude '**/fossil_hr/file/AssetFilePutRequest.java'
+
+            // === Individual files with heavy deps ===
+            exclude '**/FirmwareFilePutRequest.java'    // needs GBApplication, R.string.*
+        }
+    }
+}
+
+// Fat JAR
+shadowJar {
+    archiveBaseName.set('fossil-q')
+    archiveClassifier.set('')
+    archiveVersion.set('')
+}
