@@ -241,7 +241,21 @@ Key parsing details:
 
 ---
 
-## 11. BlueZ Quirks Encountered
+## 12. Alarm Slot Count
+
+**GadgetBridge limits to 5 alarm slots** (`QHybridCoordinator.getAlarmSlotCount() = 5`). This is an artificial software limit.
+
+**The official Fossil app allows at least 12 alarms** — confirmed on real hardware (Q Commuter HW.0.0). The actual firmware limit is unknown but > 12.
+
+Each alarm is 3 bytes in the old format (file version 2), so 12 alarms = 36 bytes of payload — well within any reasonable file size limit. The new format (version 3, with labels) is ~17+ bytes per alarm.
+
+The watch firmware validates uploads and returns `SIZE_OVER_LIMIT (7)` or `OVERFLOW (6)` if the limit is exceeded. No risk of bricking — the upload simply fails and existing alarms remain unchanged. Sending 0 alarms clears all.
+
+**Testing plan:** increment alarm count (1, 5, 10, 12, 15, 20...) and find the exact firmware limit by watching for error codes.
+
+---
+
+## 13. BlueZ Quirks Encountered
 
 | Issue | Impact | Workaround |
 |-------|--------|------------|

@@ -57,6 +57,9 @@ Watch: Fossil Q Commuter (HW.0.0), Firmware HW0.0.2.9r.v3, Fossil protocol (2.x)
 - [ ] Repeating alarms (day bitmask — note: Thu/Wed swapped per Python findings)
 - [ ] Alarm list/get (AlarmsGetRequest — if watch supports reading back)
 - [ ] Alarm clear (upload empty alarm file or FileDeleteRequest)
+- [ ] Find max alarm count — official Fossil app allows 12+, GB limits to 5 artificially
+  - Test: 1, 5, 10, 12, 15, 20... until SIZE_OVER_LIMIT error
+  - Safe: watch rejects bad uploads, existing alarms unchanged
 
 ### Button Configuration
 - [ ] Read current button config
