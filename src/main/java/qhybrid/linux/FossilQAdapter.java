@@ -398,7 +398,11 @@ public class FossilQAdapter {
     private void syncConfiguration() {
         int stepGoal = 10000; // default
         byte vibrationStrength = 100;
-        short timezoneOffset = (short) (TimeZone.getDefault().getRawOffset() / 60000);
+        // TimezoneOffsetConfigItem (0x0011): the watch uses this to shift
+        // the UTC epoch for display. Must include DST.
+        long now = System.currentTimeMillis();
+        TimeZone zone = TimeZone.getDefault();
+        short timezoneOffset = (short) (zone.getOffset(now) / 60000);
 
         device.addDeviceInfo(new GenericItem(QHybridSupport.ITEM_TIMEZONE_OFFSET,
                 String.valueOf(timezoneOffset)));
@@ -450,35 +454,33 @@ public class FossilQAdapter {
 
     /**
      * Generate a time config item for the Fossil protocol.
-     * CRITICAL: The watch displays epoch_seconds directly as the time.
-     * We must send LOCAL epoch (UTC + timezone offset), not UTC epoch.
+     *
+     * Send UTC epoch. The watch uses TimezoneOffsetConfigItem (0x0011)
+     * to shift the displayed time. The offset field inside TimeConfigItem
+     * is metadata (activity timestamps etc.).
+     *
+     * See FINDINGS.md #4 for full analysis.
      */
     private ConfigurationPutRequest.TimeConfigItem generateTimeConfigItem() {
         long millis = System.currentTimeMillis();
         TimeZone zone = GregorianCalendar.getInstance().getTimeZone();
-        int offsetMillis = zone.getOffset(millis);
-        short offsetMinutes = (short) (offsetMillis / 60000);
-        // Send local epoch — watch uses this value directly as display time
-        int localEpoch = (int) (millis / 1000) + (offsetMinutes * 60);
+        short offsetMinutes = (short) (zone.getOffset(millis) / 60000);
         return new ConfigurationPutRequest.TimeConfigItem(
-                localEpoch,
+                (int) (millis / 1000),   // UTC epoch
                 (short) (millis % 1000),
-                offsetMinutes
+                offsetMinutes            // metadata offset
         );
     }
 
     /**
-     * Prepare a Misfit SetTime request.
-     * Same local epoch requirement as Fossil protocol.
+     * Prepare a Misfit SetTime request. UTC epoch + offset.
      */
     private SetTimeRequest prepareSetTimeRequest() {
         long millis = System.currentTimeMillis();
         TimeZone zone = GregorianCalendar.getInstance().getTimeZone();
-        int offsetMillis = zone.getOffset(millis);
-        short offsetMinutes = (short) (offsetMillis / 60000);
-        int localEpoch = (int) (millis / 1000) + (offsetMinutes * 60);
+        short offsetMinutes = (short) (zone.getOffset(millis) / 60000);
         return new SetTimeRequest(
-                localEpoch,
+                (int) (millis / 1000),   // UTC epoch
                 (short) (millis % 1000),
                 offsetMinutes);
     }
