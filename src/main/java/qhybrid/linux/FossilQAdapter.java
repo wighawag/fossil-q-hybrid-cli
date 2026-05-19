@@ -210,14 +210,17 @@ public class FossilQAdapter {
 
     public void playNotification(PlayNotificationRequest.VibrationType vibration, int hourDeg, int minDeg) {
         if (useFossilProtocol) {
-            // Fossil protocol: file-based notification for hand animation
+            // File-based notification (hand animation only on HW.0.0 — vibration
+            // doesn't work via file protocol despite filter upload succeeding).
+            // We still send it for the hand animation effect.
             queueWrite(new PlayTextNotificationRequest("qhybrid.linux", shimAdapter), false);
-            // Also trigger vibration via call characteristic (the only reliable
-            // way to vibrate on this watch — file-based notification filters
-            // don't produce vibration on HW.0.0 firmware)
+
+            // Vibrate via authentication characteristic (3dda0005).
+            // This is the only reliable way to produce vibration on HW.0.0 firmware.
+            // The official Fossil app uses this char for key exchange, but writing
+            // to it triggers the vibration motor as a side effect.
             if (vibration != PlayNotificationRequest.VibrationType.NO_VIBE) {
                 findDevice();
-                // Schedule stop after a short delay based on vibration type
                 new Thread(() -> {
                     try {
                         Thread.sleep(getVibrationDuration(vibration));
@@ -521,22 +524,74 @@ public class FossilQAdapter {
         }, false);
     }
 
+    /**
+     * Compute CRC32 of packageName + null byte (0x00), matching the official Fossil app.
+     * The vendored GB code computes CRC without null terminator, which may cause
+     * the watch firmware to not match the filter entry.
+     */
+    private int computeNullTerminatedCrc(String packageName) {
+        byte[] nameBytes = packageName.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] withNull = new byte[nameBytes.length + 1];
+        System.arraycopy(nameBytes, 0, withNull, 0, nameBytes.length);
+        withNull[nameBytes.length] = 0;
+        java.util.zip.CRC32 crc = new java.util.zip.CRC32();
+        crc.update(withNull);
+        return (int) crc.getValue();
+    }
+
+    /**
+     * Build notification filter raw bytes manually, using null-terminated CRC
+     * to match the official Fossil app's format.
+     */
+    private byte[] buildNotificationFilterData(String packageName, byte vibePattern) {
+        int crc = computeNullTerminatedCrc(packageName);
+
+        // Each filter entry: [packetLength(2)] [entries...]
+        // Entry format: [entryId(1)] [dataLength(1)] [data...]
+        java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(27);
+        buf.order(java.nio.ByteOrder.LITTLE_ENDIAN);
+
+        buf.putShort((short) 25); // packet length (excluding this field)
+
+        buf.put((byte) 0x04);     // PACKAGE_NAME_CRC
+        buf.put((byte) 4);
+        buf.putInt(crc);
+
+        buf.put((byte) 0x80);     // GROUP_ID
+        buf.put((byte) 1);
+        buf.put((byte) 2);
+
+        buf.put((byte) 0xC1);     // PRIORITY
+        buf.put((byte) 1);
+        buf.put((byte) 0xFF);
+
+        buf.put((byte) 0xC2);     // MOVEMENT (hour, min, subeye, duration_ms)
+        buf.put((byte) 8);
+        buf.putShort((short) -1); // hour: no move
+        buf.putShort((short) -1); // min: no move
+        buf.putShort((short) -1); // subeye: no move
+        buf.putShort((short) 5000); // duration
+
+        buf.put((byte) 0xC3);     // VIBRATION
+        buf.put((byte) 1);
+        buf.put(vibePattern);
+
+        return buf.array();
+    }
+
     private void syncNotificationSettings() {
         LOG.info("Syncing notification filter...");
-        // Upload a default notification filter so PlayTextNotificationRequest triggers vibration.
-        // The watch maps package name CRC → vibration + hand movement from this filter.
-        // GB requires at least 2 configs (duplicates if only 1), so we send 2.
+        // Build filter data manually with null-terminated CRC (matching official Fossil app).
+        // Official app requires at least 2 filter entries (GB duplicates if only 1).
         String packageName = "qhybrid.linux";
-        NotificationConfiguration config1 = new NotificationConfiguration(
-                (short) -1, (short) -1, (short) -1,
-                PlayNotificationRequest.VibrationType.SINGLE_NORMAL);
-        config1.setPackageName(packageName);
-        NotificationConfiguration config2 = new NotificationConfiguration(
-                (short) -1, (short) -1, (short) -1,
-                PlayNotificationRequest.VibrationType.SINGLE_NORMAL);
-        config2.setPackageName(packageName);
-        queueWrite(new NotificationFilterPutRequest(
-                new NotificationConfiguration[]{config1, config2}, shimAdapter) {
+        byte vibePattern = 5; // ONE_SHORT_VIBE (official Fossil app value)
+        byte[] filter1 = buildNotificationFilterData(packageName, vibePattern);
+        byte[] filter2 = buildNotificationFilterData(packageName, vibePattern);
+        byte[] combined = new byte[filter1.length + filter2.length];
+        System.arraycopy(filter1, 0, combined, 0, filter1.length);
+        System.arraycopy(filter2, 0, combined, filter1.length, filter2.length);
+
+        queueWrite(new FilePutRequest(FileHandle.NOTIFICATION_FILTER, combined, shimAdapter) {
             @Override
             public void onFilePut(boolean success) {
                 LOG.info("Notification filter sync: {}", success ? "success" : "FAILED");

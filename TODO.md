@@ -175,10 +175,66 @@ vibration, but this only gives one vibration pattern (call buzz) with duration c
 - [ ] **Check the `VibrateRequest`** (misfit command) — different from `PlayNotificationRequest`,
   may write different bytes to a different characteristic.
 
-**Resources that would help:**
-- Official Fossil app APK (decompiled with jadx) — to see the notification/vibration code path
-- BLE capture log from official app sending a notification
-- Fossil protocol documentation (if any leaked/reversed)
+**Findings from official Fossil app (jadx decompile in tmp/FossilOfficialApp-deobf):**
+- `3dda0005` is `AUTHENTICATION` characteristic (not "call") — used for key exchange
+- Notifications use `putFile` with file handle (same file-based protocol as GB)
+- `NotifyAppNotificationEventRequest` on `3dda0006` is for notification *control*
+  (dismiss, accept call, reply) — NOT for playing notifications
+
+**🔑 Likely root cause: CRC mismatch in notification filter!**
+- Official app (`NotificationFilter.java`): computes CRC32 on `packageName bytes + 0x00` (null terminated)
+- GadgetBridge (`NotificationFilterPutRequest.java`): computes CRC32 on `packageName.getBytes()` (no null terminator)
+- `PlayNotificationRequest` (Fossil file base): computes CRC32 on `packageName.getBytes()` (no null terminator)
+- If filter CRC ≠ notification CRC, watch can't match them → no vibration
+- **Fix to try:** Either add null terminator to both CRC computations, or ensure they match
+- Note: GB's `PlayNotificationRequest.createFile()` and `NotificationFilterPutRequest.createFile()`
+  both use `java.util.zip.CRC32` on bare bytes, so they should match each other. But the watch
+  firmware may expect the null-terminated CRC format from the official app.
+
+**Official app vibration patterns (`NotificationVibePattern`):**
+| Pattern | Byte |
+|---------|------|
+| AUTO | 0 |
+| CALL | 1 |
+| TEXT | 2 |
+| EMAIL | 3 |
+| DEFAULT_OTHER_APPS | 4 |
+| ONE_SHORT_VIBE | 5 |
+| TWO_SHORT_VIBES | 6 |
+| THREE_SHORT_VIBES | 7 |
+| ONE_LONG_VIBE | 8 |
+| NO_VIBE | 9 |
+
+**Official app notification filter fields:**
+- Entry `0x04`: Package CRC (4 bytes) — CRC32 of package name + null byte
+- Entry `0x80`: Group ID (1 byte)
+- Entry `0xC1`: Priority (1 byte, default 0xFF)
+- Entry `0xC2`: Hand movement (8-10 bytes: hour°, min°, subeye°, duration_ms + optional subeye2°)
+- Entry `0xC3`: Vibration pattern (1 byte, see table above)
+- Entry `0xC4`: Display config (1 byte) — not in GB
+- Entry `0x82`: Icon config — not in GB
+- Entry `0x02`: Sender name (null-terminated string) — not in GB
+
+**Other differences:**
+- `NotificationHandMovingConfig` has duration field (1000-60000ms) — GB uses hardcoded 5000
+- Special value -2 means "device default position", -1 means "no move"
+- `AllNotificationFilter` uses package name `"bundleId.all"` as a catch-all with priority 255
+
+**Tested and ruled out (no vibration on HW.0.0):**
+- [x] CRC with null terminator (matching official app format) — filter uploads OK, no vibration
+- [x] `PlayCallNotificationRequest` (INCOMING_CALL type) — no vibration
+- [x] `PlayTextNotificationRequest` (NOTIFICATION type) — no vibration
+- [x] Ensuring filter upload completes before notification send — no vibration
+
+**Conclusion:** File-based notification protocol does NOT produce vibration on HW.0.0
+firmware. The only reliable vibration method is writing to the authentication
+characteristic (`3dda0005`). The `notify` command now uses this as a hybrid approach:
+file protocol for hand animation + `3dda0005` for vibration.
+
+**Possible future investigation:**
+- [ ] BLE capture (`btsnoop_hci.log`) from official Fossil app to see if it uses a different mechanism
+- [ ] Try `AllNotificationFilter` with `"bundleId.all"` as catch-all filter
+- [ ] Test on newer Fossil Hybrid HR firmware to see if file-based vibration works there
 
 ---
 
