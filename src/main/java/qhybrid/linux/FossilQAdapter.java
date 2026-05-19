@@ -236,6 +236,7 @@ public class FossilQAdapter {
         // CRC of package name — must match the CRC in the notification filter.
         // Use null-terminated CRC to match the official Fossil app format.
         int packageCrc = computeNullTerminatedCrc("qhybrid.linux");
+        LOG.info("Notification CRC: 0x{}", String.format("%08X", packageCrc));
 
         short mainBufferLength = (short) (lengthBufferLength + uidLength + appBundleCRCLength
                 + titleBytes.length + senderBytes.length + messageBytes.length
@@ -271,17 +272,18 @@ public class FossilQAdapter {
 
     public void playNotification(PlayNotificationRequest.VibrationType vibration, int hourDeg, int minDeg) {
         if (useFossilProtocol) {
-            // Build notification file matching official Fossil app format (lbl=12).
+            // Send lbl=12 notification file (matching official Fossil app format).
+            // This triggers hand animation + vibration IF the watch has been
+            // authenticated by the official Fossil app. Without authentication,
+            // the file is accepted but silently ignored.
             byte[] notifData = buildOfficialNotificationFile(
                     "Notification", "fossil-q", "Notification");
             queueWrite(new FilePutRequest(
                     FileHandle.NOTIFICATION_PLAY, notifData, shimAdapter), false);
 
             // Also vibrate via authentication characteristic (3dda0005).
-            // The file-based notification only vibrates if a matching notification
-            // filter is stored on the watch (from the official Fossil app setup).
-            // Since we can't reliably replicate the filter format yet, use the
-            // characteristic write as a guaranteed vibration method.
+            // This is the only guaranteed vibration method without implementing
+            // the full Fossil authentication handshake.
             if (vibration != PlayNotificationRequest.VibrationType.NO_VIBE) {
                 findDevice();
                 new Thread(() -> {
@@ -606,15 +608,26 @@ public class FossilQAdapter {
      * Build notification filter raw bytes manually, using null-terminated CRC
      * to match the official Fossil app's format.
      */
-    private byte[] buildNotificationFilterData(String packageName, byte vibePattern) {
+    /**
+     * Build a notification filter entry matching the official Fossil app format.
+     * Key fields that differ from GadgetBridge's format:
+     * - GROUP_ID = 0 (not 2)
+     * - PRIORITY = 0 (not 0xFF)
+     * - HAND_MOVEMENT = 10 bytes (includes subeye2Degree)
+     * - DISPLAY_CONFIG (0xC4) = present (value 0)
+     * - Uses null-terminated CRC
+     */
+    private byte[] buildNotificationFilterData(String packageName, byte vibePattern,
+                                                short hourDeg, short minDeg) {
         int crc = computeNullTerminatedCrc(packageName);
+        LOG.info("Filter CRC for '{}': 0x{}", packageName, String.format("%08X", crc));
 
-        // Each filter entry: [packetLength(2)] [entries...]
-        // Entry format: [entryId(1)] [dataLength(1)] [data...]
-        java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(27);
+        // Entry size: packetLength(2) + CRC(6) + GROUP(3) + PRIORITY(3) +
+        //             MOVEMENT(12) + DISPLAY(3) + VIBRATION(3) = 32 total
+        java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(32);
         buf.order(java.nio.ByteOrder.LITTLE_ENDIAN);
 
-        buf.putShort((short) 25); // packet length (excluding this field)
+        buf.putShort((short) 30); // packet length (excluding this 2-byte field)
 
         buf.put((byte) 0x04);     // PACKAGE_NAME_CRC
         buf.put((byte) 4);
@@ -622,18 +635,23 @@ public class FossilQAdapter {
 
         buf.put((byte) 0x80);     // GROUP_ID
         buf.put((byte) 1);
-        buf.put((byte) 2);
+        buf.put((byte) 0);        // 0 = default group (official app uses 0)
 
         buf.put((byte) 0xC1);     // PRIORITY
         buf.put((byte) 1);
-        buf.put((byte) 0xFF);
+        buf.put((byte) 0);        // 0 = default priority (official app uses 0)
 
-        buf.put((byte) 0xC2);     // MOVEMENT (hour, min, subeye, duration_ms)
-        buf.put((byte) 8);
-        buf.putShort((short) -1); // hour: no move
-        buf.putShort((short) -1); // min: no move
+        buf.put((byte) 0xC2);     // HAND_MOVEMENT (10 bytes: hour, min, subeye, duration, subeye2)
+        buf.put((byte) 10);
+        buf.putShort(hourDeg);    // hour hand degrees
+        buf.putShort(minDeg);     // minute hand degrees
         buf.putShort((short) -1); // subeye: no move
-        buf.putShort((short) 5000); // duration
+        buf.putShort((short) 10000); // duration 10000ms (official app default)
+        buf.putShort((short) -2); // subeye2: device default (-2)
+
+        buf.put((byte) 0xC4);     // DISPLAY_CONFIG
+        buf.put((byte) 1);
+        buf.put((byte) 0);
 
         buf.put((byte) 0xC3);     // VIBRATION
         buf.put((byte) 1);
@@ -647,14 +665,12 @@ public class FossilQAdapter {
         // Build filter data manually with null-terminated CRC (matching official Fossil app).
         // Official app requires at least 2 filter entries (GB duplicates if only 1).
         String packageName = "qhybrid.linux";
-        byte vibePattern = 5; // ONE_SHORT_VIBE (official Fossil app value)
-        byte[] filter1 = buildNotificationFilterData(packageName, vibePattern);
-        byte[] filter2 = buildNotificationFilterData(packageName, vibePattern);
-        byte[] combined = new byte[filter1.length + filter2.length];
-        System.arraycopy(filter1, 0, combined, 0, filter1.length);
-        System.arraycopy(filter2, 0, combined, filter1.length, filter2.length);
+        byte vibePattern = 4; // DEFAULT_OTHER_APPS (official Fossil app default)
+        short hourDeg = 90;   // 3 o'clock position for generic notifications
+        short minDeg = 90;
+        byte[] filter = buildNotificationFilterData(packageName, vibePattern, hourDeg, minDeg);
 
-        queueWrite(new FilePutRequest(FileHandle.NOTIFICATION_FILTER, combined, shimAdapter) {
+        queueWrite(new FilePutRequest(FileHandle.NOTIFICATION_FILTER, filter, shimAdapter) {
             @Override
             public void onFilePut(boolean success) {
                 LOG.info("Notification filter sync: {}", success ? "success" : "FAILED");

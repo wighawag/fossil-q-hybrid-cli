@@ -239,17 +239,25 @@ requires the lbl=12 format for vibration to trigger.
 
 **Current notify approach (hybrid):**
 - `3dda0005` characteristic write for vibration (findDevice/stopFindDevice)
-- lbl=12 file notification also sent (no visible effect without matching filter)
-- File-based vibration AND hand animation both require notification filters stored
-  on the watch. The official Fossil app uploads these during initial setup.
-  Without them, the NOTIFICATION_PLAY file is silently ignored by the firmware.
+- lbl=12 file notification also sent (correct format, but no visible effect)
+- The watch requires an **authentication handshake** on `3dda0005` before it will
+  process notification filters and play notifications. The official Fossil app
+  writes `01 07` then `02 06 30 75 00 00 01` to this char during init.
+  Without this auth step, filter uploads succeed but are silently ignored.
+
+**BLE capture findings (full pairing flow):**
+- Official app's notification filter format is now fully decoded (7 entries, 32 bytes each)
+- Our filter format is byte-identical to the official app's (verified)
+- Missing piece: authentication protocol on `3dda0005`
+- The auth involves the watch sending `AUTHENTICATION_REQUEST_EVENT` on async char,
+  and the app responding with crypto on the auth char
 
 **Future improvements:**
-- [ ] Reverse-engineer the official app's notification filter format (need BLE capture
-      from initial pairing + notification setup, not just reconnect)
-- [ ] Support hand position in notifications (map notification type → hand degrees)
-- [ ] Test different vibration patterns via notification filter + lbl=12 notifications
-- [ ] Eliminate the 3dda0005 workaround once filter-based vibration works
+- [ ] Implement Fossil authentication handshake (would enable file-based vibration +
+      hand movement, eliminating the 3dda0005 findDevice workaround)
+- [ ] Support hand position in notifications (filter format is now known)
+- [ ] Support different vibration patterns (CALL=1, TEXT=2, EMAIL=3, DEFAULT=4, etc.)
+- [ ] Support per-app notification mapping (CRC → hand position + vibe pattern)
 
 ---
 
