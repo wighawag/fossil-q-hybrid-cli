@@ -59,36 +59,53 @@ public class BluezTransport implements BleTransport, AutoCloseable {
             LOG.info("Already connected to {}", macAddress);
             connected = true;
         } else {
-            // Try connect via D-Bus
+            // Try direct D-Bus connect first (fast path for known+reachable devices)
             String result = runCmd("busctl", "call", "--system", "org.bluez",
                     devicePath, "org.bluez.Device1", "Connect");
-            if (result == null) {
-                // Fallback: try bluetoothctl (more forgiving with address formats)
-                LOG.debug("D-Bus connect failed, trying bluetoothctl...");
-                result = runBluetoothctl("connect", macAddress);
-                if (result == null || (!result.contains("Connection successful")
-                        && !result.contains("Connected: yes"))) {
-                    LOG.error("Connection failed. Is the device paired and in range?");
-                    LOG.error("Try: bluetoothctl pair {} && bluetoothctl connect {}",
-                            macAddress, macAddress);
+            if (result != null) {
+                // Verify connection
+                connResult = runCmd("busctl", "get-property", "--system", "org.bluez",
+                        devicePath, "org.bluez.Device1", "Connected");
+                if (connResult != null && connResult.contains("true")) {
+                    connected = true;
+                    LOG.info("Connected to {}", macAddress);
+                    // Ensure trusted for GATT service resolution
+                    runBluetoothctl("trust", macAddress);
+                }
+            }
+
+            if (!connected) {
+                // Device not known or not reachable — scan, trust, and connect in one flow
+                LOG.info("Scanning for device... Press the watch button to wake it up.");
+                if (!scanAndConnect(macAddress, 30_000)) {
+                    LOG.error("Could not find or connect to {}.", macAddress);
+                    LOG.error("Make sure the watch is awake (press the button) and not paired to another device.");
                     return false;
                 }
             }
-            // Verify connection
-            connResult = runCmd("busctl", "get-property", "--system", "org.bluez",
-                    devicePath, "org.bluez.Device1", "Connected");
-            if (connResult == null || !connResult.contains("true")) {
-                LOG.error("Connection attempt did not result in connected state");
-                return false;
-            }
-            connected = true;
-            LOG.info("Connected to {}", macAddress);
         }
 
-        // Wait for GATT services to be resolved
-        if (!waitForServicesResolved(10_000)) {
-            LOG.error("GATT services not resolved within timeout");
-            return false;
+        // Wait for GATT services to be resolved.
+        // On first connection after remove/scan, services sometimes fail to resolve.
+        // In that case, disconnect and retry once.
+        if (!waitForServicesResolved(15_000)) {
+            LOG.info("GATT services not resolved, retrying connection...");
+            // Disconnect
+            runCmd("busctl", "call", "--system", "org.bluez",
+                    devicePath, "org.bluez.Device1", "Disconnect");
+            connected = false;
+            try { Thread.sleep(2000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+
+            // Re-scan and connect (device object may vanish for non-bonded devices)
+            if (!scanAndConnect(macAddress, 15_000)) {
+                LOG.error("Retry connection failed");
+                return false;
+            }
+
+            if (!waitForServicesResolved(15_000)) {
+                LOG.error("GATT services not resolved after retry");
+                return false;
+            }
         }
 
         // Enumerate characteristics
@@ -262,6 +279,104 @@ public class BluezTransport implements BleTransport, AutoCloseable {
     }
 
     // --- Discovery ---
+
+    /**
+     * Scan for a BLE device by MAC address. Starts bluetoothctl scan,
+     * waits until the device appears, then stops scanning.
+     * The watch must be awake (press button) and not paired to another device.
+     */
+    /**
+     * Scan for a BLE device and optionally connect to it.
+     * Uses a persistent bluetoothctl process to keep discovery active.
+     * If connect is true, issues trust+connect while scan is still active
+     * (the device may stop advertising shortly after being found).
+     */
+    private boolean scanAndConnect(String mac, long timeoutMs) {
+        Process scanProc = null;
+        try {
+            ProcessBuilder pb = new ProcessBuilder("bluetoothctl");
+            pb.redirectErrorStream(true);
+            scanProc = pb.start();
+
+            OutputStream stdin = scanProc.getOutputStream();
+
+            stdin.write("scan on\n".getBytes(StandardCharsets.UTF_8));
+            stdin.flush();
+
+            long deadline = System.currentTimeMillis() + timeoutMs;
+            boolean found = false;
+            while (System.currentTimeMillis() < deadline) {
+                // Check if bluez now knows the device via D-Bus
+                String result = runCmd("busctl", "get-property", "--system", "org.bluez",
+                        devicePath, "org.bluez.Device1", "Address");
+                if (result != null && result.contains(mac)) {
+                    found = true;
+                    LOG.info("Found device {} during scan", mac);
+                    break;
+                }
+                try {
+                    Thread.sleep(1000);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+                long remaining = (deadline - System.currentTimeMillis()) / 1000;
+                if (remaining % 5 == 0 && remaining > 0) {
+                    LOG.info("Still scanning... ({}s remaining). Press the watch button if not done already.", remaining);
+                }
+            }
+
+            if (found) {
+                // Trust and connect while scan is still active (device is still advertising).
+                // We issue these commands via the SAME bluetoothctl process to avoid
+                // BlueZ "InProgress" errors from orphaned connect attempts.
+                stdin.write(("trust " + mac + "\n").getBytes(StandardCharsets.UTF_8));
+                stdin.flush();
+                try { Thread.sleep(500); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+
+                stdin.write(("connect " + mac + "\n").getBytes(StandardCharsets.UTF_8));
+                stdin.flush();
+
+                // Wait for connection to establish (check via D-Bus, not bluetoothctl output)
+                long connectDeadline = System.currentTimeMillis() + 15_000;
+                while (System.currentTimeMillis() < connectDeadline) {
+                    String connResult = runCmd("busctl", "get-property", "--system", "org.bluez",
+                            devicePath, "org.bluez.Device1", "Connected");
+                    if (connResult != null && connResult.contains("true")) {
+                        connected = true;
+                        LOG.info("Connected to {}", mac);
+                        break;
+                    }
+                    try { Thread.sleep(500); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
+                }
+
+                if (!connected) {
+                    LOG.warn("Connect attempt did not succeed within timeout");
+                    // Cancel the in-progress connect before exiting
+                    stdin.write(("disconnect " + mac + "\n").getBytes(StandardCharsets.UTF_8));
+                    stdin.flush();
+                    try { Thread.sleep(1000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                }
+            }
+
+            // Stop scanning and exit cleanly
+            stdin.write("scan off\n".getBytes(StandardCharsets.UTF_8));
+            stdin.flush();
+            try { Thread.sleep(500); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            stdin.write("exit\n".getBytes(StandardCharsets.UTF_8));
+            stdin.flush();
+            // Wait for clean exit
+            scanProc.waitFor(5, TimeUnit.SECONDS);
+            return connected;
+        } catch (IOException | InterruptedException e) {
+            LOG.error("Failed during scan/connect", e);
+            return false;
+        } finally {
+            if (scanProc != null && scanProc.isAlive()) {
+                scanProc.destroyForcibly();
+            }
+        }
+    }
 
     private boolean waitForServicesResolved(long timeoutMs) {
         long deadline = System.currentTimeMillis() + timeoutMs;

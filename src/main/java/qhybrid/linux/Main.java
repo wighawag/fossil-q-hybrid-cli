@@ -146,6 +146,8 @@ public class Main implements Runnable {
         @Override
         public Integer call() {
             FossilQAdapter adapter = connectAndInit(parent.macAddress);
+            // Wait for init animation to complete before sending notification
+            sleep(3000);
             if (direct) {
                 adapter.playMisfitNotification(vibration, hourDeg, minDeg);
                 System.out.println("Direct notification sent: " + vibration);

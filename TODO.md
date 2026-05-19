@@ -220,21 +220,36 @@ vibration, but this only gives one vibration pattern (call buzz) with duration c
 - Special value -2 means "device default position", -1 means "no move"
 - `AllNotificationFilter` uses package name `"bundleId.all"` as a catch-all with priority 255
 
-**Tested and ruled out (no vibration on HW.0.0):**
-- [x] CRC with null terminator (matching official app format) — filter uploads OK, no vibration
-- [x] `PlayCallNotificationRequest` (INCOMING_CALL type) — no vibration
-- [x] `PlayTextNotificationRequest` (NOTIFICATION type) — no vibration
-- [x] Ensuring filter upload completes before notification send — no vibration
+**Root cause found and fixed!** The official Fossil app uses `lengthBufferLength=12` in the
+NOTIFICATION_PLAY file, with 2 extra fields (0xFFFFFFFF sentinel + Unix timestamp).
+GadgetBridge uses `lengthBufferLength=10` with only 3 string fields. The HW.0.0 firmware
+requires the lbl=12 format for vibration to trigger.
 
-**Conclusion:** File-based notification protocol does NOT produce vibration on HW.0.0
-firmware. The only reliable vibration method is writing to the authentication
-characteristic (`3dda0005`). The `notify` command now uses this as a hybrid approach:
-file protocol for hand animation + `3dda0005` for vibration.
+**BLE capture analysis (btsnoop_hci.log from official Fossil app on Pixel 8a):**
+- Official app NEVER writes NOTIFICATION_FILTER (0x0C00) on reconnect — filter is persistent
+- Official app writes CONFIGURATION (0x0800) during init
+- Notifications use NOTIFICATION_PLAY (0x09xx) with lbl=12 format — vibration works
+- Official app does NOT use 3dda0005 (authentication char) for vibration
 
-**Possible future investigation:**
-- [ ] BLE capture (`btsnoop_hci.log`) from official Fossil app to see if it uses a different mechanism
-- [ ] Try `AllNotificationFilter` with `"bundleId.all"` as catch-all filter
-- [ ] Test on newer Fossil Hybrid HR firmware to see if file-based vibration works there
+**Tested approaches during investigation:**
+- [x] CRC with null terminator — not the issue (both CRC styles work once format is correct)
+- [x] `PlayCallNotificationRequest` (INCOMING_CALL type) — no vibration (still lbl=10)
+- [x] `PlayTextNotificationRequest` (NOTIFICATION type) — no vibration (lbl=10)
+- [x] Official format with lbl=12 + extra fields — **VIBRATION WORKS!** ✅
+
+**Current notify approach (hybrid):**
+- `3dda0005` characteristic write for vibration (findDevice/stopFindDevice)
+- lbl=12 file notification also sent (no visible effect without matching filter)
+- File-based vibration AND hand animation both require notification filters stored
+  on the watch. The official Fossil app uploads these during initial setup.
+  Without them, the NOTIFICATION_PLAY file is silently ignored by the firmware.
+
+**Future improvements:**
+- [ ] Reverse-engineer the official app's notification filter format (need BLE capture
+      from initial pairing + notification setup, not just reconnect)
+- [ ] Support hand position in notifications (map notification type → hand degrees)
+- [ ] Test different vibration patterns via notification filter + lbl=12 notifications
+- [ ] Eliminate the 3dda0005 workaround once filter-based vibration works
 
 ---
 

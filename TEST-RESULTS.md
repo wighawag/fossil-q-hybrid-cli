@@ -17,7 +17,7 @@
 | `step-goal` | ✅ Works | Set to 12000, watch confirmed |
 | `vibration` | ✅ Works | Strength config accepted |
 | `timezone` | ✅ Works | Set to UTC+1 |
-| `notify` | ✅ Works | Vibration via call characteristic + hand animation via file protocol. Different vibration types control duration. |
+| `notify` | ✅ Works | Vibration via 3dda0005 characteristic write. Also sends lbl=12 file notification (no visible effect without Fossil app's notification filters on watch). |
 | `notify --direct` | ⚠️ Partial | Misfit-style direct notification: hand rotation only, no vibration on HW.0.0 firmware. |
 | `alarm` | ✅ Works | Set 07:30 one-shot, watch vibrated at alarm time |
 | `find` | ✅ Works | 2 vibration bursts + hand rotation over 3 seconds |

@@ -24,7 +24,6 @@ import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fos
 import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.file.FileLookupAndGetRequest;
 import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.file.FilePutRequest;
 import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.notification.NotificationFilterPutRequest;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.notification.PlayTextNotificationRequest;
 import nodomain.freeyourgadget.gadgetbridge.devices.qhybrid.NotificationConfiguration;
 import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.misfit.AnimationRequest;
 import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.misfit.GetCurrentStepCountRequest;
@@ -208,17 +207,81 @@ public class FossilQAdapter {
                 new NotificationConfiguration[]{config}, shimAdapter), false);
     }
 
+    /**
+     * Build notification file data matching the official Fossil app format.
+     * Key difference from GB: lengthBufferLength=12 (not 10), with 2 extra fields
+     * (0xFFFFFFFF sentinel + Unix timestamp). The HW.0.0 firmware requires this
+     * format for vibration to work.
+     */
+    private byte[] buildOfficialNotificationFile(String title, String sender, String message) {
+        java.nio.charset.Charset utf8 = java.nio.charset.StandardCharsets.UTF_8;
+        byte[] titleBytes = (title + "\0").getBytes(utf8);
+        byte[] senderBytes = (sender + "\0").getBytes(utf8);
+        byte[] messageBytes = (message + "\0").getBytes(utf8);
+
+        // Extra fields the official app adds (not in GB):
+        byte[] sentinelBytes = new byte[]{(byte) 0xFF, (byte) 0xFF, (byte) 0xFF, (byte) 0xFF};
+        int timestamp = (int) (System.currentTimeMillis() / 1000);
+        byte[] timestampBytes = java.nio.ByteBuffer.allocate(4)
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN).putInt(timestamp).array();
+
+        byte lengthBufferLength = 12; // Official app uses 12, GB uses 10
+        byte notificationType = 3;    // NOTIFICATION
+        byte flags = 0x02;
+        byte uidLength = 4;
+        byte appBundleCRCLength = 4;
+
+        int messageId = (int) System.currentTimeMillis();
+
+        // CRC of package name — must match the CRC in the notification filter.
+        // Use null-terminated CRC to match the official Fossil app format.
+        int packageCrc = computeNullTerminatedCrc("qhybrid.linux");
+
+        short mainBufferLength = (short) (lengthBufferLength + uidLength + appBundleCRCLength
+                + titleBytes.length + senderBytes.length + messageBytes.length
+                + sentinelBytes.length + timestampBytes.length);
+
+        java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(mainBufferLength);
+        buf.order(java.nio.ByteOrder.LITTLE_ENDIAN);
+
+        // Length buffer header (12 bytes: mainBufLen(2)+lbl(1)+type(1)+flags(1)+uidl(1)+crcl(1)+5 field lengths)
+        buf.putShort(mainBufferLength);
+        buf.put(lengthBufferLength);
+        buf.put(notificationType);
+        buf.put(flags);
+        buf.put(uidLength);
+        buf.put(appBundleCRCLength);
+        buf.put((byte) titleBytes.length);
+        buf.put((byte) senderBytes.length);
+        buf.put((byte) messageBytes.length);
+        buf.put((byte) sentinelBytes.length);    // Extra field 1 length
+        buf.put((byte) timestampBytes.length);   // Extra field 2 length
+
+        // Data fields
+        buf.putInt(messageId);
+        buf.putInt(packageCrc);
+        buf.put(titleBytes);
+        buf.put(senderBytes);
+        buf.put(messageBytes);
+        buf.put(sentinelBytes);
+        buf.put(timestampBytes);
+
+        return buf.array();
+    }
+
     public void playNotification(PlayNotificationRequest.VibrationType vibration, int hourDeg, int minDeg) {
         if (useFossilProtocol) {
-            // File-based notification (hand animation only on HW.0.0 — vibration
-            // doesn't work via file protocol despite filter upload succeeding).
-            // We still send it for the hand animation effect.
-            queueWrite(new PlayTextNotificationRequest("qhybrid.linux", shimAdapter), false);
+            // Build notification file matching official Fossil app format (lbl=12).
+            byte[] notifData = buildOfficialNotificationFile(
+                    "Notification", "fossil-q", "Notification");
+            queueWrite(new FilePutRequest(
+                    FileHandle.NOTIFICATION_PLAY, notifData, shimAdapter), false);
 
-            // Vibrate via authentication characteristic (3dda0005).
-            // This is the only reliable way to produce vibration on HW.0.0 firmware.
-            // The official Fossil app uses this char for key exchange, but writing
-            // to it triggers the vibration motor as a side effect.
+            // Also vibrate via authentication characteristic (3dda0005).
+            // The file-based notification only vibrates if a matching notification
+            // filter is stored on the watch (from the official Fossil app setup).
+            // Since we can't reliably replicate the filter format yet, use the
+            // characteristic write as a guaranteed vibration method.
             if (vibration != PlayNotificationRequest.VibrationType.NO_VIBE) {
                 findDevice();
                 new Thread(() -> {
