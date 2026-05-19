@@ -126,7 +126,7 @@ public class Main implements Runnable {
         }
     }
 
-    @Command(name = "notify", description = "Send a notification (hand rotation animation via Fossil file protocol, or direct misfit-style vibration+hands)")
+    @Command(name = "notify", description = "Send a notification (vibration + hand movement)")
     static class NotifyCmd implements Callable<Integer> {
         @ParentCommand Main parent;
 
@@ -134,7 +134,7 @@ public class Main implements Runnable {
                 defaultValue = "SINGLE_SHORT")
         VibrationType vibration;
 
-        @Option(names = {"--direct"}, description = "Use misfit-style direct notification (vibration type + hand degrees) instead of Fossil file protocol")
+        @Option(names = {"--direct"}, description = "Use misfit-style direct characteristic write instead of Fossil file protocol")
         boolean direct;
 
         @Option(names = {"-H", "--hour"}, description = "Hour hand degrees (0-360, only with --direct)", defaultValue = "-1")
@@ -151,9 +151,9 @@ public class Main implements Runnable {
                 System.out.println("Direct notification sent: " + vibration);
             } else {
                 adapter.playNotification(vibration, hourDeg, minDeg);
-                System.out.println("Notification sent (Fossil file protocol)");
+                System.out.println("Notification sent: " + vibration);
             }
-            // Give time for the animation/vibration to happen
+            // Give time for the vibration to happen
             sleep(2000);
             adapter.shutdown();
             return 0;

@@ -23,7 +23,9 @@ import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fos
 import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.file.FileDeleteRequest;
 import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.file.FileLookupAndGetRequest;
 import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.file.FilePutRequest;
+import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.notification.NotificationFilterPutRequest;
 import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.notification.PlayTextNotificationRequest;
+import nodomain.freeyourgadget.gadgetbridge.devices.qhybrid.NotificationConfiguration;
 import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.misfit.AnimationRequest;
 import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.misfit.GetCurrentStepCountRequest;
 import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.misfit.GetStepGoalRequest;
@@ -188,13 +190,58 @@ public class FossilQAdapter {
         }
     }
 
+    /**
+     * Upload a notification filter for our package name.
+     * This tells the watch what vibration + hand movement to use when
+     * a notification from "qhybrid.linux" is played.
+     */
+    public void setNotificationFilter(PlayNotificationRequest.VibrationType vibration, int hourDeg, int minDeg) {
+        if (!useFossilProtocol) {
+            LOG.warn("Notification filter not supported on Misfit protocol");
+            return;
+        }
+        String packageName = "qhybrid.linux";
+        NotificationConfiguration config = new NotificationConfiguration(
+                (short) minDeg, (short) hourDeg, (short) -1, vibration);
+        config.setPackageName(packageName);
+        queueWrite(new NotificationFilterPutRequest(
+                new NotificationConfiguration[]{config}, shimAdapter), false);
+    }
+
     public void playNotification(PlayNotificationRequest.VibrationType vibration, int hourDeg, int minDeg) {
         if (useFossilProtocol) {
-            // Fossil protocol: file-based notification (triggers hand rotation animation)
-            // Vibration depends on notification filter config on watch
+            // Fossil protocol: file-based notification for hand animation
             queueWrite(new PlayTextNotificationRequest("qhybrid.linux", shimAdapter), false);
+            // Also trigger vibration via call characteristic (the only reliable
+            // way to vibrate on this watch — file-based notification filters
+            // don't produce vibration on HW.0.0 firmware)
+            if (vibration != PlayNotificationRequest.VibrationType.NO_VIBE) {
+                findDevice();
+                // Schedule stop after a short delay based on vibration type
+                new Thread(() -> {
+                    try {
+                        Thread.sleep(getVibrationDuration(vibration));
+                        stopFindDevice();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }).start();
+            }
         } else {
             sendMisfitRequest(new PlayNotificationRequest(vibration, hourDeg, minDeg));
+        }
+    }
+
+    private long getVibrationDuration(PlayNotificationRequest.VibrationType vibration) {
+        switch (vibration) {
+            case SINGLE_SHORT: return 500;
+            case DOUBLE_SHORT: return 1000;
+            case TRIPLE_SHORT: return 1500;
+            case SINGLE_NORMAL: return 1000;
+            case DOUBLE_NORMAL: return 2000;
+            case TRIPLE_NORMAL: return 3000;
+            case SINGLE_LONG: return 2000;
+            default: return 500;
         }
     }
 
@@ -277,8 +324,18 @@ public class FossilQAdapter {
             LOG.warn("Timezone offset not supported on Misfit protocol firmware");
             return;
         }
-        queueWrite(new ConfigurationPutRequest(
-                new ConfigurationPutRequest.TimezoneOffsetConfigItem(minutes), shimAdapter), false);
+        // Send both timezone offset AND time together — the watch uses the
+        // TimezoneOffsetConfigItem to shift the UTC epoch for display.
+        // TimeConfigItem carries the UTC epoch; the offset in TimeConfigItem
+        // is metadata for activity timestamps.
+        long millis = System.currentTimeMillis();
+        queueWrite(new ConfigurationPutRequest(new ConfigurationPutRequest.ConfigItem[]{
+                new ConfigurationPutRequest.TimezoneOffsetConfigItem(minutes),
+                new ConfigurationPutRequest.TimeConfigItem(
+                        (int) (millis / 1000),
+                        (short) (millis % 1000),
+                        minutes)
+        }, shimAdapter), false);
     }
 
     public void overwriteButtons(ConfigPayload[] payloads) {
@@ -419,7 +476,10 @@ public class FossilQAdapter {
                 // 4. Sync configuration
                 syncConfiguration();
 
-                // 5. Set initialized
+                // 5. Sync notification filter
+                syncNotificationSettings();
+
+                // 6. Set initialized
                 device.setState(GBDevice.State.INITIALIZED);
                 LOG.info("Watch initialized (Fossil protocol)");
                 if (onInitialized != null) onInitialized.run();
@@ -457,6 +517,29 @@ public class FossilQAdapter {
             @Override
             public void onFilePut(boolean success) {
                 LOG.debug("Button config init: {}", success ? "success" : "FAILED");
+            }
+        }, false);
+    }
+
+    private void syncNotificationSettings() {
+        LOG.info("Syncing notification filter...");
+        // Upload a default notification filter so PlayTextNotificationRequest triggers vibration.
+        // The watch maps package name CRC → vibration + hand movement from this filter.
+        // GB requires at least 2 configs (duplicates if only 1), so we send 2.
+        String packageName = "qhybrid.linux";
+        NotificationConfiguration config1 = new NotificationConfiguration(
+                (short) -1, (short) -1, (short) -1,
+                PlayNotificationRequest.VibrationType.SINGLE_NORMAL);
+        config1.setPackageName(packageName);
+        NotificationConfiguration config2 = new NotificationConfiguration(
+                (short) -1, (short) -1, (short) -1,
+                PlayNotificationRequest.VibrationType.SINGLE_NORMAL);
+        config2.setPackageName(packageName);
+        queueWrite(new NotificationFilterPutRequest(
+                new NotificationConfiguration[]{config1, config2}, shimAdapter) {
+            @Override
+            public void onFilePut(boolean success) {
+                LOG.info("Notification filter sync: {}", success ? "success" : "FAILED");
             }
         }, false);
     }

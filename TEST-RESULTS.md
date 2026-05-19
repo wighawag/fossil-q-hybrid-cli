@@ -17,9 +17,14 @@
 | `step-goal` | ✅ Works | Set to 12000, watch confirmed |
 | `vibration` | ✅ Works | Strength config accepted |
 | `timezone` | ✅ Works | Set to UTC+1 |
-| `notify` | ✅ Works | Vibration + hand movement confirmed |
-| `alarm` | ✅ Works | Set 07:30 one-shot, watch confirmed |
-| `activity` | ✅ Works | 3488 bytes fetched to activity.bin |
+| `notify` | ✅ Works | Vibration via call characteristic + hand animation via file protocol. Different vibration types control duration. |
+| `notify --direct` | ⚠️ Partial | Misfit-style direct notification: hand rotation only, no vibration on HW.0.0 firmware. |
+| `alarm` | ✅ Works | Set 07:30 one-shot, watch vibrated at alarm time |
+| `find` | ✅ Works | 2 vibration bursts + hand rotation over 3 seconds |
+| `activity` | ✅ Works | Downloads valid timestamped activity data (60s interval records) |
+| `step-goal` | ✅ Works | Goal 50 → sub-eye at ~19, goal 99999 → sub-eye at zero |
+| `vibration` | ✅ Works | Strength 10 → weak feedback buzz, 100→100 (no change) → no buzz |
+| `timezone` | ✅ Works | Offset 0 → hour hand shifted back 1h, offset 60 → restored correct time |
 
 ---
 

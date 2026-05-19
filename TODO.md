@@ -24,10 +24,10 @@ Watch: Fossil Q Commuter (HW.0.0), Firmware HW0.0.2.9r.v3, Fossil protocol (2.x)
 
 ## Test Existing Commands
 
-- [ ] `notify` — no observable effect (hand rotation seen was from init animation, not notify itself). No vibration. `--direct` also no effect. Needs notification filter config or different approach.
-- [~] `step-goal` — upload succeeds, no visible sub-eye change observed (may need steps walked to see difference)
-- [x] `vibration` — confirmed: setting to 10 triggered weak buzz, setting 100→100 (no change) triggered nothing. Watch gives feedback on actual change.
-- [~] `timezone` — upload succeeds but init's `syncConfiguration()` re-sends correct offset every connect, overriding standalone command
+- [x] `notify` — confirmed: vibration via call characteristic + hand animation via file protocol. Notification filter alone doesn't produce vibration on HW.0.0 firmware.
+- [x] `step-goal` — confirmed: goal 50 → sub-eye moved to ~19, goal 99999 → sub-eye at zero
+- [x] `vibration` — confirmed: setting to 10 triggered weak buzz, setting 100→100 (no change) no buzz. Watch gives feedback on actual change.
+- [x] `timezone` — confirmed: offset 0 shifted hour hand back 1h (BST→UTC), offset 60 restored correct time. Fixed: now sends time+offset together.
 - [x] `alarm` — confirmed: 07:30 vibration fired on watch
 - [x] `find` — confirmed: 2 vibration bursts + hand rotation over 3 seconds
 - [x] `activity` — confirmed: downloads valid structured data (timestamp, 60s intervals, step records)
@@ -144,6 +144,43 @@ Watch: Fossil Q Commuter (HW.0.0), Firmware HW0.0.2.9r.v3, Fossil protocol (2.x)
 ---
 
 ## Research / Exploration
+
+### Notification Vibration on HW.0.0 (Investigation Needed)
+
+The Fossil notification filter system (`NotificationFilterPutRequest` + `PlayTextNotificationRequest`) does
+not produce vibration on HW.0.0 firmware, despite the filter upload succeeding and the notification
+triggering hand animation. Currently we workaround by using the call characteristic (`3dda0005`) for
+vibration, but this only gives one vibration pattern (call buzz) with duration control.
+
+**Goal:** Find the proper way to trigger different vibration patterns from notifications.
+
+**Investigation approaches:**
+- [ ] **Reverse-engineer the official Fossil app APK** — decompile with jadx/apktool and trace how it
+  sends notifications. The official app definitely makes the watch vibrate on notifications.
+  - Look for writes to `3dda0005` (call char) vs `3dda0003` (indicate char)
+  - Look for different byte sequences that produce different vibration patterns
+  - Check if there's a different notification flow than what GB uses
+- [ ] **Capture BLE traffic** between official Fossil app and watch — use Android BLE logging
+  (`btsnoop_hci.log`) or nRF Connect to capture the exact byte sequence when a notification vibrates
+- [ ] **Test different vibration bytes on 3dda0005** — the current call vibration sends
+  `01 04 30 75 00 00`. Try varying the bytes to discover different patterns:
+  - Byte 3 (`0x30`): duration? pattern?
+  - Byte 4 (`0x75`): intensity?
+  - Other command prefixes: `01 04` is "start call" — are there `01 05`, `01 06`, etc.?
+- [ ] **Test `PlayCallNotificationRequest`** — uses `NotificationType.INCOMING_CALL` with a hardcoded
+  CRC (`0xB7590080`). Maybe INCOMING_CALL type triggers vibration where NOTIFICATION type doesn't.
+- [ ] **Check if notification filter vibration byte values matter** — the filter uses misfit
+  `VibrationType` enum values (3,5,6,7,8,9) but maybe the watch expects different values.
+  Try raw byte values 1-10 in the filter's VIBRATION field.
+- [ ] **Check the `VibrateRequest`** (misfit command) — different from `PlayNotificationRequest`,
+  may write different bytes to a different characteristic.
+
+**Resources that would help:**
+- Official Fossil app APK (decompiled with jadx) — to see the notification/vibration code path
+- BLE capture log from official app sending a notification
+- Fossil protocol documentation (if any leaked/reversed)
+
+---
 
 - [ ] What do the JSON messages on 3dda0006 mean? (buddyChallengeApp, etc.)
 - [ ] Can we read the current hand positions from the watch?
