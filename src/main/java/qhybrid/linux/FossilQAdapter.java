@@ -106,6 +106,18 @@ public class FossilQAdapter {
         // Set up BLE notification callback
         transport.setNotificationCallback(this::onCharacteristicChanged);
         transport.setMtuCallback(this::onMtuChanged);
+
+        // Handle reconnection: reset request state on disconnect
+        transport.setConnectionCallback(isConnected -> {
+            if (!isConnected) {
+                LOG.info("Watch disconnected — clearing in-flight request");
+                currentFossilRequest = null;
+                requestQueue.clear();
+                stopTimeout();
+            } else {
+                LOG.info("Watch reconnected — init will re-run");
+            }
+        });
     }
 
     // ========== Public API (called by CLI commands) ==========
@@ -178,11 +190,20 @@ public class FossilQAdapter {
 
     public void playNotification(PlayNotificationRequest.VibrationType vibration, int hourDeg, int minDeg) {
         if (useFossilProtocol) {
-            // Fossil protocol uses text notification with package name
+            // Fossil protocol: file-based notification (triggers hand rotation animation)
+            // Vibration depends on notification filter config on watch
             queueWrite(new PlayTextNotificationRequest("qhybrid.linux", shimAdapter), false);
         } else {
             sendMisfitRequest(new PlayNotificationRequest(vibration, hourDeg, minDeg));
         }
+    }
+
+    /**
+     * Send a misfit-style notification request directly (vibration type + hand degrees).
+     * On Fossil protocol watches this may or may not produce vibration depending on firmware.
+     */
+    public void playMisfitNotification(PlayNotificationRequest.VibrationType vibration, int hourDeg, int minDeg) {
+        sendMisfitRequest(new PlayNotificationRequest(vibration, hourDeg, minDeg));
     }
 
     public void setAlarms(Alarm[] alarms) {
@@ -374,10 +395,21 @@ public class FossilQAdapter {
             public void handleDeviceInfos(DeviceInfo[] deviceInfos) {
                 for (DeviceInfo info : deviceInfos) {
                     if (info instanceof SupportedFileVersionsInfo) {
-                        SupportedFileVersionsInfo fileVersions = (SupportedFileVersionsInfo) info;
-                        // Store supported file versions in shimAdapter
-                        // The SupportedFileVersionsInfo.getSupportedFileVersion() is used
-                        // by the real adapter, but our shim stores them directly
+                        SupportedFileVersionsInfo supportedVersions = (SupportedFileVersionsInfo) info;
+                        // Store all supported file versions in shimAdapter
+                        // so FilePutRequest/FileGetRequest use correct versions
+                        for (FileHandle fh : FileHandle.values()) {
+                            try {
+                                short version = supportedVersions.getSupportedFileVersion(fh);
+                                LOG.debug("File handle {} (0x{}) → version {}", fh, String.format("%02X", fh.getMajorHandle() & 0xFF), version);
+                                if (version != 0) {
+                                    shimAdapter.setSupportedFileVersion(fh.getMajorHandle(), version);
+                                }
+                            } catch (NullPointerException e) {
+                                // Handle not in supported versions map — skip
+                                LOG.debug("File handle {} not in supported versions map", fh);
+                            }
+                        }
                         LOG.info("Got supported file versions");
                     } else if (info instanceof DeviceSecurityVersionInfo) {
                         device.addDeviceInfo(new GenericItem("DEVICE_SECURITY_VERSION", info.toString()));
@@ -604,6 +636,12 @@ public class FossilQAdapter {
      * Called by BluezTransport when a BLE notification arrives.
      */
     private void onCharacteristicChanged(UUID uuid, byte[] value) {
+        // Ignore notifications when not connected (e.g. during reconnect window)
+        if (!transport.isConnected()) {
+            LOG.debug("Ignoring notification on {} — not connected", uuid);
+            return;
+        }
+
         String uuidStr = uuid.toString();
 
         switch (uuidStr) {

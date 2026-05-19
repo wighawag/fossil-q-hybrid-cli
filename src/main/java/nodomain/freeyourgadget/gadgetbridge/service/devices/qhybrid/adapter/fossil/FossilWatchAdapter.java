@@ -49,7 +49,7 @@ public class FossilWatchAdapter extends WatchAdapter {
     }
 
     public short getSupportedFileVersion(FileHandle handle) {
-        return fileVersions.getOrDefault(handle.getMajorHandle(), (short) 0);
+        return fileVersions.getOrDefault((short) handle.getMajorHandle(), (short) 0);
     }
 
     public void log(String message) {

@@ -22,3 +22,5 @@ gradle-app.setting
 !gradle/wrapper/gradle-wrapper.jar
 !gradle-wrapper.jar
 !gradle-wrapper.properties
+
+*.bin

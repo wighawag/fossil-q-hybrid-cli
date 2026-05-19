@@ -24,12 +24,13 @@ Watch: Fossil Q Commuter (HW.0.0), Firmware HW0.0.2.9r.v3, Fossil protocol (2.x)
 
 ## Test Existing Commands
 
-- [ ] `notify` — send notification with vibration + hand movement
-- [ ] `step-goal` — set daily step goal (ConfigurationPutRequest item 0x0003)
-- [ ] `vibration` — set vibration strength (ConfigurationPutRequest item 0x000A)
-- [ ] `timezone` — set timezone offset standalone
-- [ ] `alarm` — set alarm (file handle 0x0A00, **must use version 2** per Python findings)
-- [ ] `activity` — fetch activity data (file handle 0x0100)
+- [ ] `notify` — no observable effect (hand rotation seen was from init animation, not notify itself). No vibration. `--direct` also no effect. Needs notification filter config or different approach.
+- [~] `step-goal` — upload succeeds, no visible sub-eye change observed (may need steps walked to see difference)
+- [x] `vibration` — confirmed: setting to 10 triggered weak buzz, setting 100→100 (no change) triggered nothing. Watch gives feedback on actual change.
+- [~] `timezone` — upload succeeds but init's `syncConfiguration()` re-sends correct offset every connect, overriding standalone command
+- [x] `alarm` — confirmed: 07:30 vibration fired on watch
+- [x] `find` — confirmed: 2 vibration bursts + hand rotation over 3 seconds
+- [x] `activity` — confirmed: downloads valid structured data (timestamp, 60s intervals, step records)
 
 ---
 
