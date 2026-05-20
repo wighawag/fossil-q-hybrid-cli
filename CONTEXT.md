@@ -42,6 +42,7 @@ gadgetbridge/              # Vendored GB code (124 files, zero patches, copied b
 4. **UTC epoch + TimezoneOffsetConfigItem** for time — watch uses the offset to shift display
 5. **Shim classes** instead of patching vendor code — `sync.sh` is pure copy
 6. **Auth on separate thread** — `fossil-auth` thread runs auth handshake to avoid deadlocking `bluez-monitor` thread
+7. **BleTransport interface** — `BluezTransport` (subprocess) and future `DbusTransport` (dbus-java) share the same interface. Adapter/protocol code is transport-agnostic.
 
 ## Test Hardware
 
@@ -65,10 +66,14 @@ Key optimizations (2026-05-20): faster polling (500ms→250ms), faster notificat
 enable (700ms→200ms per char), GATT fail-fast (15s→5s) with direct reconnect retry
 (up to 2 retries, no re-scan), stale "In Progress" connection handling.
 
+**Future:** dbus-java transport (DBUS-JAVA-MIGRATION.md) would reduce to ~3-5s by
+eliminating subprocess overhead (~50-100ms per BLE operation → ~1ms).
+
 ## Key Docs
 
 | File | Purpose |
 |------|---------|
+| DBUS-JAVA-MIGRATION.md | Plan to add dbus-java transport (eliminate subprocess BLE calls) |
 | AUTHENTICATION-PLAN.md | Full auth protocol decode + plan to crack notification system |
 | FINDINGS.md | 15 technical discoveries from real-hardware testing |
 | TODO.md | Feature checklist with priorities |
