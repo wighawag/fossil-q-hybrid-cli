@@ -107,6 +107,7 @@ Watch: Fossil Q Commuter (HW.0.0), Firmware HW0.0.2.9r.v3, Fossil protocol (2.x)
 ## Infrastructure Improvements
 
 ### Connection Management
+- [x] Connection speed optimization (63s → 8-13s) — faster polling, GATT fail-fast, stale connection handling
 - [ ] Auto-reconnect on disconnect
 - [ ] Connection persistence (don't re-init on every command)
 - [ ] Daemon mode — stay connected, accept commands via IPC/socket

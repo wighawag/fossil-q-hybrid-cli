@@ -59,8 +59,12 @@ public class BluezTransport implements BleTransport, AutoCloseable {
             LOG.info("Already connected to {}", macAddress);
             connected = true;
         } else {
+            // Cancel any stale in-progress connection from a previous run
+            runCmd("busctl", "call", "--system", "org.bluez",
+                    devicePath, "org.bluez.Device1", "Disconnect");
+
             // Try direct D-Bus connect first (fast path for known+reachable devices)
-            String result = runCmd("busctl", "call", "--system", "org.bluez",
+            String result = runCmdWithTimeout("busctl", "call", "--system", "org.bluez",
                     devicePath, "org.bluez.Device1", "Connect");
             if (result != null) {
                 // Verify connection
@@ -86,24 +90,40 @@ public class BluezTransport implements BleTransport, AutoCloseable {
         }
 
         // Wait for GATT services to be resolved.
-        // On first connection after remove/scan, services sometimes fail to resolve.
-        // In that case, disconnect and retry once.
-        if (!waitForServicesResolved(15_000)) {
-            LOG.info("GATT services not resolved, retrying connection...");
-            // Disconnect
-            runCmd("busctl", "call", "--system", "org.bluez",
-                    devicePath, "org.bluez.Device1", "Disconnect");
-            connected = false;
-            try { Thread.sleep(2000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
-
-            // Re-scan and connect (device object may vanish for non-bonded devices)
-            if (!scanAndConnect(macAddress, 15_000)) {
-                LOG.error("Retry connection failed");
-                return false;
+        // On first connection to an unbonded device, BlueZ sometimes fails to
+        // complete GATT discovery. Retry up to 2 more times — each attempt
+        // builds on BlueZ's cached service layout from the previous one.
+        for (int gattRetry = 0; gattRetry < 3; gattRetry++) {
+            if (waitForServicesResolved(5_000)) {
+                break; // GATT resolved
             }
+            if (gattRetry < 2) {
+                LOG.info("GATT services not resolved, reconnecting (attempt {})...", gattRetry + 2);
+                runCmd("busctl", "call", "--system", "org.bluez",
+                        devicePath, "org.bluez.Device1", "Disconnect");
+                connected = false;
+                try { Thread.sleep(1000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
 
-            if (!waitForServicesResolved(15_000)) {
-                LOG.error("GATT services not resolved after retry");
+                // Reconnect directly — device is already known+trusted
+                runCmd("busctl", "call", "--system", "org.bluez",
+                        devicePath, "org.bluez.Device1", "Connect");
+                long deadline = System.currentTimeMillis() + 10_000;
+                while (System.currentTimeMillis() < deadline) {
+                    String cr = runCmd("busctl", "get-property", "--system", "org.bluez",
+                            devicePath, "org.bluez.Device1", "Connected");
+                    if (cr != null && cr.contains("true")) {
+                        connected = true;
+                        LOG.info("Reconnected to {}", macAddress);
+                        break;
+                    }
+                    try { Thread.sleep(250); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
+                }
+                if (!connected) {
+                    LOG.error("Reconnection failed");
+                    return false;
+                }
+            } else {
+                LOG.error("GATT services not resolved after {} attempts", gattRetry + 1);
                 return false;
             }
         }
@@ -224,18 +244,20 @@ public class BluezTransport implements BleTransport, AutoCloseable {
         // BlueZ immediately un-registers the notification and Notifying goes false.
         // This is why busctl (one-shot) doesn't work for StartNotify.
         sendBtctlCommand("select-attribute " + uuid);
-        sleep(200);
+        sleep(100);
         sendBtctlCommand("notify on");
-        sleep(500);
+        sleep(100);
     }
 
     /**
      * Enable notifications on all Fossil characteristic UUIDs.
+     * Commands are sent with minimal delays — bluetoothctl processes them
+     * sequentially on its internal command queue.
      */
     private void enableAllNotifications() {
         // Enter GATT menu first
         sendBtctlCommand("menu gatt");
-        sleep(300);
+        sleep(200);
 
         UUID[] fossilUuids = {
                 UUID.fromString("3dda0002-957f-7d4a-34a6-74696673696d"),
@@ -248,6 +270,8 @@ public class BluezTransport implements BleTransport, AutoCloseable {
         for (UUID uuid : fossilUuids) {
             enableNotifications(uuid);
         }
+        // Wait for all notify-on commands to be processed
+        sleep(500);
         LOG.info("Enabled notifications on {} characteristics", fossilUuids.length);
     }
 
@@ -300,13 +324,21 @@ public class BluezTransport implements BleTransport, AutoCloseable {
 
             OutputStream stdin = scanProc.getOutputStream();
 
+            // Cancel any stale in-progress connection attempt from a previous run.
+            // Without this, BlueZ returns "In Progress" and blocks new connects.
+            stdin.write(("disconnect " + mac + "\n").getBytes(StandardCharsets.UTF_8));
+            stdin.flush();
+            try { Thread.sleep(300); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+
             stdin.write("scan on\n".getBytes(StandardCharsets.UTF_8));
             stdin.flush();
 
             long deadline = System.currentTimeMillis() + timeoutMs;
             boolean found = false;
+            long lastLog = 0;
             while (System.currentTimeMillis() < deadline) {
-                // Check if bluez now knows the device via D-Bus
+                // Check if bluez now knows the device via D-Bus — since we
+                // removed it above, it will only reappear from a live advertisement
                 String result = runCmd("busctl", "get-property", "--system", "org.bluez",
                         devicePath, "org.bluez.Device1", "Address");
                 if (result != null && result.contains(mac)) {
@@ -315,13 +347,14 @@ public class BluezTransport implements BleTransport, AutoCloseable {
                     break;
                 }
                 try {
-                    Thread.sleep(1000);
+                    Thread.sleep(500);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     break;
                 }
                 long remaining = (deadline - System.currentTimeMillis()) / 1000;
-                if (remaining % 5 == 0 && remaining > 0) {
+                if (remaining > 0 && remaining != lastLog && remaining % 5 == 0) {
+                    lastLog = remaining;
                     LOG.info("Still scanning... ({}s remaining). Press the watch button if not done already.", remaining);
                 }
             }
@@ -332,12 +365,13 @@ public class BluezTransport implements BleTransport, AutoCloseable {
                 // BlueZ "InProgress" errors from orphaned connect attempts.
                 stdin.write(("trust " + mac + "\n").getBytes(StandardCharsets.UTF_8));
                 stdin.flush();
-                try { Thread.sleep(500); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                try { Thread.sleep(200); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
 
                 stdin.write(("connect " + mac + "\n").getBytes(StandardCharsets.UTF_8));
                 stdin.flush();
 
                 // Wait for connection to establish (check via D-Bus, not bluetoothctl output)
+                // Give 15s for first-time connections (GATT discovery takes time)
                 long connectDeadline = System.currentTimeMillis() + 15_000;
                 while (System.currentTimeMillis() < connectDeadline) {
                     String connResult = runCmd("busctl", "get-property", "--system", "org.bluez",
@@ -347,26 +381,25 @@ public class BluezTransport implements BleTransport, AutoCloseable {
                         LOG.info("Connected to {}", mac);
                         break;
                     }
-                    try { Thread.sleep(500); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
+                    try { Thread.sleep(250); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
                 }
 
                 if (!connected) {
                     LOG.warn("Connect attempt did not succeed within timeout");
-                    // Cancel the in-progress connect before exiting
                     stdin.write(("disconnect " + mac + "\n").getBytes(StandardCharsets.UTF_8));
                     stdin.flush();
-                    try { Thread.sleep(1000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                    try { Thread.sleep(500); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
                 }
             }
 
             // Stop scanning and exit cleanly
             stdin.write("scan off\n".getBytes(StandardCharsets.UTF_8));
             stdin.flush();
-            try { Thread.sleep(500); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            try { Thread.sleep(200); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
             stdin.write("exit\n".getBytes(StandardCharsets.UTF_8));
             stdin.flush();
             // Wait for clean exit
-            scanProc.waitFor(5, TimeUnit.SECONDS);
+            scanProc.waitFor(3, TimeUnit.SECONDS);
             return connected;
         } catch (IOException | InterruptedException e) {
             LOG.error("Failed during scan/connect", e);
@@ -388,7 +421,7 @@ public class BluezTransport implements BleTransport, AutoCloseable {
                 return true;
             }
             try {
-                Thread.sleep(500);
+                Thread.sleep(250);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return false;
@@ -687,6 +720,40 @@ public class BluezTransport implements BleTransport, AutoCloseable {
         return runCmd(cmd);
     }
 
+    /**
+     * Run a command with a short timeout (5s). Used for fast-path operations
+     * where we don't want to block on an unresponsive device.
+     */
+    private String runCmdWithTimeout(String... args) {
+        try {
+            ProcessBuilder pb = new ProcessBuilder(args);
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
+
+            String output;
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    sb.append(line).append("\n");
+                }
+                output = sb.toString();
+            }
+
+            boolean finished = p.waitFor(5, TimeUnit.SECONDS);
+            if (!finished) {
+                p.destroyForcibly();
+                LOG.debug("Command timed out (5s): {}", String.join(" ", args));
+                return null;
+            }
+
+            return p.exitValue() == 0 ? output : null;
+        } catch (IOException | InterruptedException e) {
+            return null;
+        }
+    }
+
     private String runCmd(String... args) {
         try {
             ProcessBuilder pb = new ProcessBuilder(args);
@@ -819,13 +886,13 @@ public class BluezTransport implements BleTransport, AutoCloseable {
             drain.setDaemon(true);
             drain.start();
 
-            sleep(500);
+            sleep(200);
 
             // Register agent for pairing/encryption support
             sendBtctlCommand("agent on");
-            sleep(200);
+            sleep(100);
             sendBtctlCommand("default-agent");
-            sleep(500);
+            sleep(200);
 
             LOG.debug("Started persistent bluetoothctl");
         } catch (IOException e) {

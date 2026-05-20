@@ -308,6 +308,56 @@ get `03 07 01` (already authorized) and skip the button press.
 
 ---
 
+## 15. Connection Speed Optimizations (2026-05-20)
+
+**Problem:** First connection from clean state took ~63 seconds. Reconnects took ~17 seconds.
+
+**Root causes identified:**
+
+1. **GATT resolve timeout too long (15s):** On first connect after `bluetoothctl remove`, GATT
+   service discovery often fails. We waited the full 15s before retrying.
+
+2. **GATT retry did full re-scan:** After GATT failure, the code disconnected, re-scanned for
+   the device, and reconnected. Unnecessary — the device is already known+trusted.
+
+3. **Notification enable too slow:** Each characteristic took ~700ms (200ms select + 500ms
+   notify-on). With 6 characteristics, that's 4.2s + overhead.
+
+4. **Scan/connect polling too slow:** 1000ms scan polling, 500ms connect polling.
+
+5. **Stale "In Progress" connections:** A previous failed connect leaves BlueZ in "In Progress"
+   state, blocking all subsequent connect attempts. Must disconnect first to clear.
+
+**Official Fossil app comparison (from bugreport3 BLE capture):**
+- Android does full GATT service discovery too (~1.5s)
+- But GATT always resolves on first try (Android Bluetooth stack is more reliable)
+- Connection to GATT-ready: ~4.4s on Android
+- The GATT retry issue is specific to BlueZ, not the watch
+
+**Optimizations applied:**
+
+| Change | Savings |
+|--------|--------|
+| GATT timeout: 15s → 5s (fail fast) | ~10s when retry needed |
+| GATT retry: direct `Connect` instead of full re-scan | ~15s when retry needed |
+| GATT retry loop: up to 3 attempts | Handles BlueZ first-connect issue |
+| Notification enable: 700ms → 200ms per char | ~3.5s |
+| Scan polling: 1000ms → 500ms | ~1-2s |
+| Connect/GATT polling: 500ms → 250ms | ~1s |
+| Various sleeps reduced (trust, agent, scan-off) | ~2s |
+| Disconnect before connect (clear "In Progress") | Prevents hangs |
+| Direct connect fast-path with 5s timeout | Skip scan for known devices |
+
+**Results:**
+
+| Scenario | Before | After |
+|----------|--------|-------|
+| Reconnect (device known) | ~17s | **~8s** |
+| Clean state (best case) | ~63s | **~13s** |
+| Clean state (GATT retry) | ~63s | **~25-30s** |
+
+---
+
 ## 13. BlueZ Quirks Encountered
 
 | Issue | Impact | Workaround |

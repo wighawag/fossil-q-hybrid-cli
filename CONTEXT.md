@@ -12,10 +12,10 @@ A Linux CLI tool that talks to Fossil Q Hybrid coin-cell watches (Q Commuter HW.
 # Build
 ./gradlew shadowJar
 
-# Run (watch must be paired + connected via bluetoothctl first)
+# Run (press watch button to wake before first connect)
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A info
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A time
-java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A find -t 3
+java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A notify SINGLE_SHORT
 ```
 
 ## Project Layout
@@ -54,12 +54,23 @@ gadgetbridge/              # Vendored GB code (124 files, zero patches, copied b
 | BLE Address | D9:20:71:11:74:2A |
 | MTU | 185 |
 
+## Connection Speed
+
+| Scenario | Time |
+|----------|------|
+| Reconnect (device known+trusted) | ~8s to initialized |
+| Clean state (first connect) | ~13-30s (GATT retry may be needed) |
+
+Key optimizations (2026-05-20): faster polling (500ms→250ms), faster notification
+enable (700ms→200ms per char), GATT fail-fast (15s→5s) with direct reconnect retry
+(up to 2 retries, no re-scan), stale "In Progress" connection handling.
+
 ## Key Docs
 
 | File | Purpose |
 |------|---------|
 | AUTHENTICATION-PLAN.md | Full auth protocol decode + plan to crack notification system |
-| FINDINGS.md | 13 technical discoveries from real-hardware testing |
+| FINDINGS.md | 15 technical discoveries from real-hardware testing |
 | TODO.md | Feature checklist with priorities |
 | CALIBRATION-PLAN.md | Interactive calibration UX design |
 | ROADMAP.md | CLI → shared library → Android app |
@@ -100,7 +111,8 @@ vibration + hand animation. The `findDevice()` workaround has been removed.
 - **Watch does directed advertising** after pairing — won't appear in general scan, connect by MAC
 - **12+ alarms work** despite GadgetBridge limiting to 5
 - **Watch only advertises ~30s after button press** — must wake watch before scanning
-- **GATT services fail on first connect** after `bluetoothctl remove` — auto-retry handles this
+- **GATT services fail on first connect** after `bluetoothctl remove` — auto-retry (up to 3 attempts) handles this. BlueZ caches service layout across retries.
+- **Stale "In Progress" connections** — a previous failed connect can block new ones. Disconnect before connecting to clear.
 - **`bluetoothctl pair` always fails** — Fossil uses its own auth, not BLE pairing. Just `trust` + `connect`
 - **gdbus byte literal format** — GLib 2.84+ uses `b'\003\007'` for small byte arrays, `[byte 0x03, 0x07]` for larger ones. Both must be parsed.
 - **Auth indication deadlock** — auth must run on a separate thread from `bluez-monitor` (which delivers the indications via CompletableFuture)
