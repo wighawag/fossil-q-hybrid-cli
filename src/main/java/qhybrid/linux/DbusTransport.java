@@ -10,7 +10,9 @@ import org.freedesktop.dbus.connections.impl.DBusConnection;
 import org.freedesktop.dbus.exceptions.DBusException;
 import org.freedesktop.dbus.handlers.AbstractPropertiesChangedHandler;
 import org.freedesktop.dbus.interfaces.Properties;
+import org.freedesktop.dbus.DBusPath;
 import org.freedesktop.dbus.types.UInt16;
+import org.freedesktop.dbus.types.UInt32;
 import org.freedesktop.dbus.types.Variant;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -591,41 +593,57 @@ public class DbusTransport implements BleTransport, AutoCloseable {
     /**
      * Register a BlueZ agent for "Just Works" pairing.
      * The agent auto-confirms pairing requests (no PIN/passkey needed).
+     * Implements org.bluez.Agent1 directly with correct method signatures.
      */
     private void registerAgent() throws DBusException {
         DBusConnection dbus = deviceManager.getDbusConnection();
         String agentPath = "/qhybrid/agent";
 
-        // Use bluez-dbus's AgentManager wrapper which handles agent registration properly
-        com.github.hypfvieh.bluetooth.wrapper.AgentManager agentMgr =
-                new com.github.hypfvieh.bluetooth.wrapper.AgentManager(dbus);
+        // Export a raw Agent1 implementation with correct signatures
+        org.bluez.Agent1 agent = new org.bluez.Agent1() {
+            @Override public void Release() {
+                LOG.debug("Agent: Release");
+            }
+            @Override public String RequestPinCode(DBusPath device) {
+                LOG.debug("Agent: RequestPinCode for {}", device);
+                return "";
+            }
+            @Override public void DisplayPinCode(DBusPath device, String pincode) {
+                LOG.debug("Agent: DisplayPinCode {} for {}", pincode, device);
+            }
+            @Override public UInt32 RequestPasskey(DBusPath device) {
+                LOG.debug("Agent: RequestPasskey for {}", device);
+                return new UInt32(0);
+            }
+            @Override public void DisplayPasskey(DBusPath device, UInt32 passkey, UInt16 entered) {
+                LOG.debug("Agent: DisplayPasskey {} for {}", passkey, device);
+            }
+            @Override public void RequestConfirmation(DBusPath device, UInt32 passkey) {
+                LOG.debug("Agent: RequestConfirmation passkey={} for {} — auto-confirming", passkey, device);
+                // Don't throw = auto-accept
+            }
+            @Override public void RequestAuthorization(DBusPath device) {
+                LOG.debug("Agent: RequestAuthorization for {} — auto-authorizing", device);
+                // Don't throw = auto-accept
+            }
+            @Override public void AuthorizeService(DBusPath device, String uuid) {
+                LOG.debug("Agent: AuthorizeService {} for {}", uuid, device);
+            }
+            @Override public void Cancel() {
+                LOG.debug("Agent: Cancel");
+            }
+            @Override public boolean isRemote() { return false; }
+            @Override public String getObjectPath() { return agentPath; }
+        };
 
-        // Export an AgentHandler with a no-op listener (auto-accept everything)
-        com.github.hypfvieh.bluetooth.wrapper.AgentHandler handler =
-                new com.github.hypfvieh.bluetooth.wrapper.AgentHandler(
-                        agentPath, dbus,
-                        new com.github.hypfvieh.bluetooth.wrapper.AgentChangeListener() {
-                            public void onAgentAuthorizeService(String path, String uuid) {}
-                            public void onAgentCancel() {}
-                            public void onAgentDisplayPassKey(String path, long passkey, int entered) {}
-                            public void onAgentDisplayPinCode(String path, String pincode) {}
-                            public void onAgentRelease() {}
-                            public void onAgentRequestAuthorization(String path) {
-                                LOG.debug("Auto-authorizing pairing for {}", path);
-                            }
-                            public void onAgentRequestConfirmation(String path, long passkey) {
-                                LOG.debug("Auto-confirming pairing for {} (passkey={})", path, passkey);
-                            }
-                            public long onAgentRequestPassKey(String path) { return 0; }
-                            public String onAgentRequestPinCode(String path) { return ""; }
-                        });
+        dbus.exportObject(agentPath, agent);
 
-        dbus.exportObject(handler.getObjectPath(), handler);
-
-        // Register with AgentManager
-        boolean registered = agentMgr.registerAgent(agentPath, "NoInputNoOutput");
-        boolean isDefault = agentMgr.requestDefaultAgent(agentPath);
-        LOG.debug("Agent registered={}, default={}", registered, isDefault);
+        // Register with AgentManager via raw D-Bus call
+        org.bluez.AgentManager1 agentMgr = dbus.getRemoteObject(
+                "org.bluez", "/org/bluez", org.bluez.AgentManager1.class);
+        agentMgr.RegisterAgent(new DBusPath(agentPath), "NoInputNoOutput");
+        agentMgr.RequestDefaultAgent(new DBusPath(agentPath));
+        LOG.info("Registered BlueZ agent at {} for Just Works pairing", agentPath);
     }
 
     @Override

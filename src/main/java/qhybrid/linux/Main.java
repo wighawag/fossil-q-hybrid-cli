@@ -28,6 +28,7 @@ import java.util.concurrent.Callable;
                 Main.TimezoneCmd.class,
                 Main.AlarmCmd.class,
                 Main.ActivityCmd.class,
+                Main.PairCmd.class,
         })
 public class Main implements Runnable {
     private static final Logger LOG = LoggerFactory.getLogger("fossil-q");
@@ -344,6 +345,26 @@ public class Main implements Runnable {
             sleep(2000);
             adapter.shutdown();
             return 0;
+        }
+    }
+
+    @Command(name = "pair", description = "Trigger BLE pairing (creates bond, ties auth to link key)")
+    static class PairCmd implements Callable<Integer> {
+        @ParentCommand Main parent;
+
+        @Override
+        public Integer call() {
+            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+            System.out.println("Initiating BLE pairing...");
+            boolean ok = adapter.getTransport().pair();
+            if (ok) {
+                System.out.println("Pairing successful — auth state is now tied to BLE bond");
+                System.out.println("To clear auth: bluetoothctl remove " + parent.macAddress);
+            } else {
+                System.out.println("Pairing failed or already paired");
+            }
+            adapter.shutdown();
+            return ok ? 0 : 1;
         }
     }
 

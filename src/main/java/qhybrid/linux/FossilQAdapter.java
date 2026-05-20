@@ -471,6 +471,7 @@ public class FossilQAdapter {
     public String getModelNumber() { return modelNumber; }
     public int getBatteryLevel() { return batteryLevel; }
     public boolean isFossilProtocol() { return useFossilProtocol; }
+    public BleTransport getTransport() { return transport; }
 
     // ========== Protocol detection ==========
 
@@ -607,6 +608,12 @@ public class FossilQAdapter {
         byte authStatus = (statusResponse.length >= 3) ? statusResponse[2] : 0x00;
         if (authStatus == 0x01) {
             LOG.info("Already authorized (status=0x01) — no button press needed");
+            // Still attempt pairing if not yet bonded (provides encrypted link + faster reconnect)
+            try {
+                transport.pair();
+            } catch (Exception e) {
+                LOG.debug("Pairing on reconnect: {}", e.getMessage());
+            }
             return;
         }
 

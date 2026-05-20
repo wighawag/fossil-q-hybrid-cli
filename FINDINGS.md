@@ -369,12 +369,16 @@ get `03 07 01` (already authorized) and skip the button press.
 2. Android deletes the BLE link key (`Delete Stored Link Key` HCI command)
 3. The watch detects the bond is gone → clears its auth state
 
-This means auth is tied to the **BLE bond**, not a Fossil protocol command.
-Our CLI uses `trust` + `connect` (no BLE pairing), so `bluetoothctl remove`
-doesn't clear the watch's auth because there was never a proper bond.
+**UPDATE (tested 2026-05-20):** Removing the BLE bond (`bluetoothctl remove`)
+does NOT clear the watch's auth state. After `remove` + re-scan + connect,
+the watch still reports `03 07 01` (already authorized). The auth persists in
+firmware regardless of bond state. The official app may use a factory reset
+command or the watch's built-in "hold middle button" reset to clear auth.
 
-**To force fresh auth:** Need to do actual BLE pairing (`bluetoothctl pair`)
-so the watch stores a bond, then `remove` to clear it.
+Our CLI now pairs via `pair` command or post-auth. Bond provides:
+- Encrypted link (CCCD writes work properly)
+- WakeAllowed=yes for auto-reconnect
+- Faster reconnect (no re-scan needed, device stays known)
 
 ### Auth Flow (Fresh Pairing)
 

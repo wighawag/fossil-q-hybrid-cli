@@ -112,7 +112,8 @@ Watch: Fossil Q Commuter (HW.0.0), Firmware HW0.0.2.9r.v3, Fossil protocol (2.x)
       BluezTransport kept as `--subprocess` fallback. ~5-7s reconnect (vs ~8s subprocess).
       Eliminates: subprocess fork/exec, stdout parsing, persistent bluetoothctl, gdbus monitor.
 - [x] **BLE pairing after auth** — `pair()` called after Fossil auth accepted. Agent registered
-      for Just Works auto-confirm. Creates bond so `bluetoothctl remove` clears watch auth.
+      for Just Works auto-confirm. Bond provides encrypted link + WakeAllowed + faster reconnect.
+      Note: removing bond does NOT clear watch auth (auth persists in firmware).
       Tested: agent + pair code compiles and is called; actual pairing needs fresh auth state to test.
 - [ ] Auto-reconnect on disconnect
 - [ ] Connection persistence (don't re-init on every command)
