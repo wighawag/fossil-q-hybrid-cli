@@ -1,0 +1,11 @@
+Also note that the pairing flow with the fossil official app is as follow (after I click the "Add new Watch" button):
+- a screen make me choose between touchscreen and hybrid watches (the later has this sub text: "the classic stile you love. The smart features you want. The long-lasting battery you need."). I press "Hybrid".
+- then a new screen titled "Start Pairing" appears. It has a single button "Continue" with some text above: "Press the middle button with your watch close to your phone. When the watch vibrates and hands animate, it is ready to pair". Note though that here nothing is happening. I need to press "continue". I press it.
+- then a new screen titled "Looking for your watch" appears. It has the same text as the "Start Pairing" screen but without any buttons, just an animation of a circles. Note that the watch can be found here without me doing anything on the watch, pressing the middle button at this stage seems to be optional.
+- then a new screen titled "1 Device Found" appears with a button "this is my watch" as well as a button "I don't see my watch". I presume here there could be multiple devices to choose from. I press "this is my watch"
+- then a small popup panel appears with the text "please wait", it then after 1 second or 2 disapear and lead to a new screen
+- the new screen is titled "Accept on My Watch" and has a "cancel" button and some text above: "When your watch start vibrating, press and hold the top button to authorize, bottom button to reject". the watch start to vibrate. I press the top button on the watch.
+- a native android popup titled "Pair with Fossil?" appears with 2 buttons  "cancel" and "pair" and a toggle labelled "Also allow access to contacts and call history". I enable the toggle and press "pair".
+- a new screen titled "Almost there" appears with an animated bar but no button. After a few seconds a new screen appears
+- the new screen is the fossil app dashboard showing my watch and some buttons like "my preferences" "Setup Allarsm"....
+
