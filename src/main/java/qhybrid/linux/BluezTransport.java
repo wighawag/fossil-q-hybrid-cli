@@ -238,6 +238,35 @@ public class BluezTransport implements BleTransport, AutoCloseable {
     }
 
     @Override
+    public boolean pair() {
+        LOG.info("Initiating BLE pairing (creates bond for auth persistence)...");
+        // Check if already paired
+        String pairedResult = runCmd("busctl", "get-property", "--system", "org.bluez",
+                devicePath, "org.bluez.Device1", "Paired");
+        if (pairedResult != null && pairedResult.contains("true")) {
+            LOG.info("Already paired");
+            return true;
+        }
+
+        // Use bluetoothctl pair (needs agent registered — our persistent bluetoothctl has one)
+        sendBtctlCommand("pair " + macAddress);
+
+        // Poll for Paired=true (pairing takes a few seconds)
+        long deadline = System.currentTimeMillis() + 10_000;
+        while (System.currentTimeMillis() < deadline) {
+            sleep(500);
+            pairedResult = runCmd("busctl", "get-property", "--system", "org.bluez",
+                    devicePath, "org.bluez.Device1", "Paired");
+            if (pairedResult != null && pairedResult.contains("true")) {
+                LOG.info("BLE pairing successful — auth state is now tied to bond");
+                return true;
+            }
+        }
+        LOG.warn("BLE pairing failed or timed out");
+        return false;
+    }
+
+    @Override
     public void enableNotifications(UUID uuid) {
         // Use persistent bluetoothctl to enable notifications.
         // A persistent D-Bus connection is REQUIRED — if the connection closes,

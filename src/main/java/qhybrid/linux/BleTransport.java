@@ -13,6 +13,15 @@ public interface BleTransport {
     boolean isConnected();
 
     void writeCharacteristic(UUID uuid, byte[] data);
+
+    /**
+     * Initiate BLE pairing (creates a bond with the device).
+     * Must be called after Fossil auth succeeds — the official app does
+     * BLE pairing immediately after the user presses the auth button.
+     * The bond ties the auth state to the BLE link key.
+     * @return true if pairing succeeded or already paired
+     */
+    boolean pair();
     byte[] readCharacteristic(UUID uuid);
     void enableNotifications(UUID uuid);
     void requestMtu(int mtu);

@@ -358,6 +358,109 @@ get `03 07 01` (already authorized) and skip the button press.
 
 ---
 
+## 17. Official Fossil App: Add/Remove Watch BLE Capture (2026-05-20)
+
+**Source:** bugreport4 — full pairing → remove cycle on Pixel 8a + Fossil Q Commuter (HW.0.0)
+
+### Auth De-registration
+
+**The official app does NOT send a de-auth command.** To "remove" the watch:
+1. Normal disconnect
+2. Android deletes the BLE link key (`Delete Stored Link Key` HCI command)
+3. The watch detects the bond is gone → clears its auth state
+
+This means auth is tied to the **BLE bond**, not a Fossil protocol command.
+Our CLI uses `trust` + `connect` (no BLE pairing), so `bluetoothctl remove`
+doesn't clear the watch's auth because there was never a proper bond.
+
+**To force fresh auth:** Need to do actual BLE pairing (`bluetoothctl pair`)
+so the watch stores a bond, then `remove` to clear it.
+
+### Auth Flow (Fresh Pairing)
+
+The official app skips `GET_USER_AUTHORIZATION_STATUS` (`01 07`) entirely.
+On fresh pairing it goes straight to `PROCESS_USER_AUTHORIZATION` (`02 06`):
+```
+App → Watch:  02 06 30 75 00 00 01   (30s timeout, removeOtherPhones=true)
+[5.4 seconds pass — user presses button]
+Watch → App:  03 06 00 01             (ACCEPTED)
+```
+
+### Notification Filter (7 entries, 224 bytes)
+
+The official app uploads the notification filter during initial setup:
+
+| # | CRC | Vibe | Hand Position | Likely App |
+|---|-----|------|--------------|------------|
+| 1 | 0xBA3DC156 | DEFAULT (4) | 359°/359° | `bundleId.all` (catch-all) |
+| 2 | 0xD1BE8F35 | DEFAULT (4) | 30°/30° | Unknown app |
+| 3 | 0xB7590080 | CALL (1) | 60°/60° | Phone/Dialer |
+| 4 | 0x8B56BE06 | TEXT (2) | 60°/60° | SMS/Messages |
+| 5 | 0x40C7ED7C | DEFAULT (4) | 90°/90° | Unknown app |
+| 6 | 0xA515ECD5 | DEFAULT (4) | 120°/120° | Unknown app |
+| 7 | 0x5B2EB595 | DEFAULT (4) | 330°/330° | Unknown app |
+
+All entries: group=0, priority=0, subeye=-1 (no move), duration=10000ms, subeye2=-2 (device default).
+
+### Other Observations
+
+- **4 pending notifications replayed** immediately after filter upload (WhatsApp messages)
+- **Activity data downloaded and deleted** before disconnect (file handle 0x0002)
+- **Config re-synced** after activity download (full device info + config + buttons)
+- **No notification settings page visited** but filter was still uploaded with 7 entries
+  (default filter from app's initial setup wizard)
+
+---
+
+## 16. dbus-java Transport (2026-05-20)
+
+**Date:** 2026-05-20
+
+**Goal:** Eliminate subprocess overhead (busctl/bluetoothctl/gdbus) by using
+dbus-java + bluez-dbus for direct D-Bus access to BlueZ.
+
+**Implementation:** `DbusTransport.java` using `bluez-dbus` 0.3.2 (which wraps
+`dbus-java` 5.x). Single persistent `DBusConnection` replaces 3 subprocess
+processes:
+
+| Subprocess replaced | dbus-java equivalent |
+|--------------------|---------------------|
+| `busctl call ... ReadValue/WriteValue` | `BluetoothGattCharacteristic.readValue()/writeValue()` |
+| `busctl tree/get-property` (discovery) | `BluetoothDevice.getGattServices()` (one call) |
+| persistent `bluetoothctl` (StartNotify) | `BluetoothGattCharacteristic.startNotify()` (D-Bus connection persists) |
+| `gdbus monitor` (notifications) | `PropertiesChanged` signal handler (direct callback) |
+
+**Key implementation details:**
+
+1. **DeviceManager singleton:** `DeviceManager.createInstance(false)` opens the system bus.
+   `scanForBluetoothAdapters()` + `findBtDevicesByIntrospection()` for device lookup.
+
+2. **MTU property type:** `Properties.Get()` returns `UInt16` directly (not `Variant<UInt16>`).
+   Must handle both unwrapped and wrapped forms.
+
+3. **StartNotify on Fossil chars:** `BluezNotPermittedException` is expected (CCCD write fails
+   without BLE bonding), but notifications still work via the signal handler. Count as success.
+
+4. **PropertiesChanged handler:** Registered globally on the D-Bus connection. Filters by
+   path → UUID mapping for characteristic Value changes, and by device path for Connected changes.
+
+5. **Value extraction:** D-Bus `Value` property arrives as `byte[]` or `List<Byte>` — both
+   must be handled.
+
+6. **GATT retry:** Same BlueZ GATT resolution issue as subprocess transport. First connect
+   after `bluetoothctl remove` sometimes fails GATT discovery. Retry up to 3 times.
+
+**Performance comparison (reconnect, no GATT retry):**
+
+| Transport | Reconnect | Notes |
+|-----------|-----------|-------|
+| dbus-java | **~5-7s** | Direct D-Bus calls, ~1ms per BLE op |
+| subprocess | ~8s | fork/exec per call, ~50-100ms per BLE op |
+
+**Tested commands:** info, time, find, notify — all working.
+
+---
+
 ## 13. BlueZ Quirks Encountered
 
 | Issue | Impact | Workaround |

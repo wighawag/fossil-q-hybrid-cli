@@ -35,6 +35,9 @@ public class Main implements Runnable {
     @Option(names = {"-d", "--device"}, description = "Watch MAC address (e.g. AA:BB:CC:DD:EE:FF)", scope = ScopeType.INHERIT)
     String macAddress;
 
+    @Option(names = {"--subprocess"}, description = "Use subprocess-based BLE transport (bluetoothctl/busctl/gdbus) instead of dbus-java", scope = ScopeType.INHERIT)
+    boolean useSubprocess;
+
     @Override
     public void run() {
         CommandLine.usage(this, System.out);
@@ -47,13 +50,20 @@ public class Main implements Runnable {
 
     // --- Shared connection logic ---
 
-    static FossilQAdapter connectAndInit(String mac) {
+    static FossilQAdapter connectAndInit(String mac, boolean useSubprocess) {
         if (mac == null || mac.isBlank()) {
             System.err.println("Error: --device <MAC> is required");
             System.exit(1);
         }
 
-        BluezTransport transport = new BluezTransport();
+        BleTransport transport;
+        if (useSubprocess) {
+            LOG.info("Using subprocess transport (bluetoothctl/busctl/gdbus)");
+            transport = new BluezTransport();
+        } else {
+            LOG.info("Using dbus-java transport (direct D-Bus)");
+            transport = new DbusTransport();
+        }
         if (!transport.connect(mac)) {
             System.err.println("Error: Failed to connect to " + mac);
             System.exit(1);
@@ -86,7 +96,12 @@ public class Main implements Runnable {
                 return 1;
             }
 
-            BluezTransport transport = new BluezTransport();
+            BleTransport transport;
+            if (parent.useSubprocess) {
+                transport = new BluezTransport();
+            } else {
+                transport = new DbusTransport();
+            }
             if (!transport.connect(parent.macAddress)) {
                 System.err.println("Failed to connect");
                 return 1;
@@ -108,7 +123,7 @@ public class Main implements Runnable {
             System.out.println("Protocol: " + (adapter.isFossilProtocol() ? "Fossil (2.x)" : "Misfit (0.x/1.x)"));
 
             adapter.shutdown();
-            transport.close();
+            try { ((AutoCloseable) transport).close(); } catch (Exception e) { /* ignore */ }
             return 0;
         }
     }
@@ -119,7 +134,7 @@ public class Main implements Runnable {
 
         @Override
         public Integer call() {
-            FossilQAdapter adapter = connectAndInit(parent.macAddress);
+            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
             adapter.syncTime();
             System.out.println("Time synced");
             adapter.shutdown();
@@ -146,7 +161,7 @@ public class Main implements Runnable {
 
         @Override
         public Integer call() {
-            FossilQAdapter adapter = connectAndInit(parent.macAddress);
+            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
             // Wait for init animation and notification filter upload to complete
             sleep(5000);
             if (direct) {
@@ -175,7 +190,7 @@ public class Main implements Runnable {
 
         @Override
         public Integer call() {
-            FossilQAdapter adapter = connectAndInit(parent.macAddress);
+            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
             if (stop) {
                 adapter.stopFindDevice();
                 System.out.println("Stopped vibration");
@@ -208,7 +223,7 @@ public class Main implements Runnable {
 
         @Override
         public Integer call() {
-            FossilQAdapter adapter = connectAndInit(parent.macAddress);
+            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
             adapter.requestHandsControl();
             sleep(200);
             adapter.setHands(hourDeg, minDeg, subDeg);
@@ -229,7 +244,7 @@ public class Main implements Runnable {
 
         @Override
         public Integer call() {
-            FossilQAdapter adapter = connectAndInit(parent.macAddress);
+            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
             adapter.saveCalibration();
             System.out.println("Calibration saved");
             adapter.shutdown();
@@ -246,7 +261,7 @@ public class Main implements Runnable {
 
         @Override
         public Integer call() {
-            FossilQAdapter adapter = connectAndInit(parent.macAddress);
+            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
             adapter.setStepGoal(steps);
             System.out.println("Step goal set to " + steps);
             sleep(1000);
@@ -264,7 +279,7 @@ public class Main implements Runnable {
 
         @Override
         public Integer call() {
-            FossilQAdapter adapter = connectAndInit(parent.macAddress);
+            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
             adapter.setVibrationStrength((short) Math.min(100, Math.max(0, strength)));
             System.out.println("Vibration strength set to " + strength);
             sleep(1000);
@@ -282,7 +297,7 @@ public class Main implements Runnable {
 
         @Override
         public Integer call() {
-            FossilQAdapter adapter = connectAndInit(parent.macAddress);
+            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
             adapter.setTimezoneOffset(offsetMinutes);
             System.out.printf("Timezone offset set to %d minutes (%+.1f hours)%n",
                     offsetMinutes, offsetMinutes / 60.0);
@@ -315,7 +330,7 @@ public class Main implements Runnable {
             byte hour = Byte.parseByte(parts[0]);
             byte minute = Byte.parseByte(parts[1]);
 
-            FossilQAdapter adapter = connectAndInit(parent.macAddress);
+            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
 
             Alarm alarm;
             if (days > 0) {
@@ -341,7 +356,7 @@ public class Main implements Runnable {
 
         @Override
         public Integer call() {
-            FossilQAdapter adapter = connectAndInit(parent.macAddress);
+            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
 
             adapter.setOnActivityData(data -> {
                 try {

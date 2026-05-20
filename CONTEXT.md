@@ -23,9 +23,10 @@ java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A notify SINGLE_SHORT
 ```
 src/main/java/
   qhybrid/linux/
-    Main.java              # picocli CLI, 11 subcommands
+    Main.java              # picocli CLI, 11 subcommands, --subprocess flag
     FossilQAdapter.java    # Protocol adapter (request queue, init, dispatch)
-    BluezTransport.java    # BLE via busctl + persistent bluetoothctl + gdbus monitor
+    DbusTransport.java     # BLE via dbus-java + bluez-dbus (default, direct D-Bus)
+    BluezTransport.java    # BLE via busctl + persistent bluetoothctl + gdbus monitor (--subprocess fallback)
     BleTransport.java      # Interface
   android/...              # Android API shims (8 files)
   androidx/...             # Annotation shims (3 files)
@@ -41,8 +42,9 @@ gadgetbridge/              # Vendored GB code (124 files, zero patches, copied b
 3. **Write type from flags** — `command` for notify chars, `request` for indicate chars
 4. **UTC epoch + TimezoneOffsetConfigItem** for time — watch uses the offset to shift display
 5. **Shim classes** instead of patching vendor code — `sync.sh` is pure copy
-6. **Auth on separate thread** — `fossil-auth` thread runs auth handshake to avoid deadlocking `bluez-monitor` thread
-7. **BleTransport interface** — `BluezTransport` (subprocess) and future `DbusTransport` (dbus-java) share the same interface. Adapter/protocol code is transport-agnostic.
+6. **Auth on separate thread** — `fossil-auth` thread runs auth handshake to avoid deadlocking notification delivery thread
+7. **BleTransport interface** — `DbusTransport` (dbus-java, default) and `BluezTransport` (subprocess, `--subprocess` flag) share the same interface. Adapter/protocol code is transport-agnostic.
+8. **dbus-java transport** — `bluez-dbus` 0.3.2 + `dbus-java` 5.x for direct D-Bus calls. Single persistent connection replaces 3 subprocess processes (busctl + bluetoothctl + gdbus). PropertiesChanged signal handler replaces gdbus monitor + regex parsing.
 
 ## Test Hardware
 
@@ -57,23 +59,18 @@ gadgetbridge/              # Vendored GB code (124 files, zero patches, copied b
 
 ## Connection Speed
 
-| Scenario | Time |
-|----------|------|
-| Reconnect (device known+trusted) | ~8s to initialized |
-| Clean state (first connect) | ~13-30s (GATT retry may be needed) |
+| Transport | Reconnect | Clean (GATT retry) | Notes |
+|-----------|-----------|---------------------|-------|
+| dbus-java (default) | **~5-7s** | ~12-18s | Direct D-Bus calls, ~1ms per BLE op |
+| subprocess (`--subprocess`) | ~8s | ~13-30s | busctl/bluetoothctl/gdbus |
 
-Key optimizations (2026-05-20): faster polling (500ms→250ms), faster notification
-enable (700ms→200ms per char), GATT fail-fast (15s→5s) with direct reconnect retry
-(up to 2 retries, no re-scan), stale "In Progress" connection handling.
-
-**Future:** dbus-java transport (DBUS-JAVA-MIGRATION.md) would reduce to ~3-5s by
-eliminating subprocess overhead (~50-100ms per BLE operation → ~1ms).
+GATT retry is a BlueZ/firmware issue (not transport-specific) — adds ~6.5s when triggered.
 
 ## Key Docs
 
 | File | Purpose |
 |------|---------|
-| DBUS-JAVA-MIGRATION.md | Plan to add dbus-java transport (eliminate subprocess BLE calls) |
+| DBUS-JAVA-MIGRATION.md | Plan for dbus-java transport (implemented, kept for reference) |
 | AUTHENTICATION-PLAN.md | Full auth protocol decode + plan to crack notification system |
 | FINDINGS.md | 15 technical discoveries from real-hardware testing |
 | TODO.md | Feature checklist with priorities |
@@ -99,6 +96,11 @@ vibration + hand animation. The `findDevice()` workaround has been removed.
 
 **On reconnect:** Auth persists — step 2 is skipped (instant init).
 
+**Post-auth BLE pairing:** After Fossil auth succeeds (`03 06 00 01`), the app
+triggers BLE pairing (`device.pair()`) to create a bond. This ties the auth state
+to the BLE link key. When the bond is removed (`bluetoothctl remove`), the watch
+clears its auth. Our `registerAgent()` provides a "Just Works" agent for auto-confirm.
+
 **Filter format:** Fully decoded, byte-identical to official Fossil app (verified).
 
 **Implementation notes:**
@@ -119,9 +121,12 @@ vibration + hand animation. The `findDevice()` workaround has been removed.
 - **GATT services fail on first connect** after `bluetoothctl remove` — auto-retry (up to 3 attempts) handles this. BlueZ caches service layout across retries.
 - **Stale "In Progress" connections** — a previous failed connect can block new ones. Disconnect before connecting to clear.
 - **`bluetoothctl pair` always fails** — Fossil uses its own auth, not BLE pairing. Just `trust` + `connect`
+- **Auth tied to BLE bond** — watch clears auth when BLE link key is deleted (official app's "remove watch"). Our `trust`+`connect` never creates a bond, so `bluetoothctl remove` doesn't clear auth.
 - **gdbus byte literal format** — GLib 2.84+ uses `b'\003\007'` for small byte arrays, `[byte 0x03, 0x07]` for larger ones. Both must be parsed.
 - **Auth indication deadlock** — auth must run on a separate thread from `bluez-monitor` (which delivers the indications via CompletableFuture)
 - **2-byte auth status** — watch sends `03 07` (2 bytes) for status=0x00, not `03 07 00`. Handle missing trailing null.
+- **dbus-java Properties.Get() unwraps Variant** — returns `UInt16` directly, not `Variant<UInt16>`. Must handle both forms when reading MTU.
+- **StartNotify throws NotPermitted on Fossil chars** — expected without BLE bonding. Notifications still delivered via PropertiesChanged signal handler.
 
 ## BLE Captures
 

@@ -648,6 +648,17 @@ public class FossilQAdapter {
         byte userAction = confirmResponse[confirmResponse.length - 1];
         if (userAction == 0x01) {
             LOG.info("Authorization ACCEPTED — notification filters will now take effect!");
+
+            // Initiate BLE pairing immediately after auth succeeds.
+            // The official Fossil app does this — it creates a BLE bond (link key)
+            // that ties the auth state to the connection. When the bond is later
+            // removed (bluetoothctl remove / Android unpair), the watch clears
+            // its auth state, requiring re-auth on next connect.
+            try {
+                transport.pair();
+            } catch (Exception e) {
+                LOG.warn("BLE pairing failed: {} — continuing without bond", e.getMessage());
+            }
         } else {
             LOG.warn("Authorization REJECTED (action=0x{}) — notification filters will be ignored",
                     String.format("%02X", userAction));
@@ -1113,5 +1124,12 @@ public class FossilQAdapter {
 
     public void shutdown() {
         timeoutExecutor.shutdownNow();
+        if (transport instanceof AutoCloseable) {
+            try {
+                ((AutoCloseable) transport).close();
+            } catch (Exception e) {
+                LOG.debug("Error closing transport", e);
+            }
+        }
     }
 }
