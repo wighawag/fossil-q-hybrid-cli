@@ -369,16 +369,25 @@ get `03 07 01` (already authorized) and skip the button press.
 2. Android deletes the BLE link key (`Delete Stored Link Key` HCI command)
 3. The watch detects the bond is gone → clears its auth state
 
-**UPDATE (tested 2026-05-20):** Removing the BLE bond (`bluetoothctl remove`)
-does NOT clear the watch's auth state. After `remove` + re-scan + connect,
-the watch still reports `03 07 01` (already authorized). The auth persists in
-firmware regardless of bond state. The official app may use a factory reset
-command or the watch's built-in "hold middle button" reset to clear auth.
+**UPDATE (tested 2026-05-20):** Auth clearance is triggered by the bonded partner
+deleting its link key, causing the watch's auto-reconnect to be rejected.
+
+Experiment results:
+- `bluetoothctl remove` from laptop + immediate reconnect: auth NOT cleared (`03 07 01`)
+  → Watch didn't try to auto-reconnect to laptop, never detected missing bond
+- Pair with phone → Android "Forget" (no Fossil app remove) → connect from laptop:
+  auth CLEARED (`03 07 00`) → Watch tried to auto-reconnect to phone, got rejected
+- The Fossil app's remove sequence writes identical files as setup — no de-auth command
+
+**Conclusion:** Auth clears when the watch attempts auto-reconnect to its bonded partner
+and the partner rejects it (link key deleted). No Fossil protocol de-auth command exists.
+The trigger is purely at the BLE/SMP layer.
 
 Our CLI now pairs via `pair` command or post-auth. Bond provides:
 - Encrypted link (CCCD writes work properly)
 - WakeAllowed=yes for auto-reconnect
 - Faster reconnect (no re-scan needed, device stays known)
+- To clear auth: remove bond from a device the watch actively auto-reconnects to
 
 ### Auth Flow (Fresh Pairing)
 

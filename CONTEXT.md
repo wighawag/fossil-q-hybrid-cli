@@ -99,7 +99,8 @@ vibration + hand animation. The `findDevice()` workaround has been removed.
 **Post-auth BLE pairing:** After Fossil auth succeeds (`03 06 00 01`), the app
 triggers BLE pairing (`device.pair()`) to create a bond. Our `registerAgent()`
 provides a "Just Works" agent (raw `Agent1` impl with `DBusPath`/`UInt32` types).
-Note: removing the bond does NOT clear watch auth (auth persists in firmware).
+Auth clears when bonded partner deletes its link key AND the watch attempts
+auto-reconnect (gets rejected at SMP layer). No Fossil de-auth command exists.
 Bond benefits: encrypted link, WakeAllowed, faster reconnect (device stays known).
 
 **Filter format:** Fully decoded, byte-identical to official Fossil app (verified).
