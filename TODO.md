@@ -111,10 +111,12 @@ Watch: Fossil Q Commuter (HW.0.0), Firmware HW0.0.2.9r.v3, Fossil protocol (2.x)
 - [x] **DbusTransport (dbus-java)** — direct D-Bus calls via bluez-dbus 0.3.2. Default transport.
       BluezTransport kept as `--subprocess` fallback. ~5-7s reconnect (vs ~8s subprocess).
       Eliminates: subprocess fork/exec, stdout parsing, persistent bluetoothctl, gdbus monitor.
-- [x] **BLE pairing after auth** — `pair()` called after Fossil auth accepted. Agent registered
-      for Just Works auto-confirm. Bond provides encrypted link + WakeAllowed + faster reconnect.
-      Note: removing bond does NOT clear watch auth (auth persists in firmware).
-      Tested: agent + pair code compiles and is called; actual pairing needs fresh auth state to test.
+- [x] **BLE pairing after auth** — `pair()` called after Fossil auth accepted + on reconnect if
+      not yet bonded. Raw `Agent1` impl registered for Just Works auto-confirm. Tested end-to-end:
+      fresh auth → button press → pair → bond created. Also works on reconnect (already auth'd).
+      Bond provides: encrypted link, WakeAllowed, faster reconnect (~5.9s vs ~9s).
+      Auth clears when bonded partner deletes key + watch auto-reconnect is rejected (SMP layer).
+- [x] **`pair` CLI command** — `fossil-q pair` connects, inits, and triggers BLE pairing.
 - [ ] Auto-reconnect on disconnect
 - [ ] Connection persistence (don't re-init on every command)
 - [ ] Daemon mode — stay connected, accept commands via IPC/socket
