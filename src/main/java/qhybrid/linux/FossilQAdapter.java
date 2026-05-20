@@ -96,6 +96,7 @@ public class FossilQAdapter {
     // Callbacks for CLI
     private Runnable onInitialized;
     private java.util.function.Consumer<byte[]> onActivityData;
+    private java.util.function.Consumer<String> onEventJson;
 
     public FossilQAdapter(BleTransport transport) {
         this.transport = transport;
@@ -465,6 +466,14 @@ public class FossilQAdapter {
         this.onActivityData = callback;
     }
 
+    /**
+     * Set callback for async events from the watch (button presses, heartbeats, JSON messages, etc.).
+     * The callback receives one JSON string per event, suitable for outputting as NDJSON.
+     */
+    public void setOnEventJson(java.util.function.Consumer<String> callback) {
+        this.onEventJson = callback;
+    }
+
     // ========== Device info ==========
 
     public String getFirmwareVersion() { return firmwareVersion; }
@@ -700,19 +709,11 @@ public class FossilQAdapter {
                 generateTimeConfigItem()
         }, shimAdapter), false);
 
-        // Sync button settings (default: all forward to phone)
-        ConfigPayload[] payloads = new ConfigPayload[]{
-                ConfigPayload.FORWARD_TO_PHONE,
-                ConfigPayload.FORWARD_TO_PHONE,
-                ConfigPayload.FORWARD_TO_PHONE
-        };
-        ConfigFileBuilder builder = new ConfigFileBuilder(payloads);
-        queueWrite(new FilePutRequest(FileHandle.SETTINGS_BUTTONS, builder.build(true), shimAdapter) {
-            @Override
-            public void onFilePut(boolean success) {
-                LOG.debug("Button config init: {}", success ? "success" : "FAILED");
-            }
-        }, false);
+        // NOTE: Do NOT overwrite button settings during init.
+        // The watch persists button config across connections. Overwriting
+        // would reset user's stopwatch/music/etc. button assignments.
+        // Button config is only written when the user explicitly requests it
+        // via the CLI (e.g. future `buttons` command).
     }
 
     /**
@@ -1065,35 +1066,268 @@ public class FossilQAdapter {
         }
     }
 
+    /**
+     * Handle async events on 3dda0006.
+     *
+     * Binary format: [opCode(1)] [eventType(1)] [sequence(1)] [data...]
+     *   opCode: 0x01=REQUEST, 0x02=NOTIFY
+     *   eventType values (from official Fossil app AsyncEventType):
+     *     0x01 = JSON_FILE_EVENT       (watch sends JSON messages)
+     *     0x02 = HEARTBEAT_EVENT       (periodic heartbeat)
+     *     0x03 = CONNECTION_PARAM_CHANGE_EVENT
+     *     0x04 = APP_NOTIFICATION_EVENT (notification control: dismiss/accept/reply)
+     *     0x05 = MUSIC_EVENT           (music control: play/pause/next/prev)
+     *     0x06 = BACKGROUND_SYNC_EVENT (background sync frames)
+     *     0x07 = SERVICE_CHANGE_EVENT
+     *     0x08 = MICRO_APP_EVENT       (micro app events from button actions)
+     *     0x09 = AUTHENTICATION_REQUEST_EVENT
+     *     0x0B = TIME_SYNC_EVENT
+     *     0x0C = BATTERY_EVENT
+     *     0x0D = ENCRYPTED_DATA
+     *     0x0F = ALARM_SYNC_EVENT
+     *     0x10 = WATCH_APP_SYNC_EVENT
+     *     0x11 = WATCH_APP_EVENT
+     */
     private void handleButtonEvent(byte[] value) {
         if (value.length < 3) return;
+
+        byte opCode = value[0];
         byte eventType = value[1];
+        byte sequence = value[2];
+        byte[] eventData = (value.length > 3) ? java.util.Arrays.copyOfRange(value, 3, value.length) : new byte[0];
+
+        String opCodeStr = (opCode == 0x01) ? "REQUEST" : (opCode == 0x02) ? "NOTIFY" : String.format("0x%02X", opCode);
 
         switch (eventType) {
-            case 0x02: // Heartbeat
-                LOG.debug("Watch heartbeat");
+            case 0x01: // JSON_FILE_EVENT
+                handleJsonFileEvent(sequence, eventData);
                 break;
-            case 0x08: // Button press (Fossil protocol)
-                if (value.length >= 10) {
-                    int button = (value[9] >> 4) & 0xFF;
-                    LOG.info("Button press: button {}", button);
-                }
+            case 0x02: // HEARTBEAT_EVENT
+                LOG.debug("Watch heartbeat (seq={})", sequence);
+                emitEvent("{\"type\":\"heartbeat\",\"sequence\":" + (sequence & 0xFF)
+                        + ",\"timestamp\":\"" + nowIso8601() + "\"}");
                 break;
-            case 0x05: // Multi-button press
-                if (value.length >= 4) {
-                    int action = value[3];
-                    String actionStr = switch (action) {
-                        case 1 -> "SINGLE";
-                        case 3 -> "DOUBLE";
-                        case 4 -> "LONG";
-                        default -> "UNKNOWN(" + action + ")";
-                    };
-                    LOG.info("Multi-button action: {}", actionStr);
-                }
+            case 0x04: // APP_NOTIFICATION_EVENT
+                handleAppNotificationEvent(sequence, eventData);
+                break;
+            case 0x05: // MUSIC_EVENT
+                handleMusicEvent(sequence, eventData);
+                break;
+            case 0x06: // BACKGROUND_SYNC_EVENT
+                LOG.debug("Background sync event (seq={}, {} bytes data)", sequence, eventData.length);
+                emitEvent("{\"type\":\"background_sync\",\"sequence\":" + (sequence & 0xFF)
+                        + ",\"dataHex\":\"" + bytesToHex(eventData)
+                        + "\",\"timestamp\":\"" + nowIso8601() + "\"}");
+                break;
+            case 0x07: // SERVICE_CHANGE_EVENT
+                LOG.info("Service change event (seq={})", sequence);
+                emitEvent("{\"type\":\"service_change\",\"sequence\":" + (sequence & 0xFF)
+                        + ",\"timestamp\":\"" + nowIso8601() + "\"}");
+                break;
+            case 0x08: // MICRO_APP_EVENT
+                handleMicroAppEvent(sequence, eventData);
+                break;
+            case 0x09: // AUTHENTICATION_REQUEST_EVENT
+                LOG.info("Authentication request event (seq={})", sequence);
+                emitEvent("{\"type\":\"auth_request\",\"sequence\":" + (sequence & 0xFF)
+                        + ",\"timestamp\":\"" + nowIso8601() + "\"}");
+                break;
+            case 0x0B: // TIME_SYNC_EVENT
+                LOG.debug("Time sync event (seq={})", sequence);
+                emitEvent("{\"type\":\"time_sync\",\"sequence\":" + (sequence & 0xFF)
+                        + ",\"timestamp\":\"" + nowIso8601() + "\"}");
+                break;
+            case 0x0C: // BATTERY_EVENT
+                handleBatteryEvent(sequence, eventData);
+                break;
+            case 0x0F: // ALARM_SYNC_EVENT
+                LOG.debug("Alarm sync event (seq={}, {} bytes)", sequence, eventData.length);
+                emitEvent("{\"type\":\"alarm_sync\",\"sequence\":" + (sequence & 0xFF)
+                        + ",\"dataHex\":\"" + bytesToHex(eventData)
+                        + "\",\"timestamp\":\"" + nowIso8601() + "\"}");
+                break;
+            case 0x10: // WATCH_APP_SYNC_EVENT
+                LOG.debug("Watch app sync event (seq={}, {} bytes)", sequence, eventData.length);
+                emitEvent("{\"type\":\"watch_app_sync\",\"sequence\":" + (sequence & 0xFF)
+                        + ",\"dataHex\":\"" + bytesToHex(eventData)
+                        + "\",\"timestamp\":\"" + nowIso8601() + "\"}");
                 break;
             default:
-                LOG.debug("Unknown button event type: 0x{}", String.format("%02X", eventType));
+                LOG.debug("Unknown async event: op={} type=0x{} seq={} data={}",
+                        opCodeStr, String.format("%02X", eventType), sequence, bytesToHex(eventData));
+                emitEvent("{\"type\":\"unknown\",\"opCode\":" + (opCode & 0xFF)
+                        + ",\"eventType\":" + (eventType & 0xFF)
+                        + ",\"sequence\":" + (sequence & 0xFF)
+                        + ",\"dataHex\":\"" + bytesToHex(eventData)
+                        + "\",\"timestamp\":\"" + nowIso8601() + "\"}");
         }
+    }
+
+    private void handleJsonFileEvent(byte sequence, byte[] eventData) {
+        try {
+            String json = new String(eventData, java.nio.charset.StandardCharsets.UTF_8);
+            LOG.info("JSON event (seq={}): {}", sequence, json);
+            // Escape the JSON for embedding — since it's valid JSON, we can embed it raw
+            emitEvent("{\"type\":\"json\",\"sequence\":" + (sequence & 0xFF)
+                    + ",\"data\":" + json
+                    + ",\"timestamp\":\"" + nowIso8601() + "\"}");
+        } catch (Exception e) {
+            LOG.warn("Failed to parse JSON event: {}", bytesToHex(eventData));
+        }
+    }
+
+    private void handleMusicEvent(byte sequence, byte[] eventData) {
+        if (eventData.length < 1) {
+            LOG.debug("Music event with no data (seq={})", sequence);
+            return;
+        }
+        String action = switch (eventData[0] & 0xFF) {
+            case 0 -> "PLAY";
+            case 1 -> "PAUSE";
+            case 2 -> "TOGGLE_PLAY_PAUSE";
+            case 3 -> "NEXT";
+            case 4 -> "PREVIOUS";
+            case 5 -> "VOLUME_UP";
+            case 6 -> "VOLUME_DOWN";
+            default -> "UNKNOWN_" + (eventData[0] & 0xFF);
+        };
+        LOG.info("Music control: {} (seq={})", action, sequence);
+        emitEvent("{\"type\":\"music\",\"action\":\"" + action + "\",\"sequence\":" + (sequence & 0xFF)
+                + ",\"timestamp\":\"" + nowIso8601() + "\"}");
+    }
+
+    private void handleAppNotificationEvent(byte sequence, byte[] eventData) {
+        if (eventData.length < 5) {
+            LOG.debug("App notification event too short (seq={}, {} bytes)", sequence, eventData.length);
+            return;
+        }
+        int notificationId = java.nio.ByteBuffer.wrap(eventData, 0, 4)
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN).getInt();
+        int actionByte = eventData[4] & 0xFF;
+        String action = switch (actionByte) {
+            case 0 -> "ACCEPT_CALL";
+            case 1 -> "REJECT_CALL";
+            case 2 -> "DISMISS";
+            case 3 -> "REPLY";
+            default -> "UNKNOWN_" + actionByte;
+        };
+        LOG.info("App notification control: {} id={} (seq={})", action, notificationId, sequence);
+        emitEvent("{\"type\":\"notification_control\",\"action\":\"" + action
+                + "\",\"notificationId\":" + notificationId
+                + ",\"sequence\":" + (sequence & 0xFF)
+                + ",\"timestamp\":\"" + nowIso8601() + "\"}");
+    }
+
+    // declarationId → (MicroAppId name, MicroAppVariant name)
+    // From official Fossil app MicroAppUtility.UAPP_MAPPING
+    private static final java.util.Map<Integer, String[]> MICRO_APP_MAP = java.util.Map.ofEntries(
+        java.util.Map.entry(1025,  new String[]{"GOAL_TRACKING", "STANDARD"}),
+        java.util.Map.entry(3073,  new String[]{"RING_PHONE", "STANDARD"}),
+        java.util.Map.entry(4097,  new String[]{"SELFIE", "STANDARD"}),
+        java.util.Map.entry(4609,  new String[]{"MUSIC_CONTROL", "PLAY_PAUSE"}),
+        java.util.Map.entry(4610,  new String[]{"MUSIC_CONTROL", "NEXT"}),
+        java.util.Map.entry(4611,  new String[]{"MUSIC_CONTROL", "PREVIOUS"}),
+        java.util.Map.entry(4612,  new String[]{"MUSIC_CONTROL", "VOLUME_UP"}),
+        java.util.Map.entry(4613,  new String[]{"MUSIC_CONTROL", "VOLUME_DOWN"}),
+        java.util.Map.entry(4614,  new String[]{"MUSIC_CONTROL", "STANDARD"}),
+        java.util.Map.entry(5121,  new String[]{"DATE", "STANDARD"}),
+        java.util.Map.entry(5122,  new String[]{"DATE", "SEQUENCED"}),
+        java.util.Map.entry(5633,  new String[]{"TIME2", "STANDARD"}),
+        java.util.Map.entry(5634,  new String[]{"TIME2", "SEQUENCED"}),
+        java.util.Map.entry(6145,  new String[]{"ALERT", "STANDARD"}),
+        java.util.Map.entry(6146,  new String[]{"ALERT", "SEQUENCED"}),
+        java.util.Map.entry(6657,  new String[]{"ALARM", "STANDARD"}),
+        java.util.Map.entry(6658,  new String[]{"ALARM", "SEQUENCED"}),
+        java.util.Map.entry(7169,  new String[]{"PROGRESS", "STANDARD"}),
+        java.util.Map.entry(7170,  new String[]{"PROGRESS", "SWEEP"}),
+        java.util.Map.entry(7681,  new String[]{"TWENTY_FOUR_HOUR", "STANDARD"}),
+        java.util.Map.entry(7682,  new String[]{"TWENTY_FOUR_HOUR", "SEQUENCED"}),
+        java.util.Map.entry(8193,  new String[]{"STOPWATCH", "STANDARD"}),
+        java.util.Map.entry(8705,  new String[]{"WEATHER", "STANDARD"}),
+        java.util.Map.entry(9217,  new String[]{"COMMUTE_TIME", "TRAVEL"}),
+        java.util.Map.entry(9218,  new String[]{"COMMUTE_TIME", "ETA"})
+    );
+
+    private static String buttonName(int eventId) {
+        int buttonIdx = (eventId >> 4) & 0x0F;
+        return switch (buttonIdx) {
+            case 1 -> "TOP";
+            case 2 -> "MIDDLE";
+            case 3 -> "BOTTOM";
+            default -> "BUTTON_" + buttonIdx;
+        };
+    }
+
+    /**
+     * Parse micro app events (eventType=0x08).
+     * Data format (from official app MicroAppEvent.java):
+     *   [version(1)] [declarationId(2 LE)] [variationNumber(1)] [contextNumber(1)]
+     *   [activityId(1)] [eventId(1)] [requestId(1)] [microAppEvent(1)]
+     *
+     * eventId high nibble = button index: 0x10=TOP, 0x20=MIDDLE, 0x30=BOTTOM
+     * declarationId maps to MicroAppId (RING_PHONE, STOPWATCH, MUSIC_CONTROL, etc.)
+     */
+    private void handleMicroAppEvent(byte sequence, byte[] eventData) {
+        if (eventData.length < 9) {
+            LOG.debug("Micro app event too short (seq={}, {} bytes)", sequence, eventData.length);
+            emitEvent("{\"type\":\"micro_app\",\"sequence\":" + (sequence & 0xFF)
+                    + ",\"dataHex\":\"" + bytesToHex(eventData)
+                    + "\",\"timestamp\":\"" + nowIso8601() + "\"}");
+            return;
+        }
+        java.nio.ByteBuffer buf = java.nio.ByteBuffer.wrap(eventData).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        int version = buf.get(0) & 0xFF;
+        int declarationId = buf.getShort(1) & 0xFFFF;
+        int variationNumber = buf.get(3) & 0xFF;
+        int contextNumber = buf.get(4) & 0xFF;
+        int activityId = buf.get(5) & 0xFF;
+        int eventId = buf.get(6) & 0xFF;
+        int requestId = buf.get(7) & 0xFF;
+        int microAppEvent = buf.get(8) & 0xFF;
+
+        String button = buttonName(eventId);
+        String[] appInfo = MICRO_APP_MAP.get(declarationId);
+        String appName = (appInfo != null) ? appInfo[0] : "UNKNOWN_" + declarationId;
+        String appVariant = (appInfo != null) ? appInfo[1] : "UNKNOWN";
+
+        LOG.info("Button press: {} → {} ({}) seq={}", button, appName, appVariant, sequence);
+
+        emitEvent("{\"type\":\"button\",\"button\":\"" + button
+                + "\",\"app\":\"" + appName
+                + "\",\"variant\":\"" + appVariant
+                + "\",\"declarationId\":" + declarationId
+                + ",\"eventId\":" + eventId
+                + ",\"sequence\":" + (sequence & 0xFF)
+                + ",\"timestamp\":\"" + nowIso8601() + "\"}");
+    }
+
+    private void handleBatteryEvent(byte sequence, byte[] eventData) {
+        if (eventData.length < 2) {
+            LOG.debug("Battery event too short (seq={}, {} bytes)", sequence, eventData.length);
+            return;
+        }
+        int stateId = eventData[0] & 0xFF;
+        int level = eventData[1] & 0xFF;
+        String state = switch (stateId) {
+            case 0 -> "DISCHARGING";
+            case 1 -> "CHARGING";
+            case 2 -> "FULL";
+            default -> "UNKNOWN_" + stateId;
+        };
+        LOG.info("Battery event: state={} level={}% (seq={})", state, level, sequence);
+        emitEvent("{\"type\":\"battery\",\"state\":\"" + state + "\",\"level\":" + level
+                + ",\"sequence\":" + (sequence & 0xFF)
+                + ",\"timestamp\":\"" + nowIso8601() + "\"}");
+    }
+
+    private void emitEvent(String json) {
+        if (onEventJson != null) {
+            onEventJson.accept(json);
+        }
+    }
+
+    private static String nowIso8601() {
+        return java.time.Instant.now().toString();
     }
 
     private void onMtuChanged(int newMtu) {

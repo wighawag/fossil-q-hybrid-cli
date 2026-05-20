@@ -24,3 +24,5 @@ gradle-app.setting
 !gradle-wrapper.properties
 
 *.bin
+
+*.log

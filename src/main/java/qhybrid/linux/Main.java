@@ -1,5 +1,6 @@
 package qhybrid.linux;
 
+import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.buttonconfig.ConfigPayload;
 import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.alarm.Alarm;
 import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.misfit.PlayNotificationRequest.VibrationType;
 import org.slf4j.Logger;
@@ -29,6 +30,8 @@ import java.util.concurrent.Callable;
                 Main.AlarmCmd.class,
                 Main.ActivityCmd.class,
                 Main.PairCmd.class,
+                Main.MonitorCmd.class,
+                Main.ButtonsCmd.class,
         })
 public class Main implements Runnable {
     private static final Logger LOG = LoggerFactory.getLogger("fossil-q");
@@ -365,6 +368,96 @@ public class Main implements Runnable {
             }
             adapter.shutdown();
             return ok ? 0 : 1;
+        }
+    }
+
+    @Command(name = "buttons", mixinStandardHelpOptions = true,
+             description = "Set button functions. Available: forward_to_phone, stopwatch, date, music, " +
+                     "volume_up, volume_down, step_goal, last_notification, second_timezone, ring_phone")
+    static class ButtonsCmd implements Callable<Integer> {
+        @ParentCommand Main parent;
+
+        @Parameters(index = "0", description = "Top button function")
+        String top;
+
+        @Parameters(index = "1", description = "Middle button function")
+        String middle;
+
+        @Parameters(index = "2", description = "Bottom button function")
+        String bottom;
+
+        @Override
+        public Integer call() {
+            ConfigPayload topPayload = parsePayload(top, "top");
+            ConfigPayload middlePayload = parsePayload(middle, "middle");
+            ConfigPayload bottomPayload = parsePayload(bottom, "bottom");
+            if (topPayload == null || middlePayload == null || bottomPayload == null) return 1;
+
+            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+            adapter.overwriteButtons(new ConfigPayload[]{topPayload, middlePayload, bottomPayload});
+            System.out.printf("Buttons set: TOP=%s, MIDDLE=%s, BOTTOM=%s%n", top, middle, bottom);
+            sleep(2000);
+            adapter.shutdown();
+            return 0;
+        }
+
+        private ConfigPayload parsePayload(String name, String position) {
+            return switch (name.toLowerCase().replace("-", "_")) {
+                case "forward", "forward_to_phone", "phone" -> ConfigPayload.FORWARD_TO_PHONE;
+                case "stopwatch", "stop_watch" -> ConfigPayload.STOPWATCH;
+                case "date", "show_date" -> ConfigPayload.DATE;
+                case "music", "music_control" -> ConfigPayload.MUSIC_CONTROL;
+                case "volume_up", "vol_up" -> ConfigPayload.VOLUME_UP;
+                case "volume_down", "vol_down" -> ConfigPayload.VOLUME_DOWN;
+                case "step_goal", "steps", "goal" -> ConfigPayload.STEP_GOAL_COMPLETION;
+                case "last_notification", "notification", "notif" -> ConfigPayload.LAST_NOTIFICATION;
+                case "second_timezone", "timezone2", "tz2" -> ConfigPayload.SECOND_TIMEZONE;
+                case "ring_phone", "ring" -> ConfigPayload.RING_PHONE;
+                default -> {
+                    System.err.printf("Unknown button function '%s' for %s button.%n", name, position);
+                    System.err.println("Available: forward_to_phone, stopwatch, date, music, volume_up, " +
+                            "volume_down, step_goal, last_notification, second_timezone, ring_phone");
+                    yield null;
+                }
+            };
+        }
+    }
+
+    @Command(name = "monitor", mixinStandardHelpOptions = true,
+             description = "Listen for watch events (button presses, heartbeats, JSON messages). Ctrl+C to stop.")
+    static class MonitorCmd implements Callable<Integer> {
+        @ParentCommand Main parent;
+
+        @Override
+        public Integer call() {
+            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+
+            // Set up NDJSON event output to stdout
+            adapter.setOnEventJson(json -> System.out.println(json));
+
+            System.err.println("Monitoring watch events... (Ctrl+C to stop)");
+            System.err.println("Events will be printed as JSON lines to stdout.");
+
+            // Install shutdown hook for graceful cleanup
+            Thread mainThread = Thread.currentThread();
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                System.err.println("\nShutting down...");
+                adapter.shutdown();
+                mainThread.interrupt();
+            }, "monitor-shutdown"));
+
+            // Block until interrupted (Ctrl+C triggers shutdown hook)
+            try {
+                while (adapter.getTransport().isConnected()) {
+                    Thread.sleep(1000);
+                }
+                System.err.println("Watch disconnected.");
+            } catch (InterruptedException e) {
+                // Expected from shutdown hook
+                Thread.currentThread().interrupt();
+            }
+
+            return 0;
         }
     }
 
