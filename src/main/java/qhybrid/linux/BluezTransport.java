@@ -515,9 +515,9 @@ public class BluezTransport implements BleTransport, AutoCloseable {
     /**
      * Parse gdbus monitor output for Value property changes.
      *
-     * gdbus monitor format:
-     * /org/bluez/.../charNNNN: org.freedesktop.DBus.Properties.PropertiesChanged
-     *   ('org.bluez.GattCharacteristic1', {'Value': <[byte 0x01, 0x02, ...]>}, @as [])
+     * gdbus monitor format (GLib 2.84+):
+     *   Large arrays:  'Value': <[byte 0x01, 0x02, ...]>
+     *   Small arrays:  'Value': <b'\003\007\000'>   (Python byte literal with octal/hex escapes)
      *
      * Also watches for Connected property changes on the device path.
      */
@@ -529,8 +529,8 @@ public class BluezTransport implements BleTransport, AutoCloseable {
             Pattern pathPattern = Pattern.compile("^(/org/bluez/[^:]+): ");
             // Pattern to match Value byte array: 'Value': <[byte 0x01, 0x02, ...]>
             Pattern valuePattern = Pattern.compile("'Value': <\\[byte (.+?)\\]>");
-            // Pattern for single byte value (no comma): 'Value': <[byte 0x26]>
-            Pattern valueSinglePattern = Pattern.compile("'Value': <\\[byte (0x[0-9a-fA-F]+)\\]>");
+            // Pattern for Python byte literal format (GLib 2.84+): 'Value': <b'...'>
+            Pattern valueBytesPattern = Pattern.compile("'Value': <b'(.*?)'>");
             // Pattern for Connected changes
             Pattern connectedPattern = Pattern.compile("'Connected': <(true|false)>");
 
@@ -557,11 +557,18 @@ public class BluezTransport implements BleTransport, AutoCloseable {
                     }
                 }
 
-                // Check for Value property change
+                // Check for Value property change — try both formats
+                byte[] data = null;
                 Matcher valueMatcher = valuePattern.matcher(line);
-                if (valueMatcher.find() && currentPath != null) {
-                    String bytesStr = valueMatcher.group(1);
-                    byte[] data = parseGdbusBytes(bytesStr);
+                if (valueMatcher.find()) {
+                    data = parseGdbusHexBytes(valueMatcher.group(1));
+                } else {
+                    Matcher bytesMatcher = valueBytesPattern.matcher(line);
+                    if (bytesMatcher.find()) {
+                        data = parseGdbusByteLiteral(bytesMatcher.group(1));
+                    }
+                }
+                if (data != null && data.length > 0 && currentPath != null) {
                     deliverNotification(currentPath, data);
                 }
             }
@@ -573,9 +580,9 @@ public class BluezTransport implements BleTransport, AutoCloseable {
     }
 
     /**
-     * Parse gdbus byte array string like "0x01, 0x02, 0x03" into byte array.
+     * Parse gdbus hex byte array string like "0x01, 0x02, 0x03" into byte array.
      */
-    private byte[] parseGdbusBytes(String bytesStr) {
+    private byte[] parseGdbusHexBytes(String bytesStr) {
         String[] parts = bytesStr.split(",");
         byte[] data = new byte[parts.length];
         for (int i = 0; i < parts.length; i++) {
@@ -587,6 +594,68 @@ public class BluezTransport implements BleTransport, AutoCloseable {
             }
         }
         return data;
+    }
+
+    /**
+     * Parse Python byte literal string from gdbus (GLib 2.84+).
+     * Format: octal escapes (\003), hex escapes (\x1a), printable ASCII, or \\, \', etc.
+     * Example: "\003\007\000" → [0x03, 0x07, 0x00]
+     * Example: "\x80\000\013" → [0x80, 0x00, 0x0B]
+     */
+    private byte[] parseGdbusByteLiteral(String literal) {
+        List<Byte> bytes = new ArrayList<>();
+        int i = 0;
+        while (i < literal.length()) {
+            if (literal.charAt(i) == '\\' && i + 1 < literal.length()) {
+                char next = literal.charAt(i + 1);
+                if (next == 'x' && i + 3 < literal.length()) {
+                    // Hex escape: \xNN
+                    String hex = literal.substring(i + 2, i + 4);
+                    try {
+                        bytes.add((byte) Integer.parseInt(hex, 16));
+                    } catch (NumberFormatException e) {
+                        bytes.add((byte) '?');
+                    }
+                    i += 4;
+                } else if (next >= '0' && next <= '7') {
+                    // Octal escape: \NNN (1-3 digits)
+                    int end = i + 2;
+                    while (end < literal.length() && end < i + 4
+                            && literal.charAt(end) >= '0' && literal.charAt(end) <= '7') {
+                        end++;
+                    }
+                    String octal = literal.substring(i + 1, end);
+                    bytes.add((byte) Integer.parseInt(octal, 8));
+                    i = end;
+                } else if (next == '\\') {
+                    bytes.add((byte) '\\');
+                    i += 2;
+                } else if (next == '\'') {
+                    bytes.add((byte) '\'');
+                    i += 2;
+                } else if (next == 'n') {
+                    bytes.add((byte) '\n');
+                    i += 2;
+                } else if (next == 'r') {
+                    bytes.add((byte) '\r');
+                    i += 2;
+                } else if (next == 't') {
+                    bytes.add((byte) '\t');
+                    i += 2;
+                } else {
+                    bytes.add((byte) literal.charAt(i));
+                    i++;
+                }
+            } else {
+                bytes.add((byte) literal.charAt(i));
+                i++;
+            }
+        }
+        byte[] result = new byte[bytes.size()];
+        for (int j = 0; j < bytes.size(); j++) {
+            result[j] = bytes.get(j);
+        }
+        return result;
     }
 
     private void deliverNotification(String charPath, byte[] data) {

@@ -150,9 +150,9 @@ PROCESS_USER_AUTHORIZATION_V2 path works from a clean state (after `bluetoothctl
 
 ## Plan of Attack
 
-### Phase 1: Simple Auth — PROCESS_USER_AUTHORIZATION_V2
+### Phase 1: Simple Auth — PROCESS_USER_AUTHORIZATION_V2 ✅ COMPLETE (2026-05-20)
 
-**Effort: Small — implement and test in ~30 minutes**
+**Effort: Small — implemented and tested on real hardware**
 
 Add to `FossilQAdapter.initFossilProtocol()`, BEFORE `syncNotificationSettings()`:
 
@@ -191,18 +191,18 @@ syncNotificationSettings();
   the crown/button within 30 seconds to authorize
 - After authorization: notification filters take effect → vibration + hand animation!
 
-**Test plan:**
-1. Implement the two-step auth
-2. Run `notify` command with watch freshly unpaired (`bluetoothctl remove`)
-3. When prompted, press watch button to authorize
-4. If watch vibrates AND moves hands to filter position → auth works!
-5. On subsequent runs, check if `01 07` returns `0x01` (already authorized)
-6. If so, skip step 2 → faster reconnects
+**Test results (2026-05-20):**
+1. ✅ Auth status check: `01 07` → `03 07` (2 bytes, status=0x00, needs auth)
+2. ✅ User confirmation: `02 06 30 75 00 00 01` → watch vibrated, pressed TOP button → `03 06 00 01` (ACCEPTED)
+3. ✅ Notification filter uploaded → notification play file → vibration + hand movement to 3:15 (90°/90°)
+4. ✅ Re-auth: `01 07` → `03 07 01` (already authorized, no button press needed)
 
-**Fallback:** If `02 06 30 75 00 00 01` fails, try:
-- Last byte `00` (don't remove other phones — GB's default)
-- Shorter timeout (e.g., `10 27 00 00` = 10000ms)
-- The deprecated `01 04` (PROCESS_USER_AUTHORIZATION v1) path
+**Bugs found during implementation:**
+1. **gdbus byte literal format** — GLib 2.84+ outputs small byte arrays as `b'\003\007'`
+   instead of `[byte 0x03, 0x07]`. Added `parseGdbusByteLiteral()` parser.
+2. **Thread deadlock** — `performAuthentication()` blocked the `bluez-monitor` thread
+   that delivers indications. Moved to dedicated `fossil-auth` thread.
+3. **2-byte status** — Watch sends `03 07` (2 bytes) for status=0x00, not `03 07 00`.
 
 ### Phase 2: AES Challenge-Response (If Phase 1 Fails)
 

@@ -1,7 +1,7 @@
 # Test Results — Fossil Q Hybrid CLI
 
 **Watch:** Fossil Q Commuter HW.0.0, Firmware HW0.0.2.9r.v3, Fossil protocol 2.x  
-**Date:** 2026-05-19
+**Date:** 2026-05-19 (updated 2026-05-20)
 
 ---
 
@@ -17,7 +17,7 @@
 | `step-goal` | ✅ Works | Set to 12000, watch confirmed |
 | `vibration` | ✅ Works | Strength config accepted |
 | `timezone` | ✅ Works | Set to UTC+1 |
-| `notify` | ✅ Works | Vibration via 3dda0005 characteristic write (findDevice). Also sends lbl=12 file notification (requires Fossil auth handshake for effect). |
+| `notify` | ✅ Works | File-based vibration + hand animation via lbl=12 notification + auth handshake. findDevice() workaround removed. |
 | `notify --direct` | ⚠️ Partial | Misfit-style direct notification: hand rotation only, no vibration on HW.0.0 firmware. |
 | `alarm` | ✅ Works | Set 07:30 one-shot, watch vibrated at alarm time |
 | `find` | ✅ Works | 2 vibration bursts + hand rotation over 3 seconds |

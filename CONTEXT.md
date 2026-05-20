@@ -37,10 +37,11 @@ gadgetbridge/              # Vendored GB code (124 files, zero patches, copied b
 ## Key Architecture Decisions
 
 1. **Persistent bluetoothctl** for notifications — busctl one-shot D-Bus connections can't hold StartNotify alive
-2. **gdbus monitor** for receiving BLE notifications — catches PropertiesChanged Value updates
+2. **gdbus monitor** for receiving BLE notifications — catches PropertiesChanged Value updates (handles both `[byte 0x...]` and `b'...'` formats)
 3. **Write type from flags** — `command` for notify chars, `request` for indicate chars
 4. **UTC epoch + TimezoneOffsetConfigItem** for time — watch uses the offset to shift display
 5. **Shim classes** instead of patching vendor code — `sync.sh` is pure copy
+6. **Auth on separate thread** — `fossil-auth` thread runs auth handshake to avoid deadlocking `bluez-monitor` thread
 
 ## Test Hardware
 
@@ -68,18 +69,27 @@ gadgetbridge/              # Vendored GB code (124 files, zero patches, copied b
 
 ## Notification System Status
 
-**Current:** Vibration via `findDevice()` on `3dda0005` (workaround). lbl=12 notification file
-also sent but silently ignored because watch requires authentication handshake first.
+**Status: WORKING ✅** (as of 2026-05-20)
 
-**What's needed:** Implement the auth handshake (2 BLE writes to `3dda0005`), then notification
-filters take effect → vibration + hand animation from file-based notifications. See
-`AUTHENTICATION-PLAN.md` for full details.
+Authentication handshake implemented and tested. File-based notifications now produce
+vibration + hand animation. The `findDevice()` workaround has been removed.
 
-**Pairing UX confirmed:** The official Fossil app's "Accept on My Watch" screen (watch vibrates,
-user presses top button to authorize) maps exactly to PROCESS_USER_AUTHORIZATION_V2
-(`02 06 30 75 00 00 01`). The Android BLE bonding popup happens AFTER Fossil-level auth.
+**Auth flow (runs during init, before notification filter upload):**
+1. Write `01 07` to `3dda0005` → check authorization status
+2. If `03 07 00` (or 2-byte `03 07`): needs auth → write `02 06 30 75 00 00 01`
+   (30s timeout, removeOtherPhones=true) → watch vibrates → user presses TOP button
+3. If `03 07 01`: already authorized → skip step 2
+4. Upload notification filter → send notification play file → vibration + hand movement
+
+**On reconnect:** Auth persists — step 2 is skipped (instant init).
 
 **Filter format:** Fully decoded, byte-identical to official Fossil app (verified).
+
+**Implementation notes:**
+- Auth runs on a dedicated `fossil-auth` thread to avoid deadlocking the `bluez-monitor`
+  thread (which delivers the auth indications via gdbus)
+- The `b'...'` Python byte literal format from GLib 2.84+ gdbus required a new parser
+  (`parseGdbusByteLiteral`) — the `[byte 0x...]` format is only used for larger arrays
 
 ## Known Gotchas
 
@@ -92,6 +102,9 @@ user presses top button to authorize) maps exactly to PROCESS_USER_AUTHORIZATION
 - **Watch only advertises ~30s after button press** — must wake watch before scanning
 - **GATT services fail on first connect** after `bluetoothctl remove` — auto-retry handles this
 - **`bluetoothctl pair` always fails** — Fossil uses its own auth, not BLE pairing. Just `trust` + `connect`
+- **gdbus byte literal format** — GLib 2.84+ uses `b'\003\007'` for small byte arrays, `[byte 0x03, 0x07]` for larger ones. Both must be parsed.
+- **Auth indication deadlock** — auth must run on a separate thread from `bluez-monitor` (which delivers the indications via CompletableFuture)
+- **2-byte auth status** — watch sends `03 07` (2 bytes) for status=0x00, not `03 07 00`. Handle missing trailing null.
 
 ## BLE Captures
 

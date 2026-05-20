@@ -255,6 +255,59 @@ The watch firmware validates uploads and returns `SIZE_OVER_LIMIT (7)` or `OVERF
 
 ---
 
+## 14. Fossil Authentication Handshake (PROCESS_USER_AUTHORIZATION_V2)
+
+**Date:** 2026-05-20
+
+**Problem:** Notification filters uploaded successfully but were silently ignored by the watch.
+Vibration only worked via the `findDevice()` workaround on `3dda0005`. Hand animation from
+file-based notifications never triggered.
+
+**Root cause:** The watch requires a Fossil-level authentication handshake on `3dda0005`
+before it will honor notification filters. Without auth, filter uploads succeed but are
+silently ignored.
+
+**Protocol (PROCESS_USER_AUTHORIZATION_V2):**
+```
+1. App → Watch:  01 07                        (GET_USER_AUTHORIZATION_STATUS)
+   Watch → App:  03 07 [00]                   (needs auth — 00 may be omitted)
+              or: 03 07 01                     (already authorized)
+
+2. If needs auth:
+   App → Watch:  02 06 30 75 00 00 01         (confirm auth, 30s timeout, removeOtherPhones)
+   [Watch vibrates — user must press TOP button within 30 seconds]
+   Watch → App:  03 06 00 01                  (ACCEPTED)
+              or: 03 06 00 00                  (REJECTED / timed out)
+```
+
+**Implementation challenges:**
+
+1. **gdbus byte literal format (GLib 2.84+):** Small byte arrays (2-3 bytes) from auth
+   indications are output as `b'\003\007'` (Python byte literal) instead of
+   `[byte 0x03, 0x07, ...]`. Added `parseGdbusByteLiteral()` parser to handle octal
+   (`\NNN`), hex (`\xNN`), and raw ASCII escapes.
+
+2. **Thread deadlock:** `performAuthentication()` was initially called on the `bluez-monitor`
+   thread (via the `handleDeviceInfos` callback). This blocked the same thread that reads
+   gdbus output and delivers indications via `CompletableFuture`, causing a deadlock.
+   Fix: auth + post-auth init runs on a dedicated `fossil-auth` thread.
+
+3. **2-byte status response:** The watch sends `03 07` (2 bytes) for status=0x00 instead
+   of `03 07 00` (3 bytes). The trailing null byte is either omitted by the watch or
+   stripped by gdbus. Code handles both 2-byte and 3-byte responses.
+
+4. **CCCD not required for indication delivery:** Despite `Notifying` showing `false` for
+   all Fossil characteristics (CCCD writes fail without BLE bonding), the watch still
+   sends indications/notifications. The persistent `bluetoothctl` `notify on` command
+   keeps the D-Bus subscription alive, and gdbus monitor catches the PropertiesChanged
+   signals regardless of the `Notifying` property state.
+
+**Result:** After auth, file-based notifications produce vibration + hand movement to the
+filter position (90°/90° = 3:15). Auth persists across reconnects — subsequent connections
+get `03 07 01` (already authorized) and skip the button press.
+
+---
+
 ## 13. BlueZ Quirks Encountered
 
 | Issue | Impact | Workaround |

@@ -90,6 +90,9 @@ public class FossilQAdapter {
     private ScheduledFuture<?> timeoutFuture;
     private static final int REQUEST_TIMEOUT_SECS = 300; // 5 minutes
 
+    // Authentication handshake
+    private CompletableFuture<byte[]> pendingAuthResponse;
+
     // Callbacks for CLI
     private Runnable onInitialized;
     private java.util.function.Consumer<byte[]> onActivityData;
@@ -281,20 +284,9 @@ public class FossilQAdapter {
             queueWrite(new FilePutRequest(
                     FileHandle.NOTIFICATION_PLAY, notifData, shimAdapter), false);
 
-            // Also vibrate via authentication characteristic (3dda0005).
-            // This is the only guaranteed vibration method without implementing
-            // the full Fossil authentication handshake.
-            if (vibration != PlayNotificationRequest.VibrationType.NO_VIBE) {
-                findDevice();
-                new Thread(() -> {
-                    try {
-                        Thread.sleep(getVibrationDuration(vibration));
-                        stopFindDevice();
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                    }
-                }).start();
-            }
+            // Note: if auth handshake was completed during init, the lbl=12 file
+            // above is sufficient — the watch will vibrate AND move hands per the
+            // notification filter. No findDevice() workaround needed.
         } else {
             sendMisfitRequest(new PlayNotificationRequest(vibration, hourDeg, minDeg));
         }
@@ -541,18 +533,134 @@ public class FossilQAdapter {
                     }
                 }
 
-                // 4. Sync configuration
-                syncConfiguration();
+                // 4. Authenticate + continue init on a separate thread.
+                // Auth blocks waiting for indications on 3dda0005 — can't block
+                // the bluez-monitor thread (which delivers those indications).
+                new Thread(() -> {
+                    try {
+                        performAuthentication();
 
-                // 5. Sync notification filter
-                syncNotificationSettings();
+                        // 5. Sync configuration
+                        syncConfiguration();
 
-                // 6. Set initialized
-                device.setState(GBDevice.State.INITIALIZED);
-                LOG.info("Watch initialized (Fossil protocol)");
-                if (onInitialized != null) onInitialized.run();
+                        // 6. Sync notification filter
+                        syncNotificationSettings();
+
+                        // 7. Set initialized
+                        device.setState(GBDevice.State.INITIALIZED);
+                        LOG.info("Watch initialized (Fossil protocol)");
+                        if (onInitialized != null) onInitialized.run();
+                    } catch (Exception e) {
+                        LOG.error("Init failed during auth/sync", e);
+                    }
+                }, "fossil-auth").start();
             }
         }, false);
+    }
+
+    // ========== Authentication handshake ==========
+
+    /**
+     * Perform the PROCESS_USER_AUTHORIZATION_V2 handshake on 3dda0005.
+     * Must be called BEFORE syncNotificationSettings() — without auth,
+     * the watch silently ignores notification filters.
+     *
+     * Flow:
+     *   1. Write 01 07 (GET_USER_AUTHORIZATION_STATUS)
+     *   2. Read indication: 03 07 XX (XX=0x00 needs auth, XX=0x01 already authorized)
+     *   3. If needs auth: write 02 06 30 75 00 00 01 (30s timeout, removeOtherPhones=true)
+     *      Watch vibrates — user must press TOP button within 30s
+     *   4. Read indication: 03 06 00 XX (XX=0x01 accepted, XX=0x00 rejected)
+     */
+    private void performAuthentication() {
+        LOG.info("=== Authentication handshake ===");
+
+        // Step 1: Check authorization status
+        pendingAuthResponse = new CompletableFuture<>();
+        byte[] checkAuth = {0x01, 0x07};
+        LOG.info("Writing GET_USER_AUTHORIZATION_STATUS: {}", bytesToHex(checkAuth));
+        transport.writeCharacteristic(UUID_CHAR_CALL, checkAuth);
+
+        byte[] statusResponse;
+        try {
+            statusResponse = pendingAuthResponse.get(10, TimeUnit.SECONDS);
+        } catch (TimeoutException e) {
+            LOG.warn("No response to auth status check (timed out after 10s) — skipping auth");
+            pendingAuthResponse = null;
+            return;
+        } catch (Exception e) {
+            LOG.error("Auth status check failed", e);
+            pendingAuthResponse = null;
+            return;
+        }
+        pendingAuthResponse = null;
+
+        // Parse response: expect 03 07 XX (or just 03 07 for status=0x00)
+        if (statusResponse.length < 2 || statusResponse[0] != 0x03 || statusResponse[1] != 0x07) {
+            LOG.warn("Unexpected auth status response: {} — skipping auth", bytesToHex(statusResponse));
+            return;
+        }
+
+        // Status byte: 0x00 = needs auth, 0x01 = already authorized
+        // If only 2 bytes received, treat as 0x00 (the null byte may be
+        // omitted in the gdbus b'...' format or by the watch itself)
+        byte authStatus = (statusResponse.length >= 3) ? statusResponse[2] : 0x00;
+        if (authStatus == 0x01) {
+            LOG.info("Already authorized (status=0x01) — no button press needed");
+            return;
+        }
+
+        LOG.info("Authorization required (status=0x{}) — requesting user confirmation",
+                String.format("%02X", authStatus));
+
+        // Step 2: Request user authorization
+        // 02 06 = SET + PROCESS_USER_AUTHORIZATION_V2
+        // 30 75 00 00 = 30000ms timeout (little-endian)
+        // 01 = removeOtherLinkedPhones
+        pendingAuthResponse = new CompletableFuture<>();
+        byte[] confirmAuth = {0x02, 0x06, 0x30, 0x75, 0x00, 0x00, 0x01};
+        LOG.info("Writing PROCESS_USER_AUTHORIZATION_V2: {}", bytesToHex(confirmAuth));
+        LOG.info(">>> PRESS THE TOP BUTTON ON YOUR WATCH WITHIN 30 SECONDS <<<");
+        System.out.println("\n  *** Press the TOP button on your watch to authorize ***\n");
+        transport.writeCharacteristic(UUID_CHAR_CALL, confirmAuth);
+
+        byte[] confirmResponse;
+        try {
+            // 35s timeout — 30s watch timeout + 5s margin
+            confirmResponse = pendingAuthResponse.get(35, TimeUnit.SECONDS);
+        } catch (TimeoutException e) {
+            LOG.warn("User did not press button within 30 seconds — authorization failed");
+            pendingAuthResponse = null;
+            return;
+        } catch (Exception e) {
+            LOG.error("Authorization confirmation failed", e);
+            pendingAuthResponse = null;
+            return;
+        }
+        pendingAuthResponse = null;
+
+        // Parse response: expect 03 06 00 XX
+        if (confirmResponse.length < 4 || confirmResponse[0] != 0x03 || confirmResponse[1] != 0x06) {
+            LOG.warn("Unexpected auth confirmation response: {}", bytesToHex(confirmResponse));
+            return;
+        }
+
+        byte userAction = confirmResponse[confirmResponse.length - 1];
+        if (userAction == 0x01) {
+            LOG.info("Authorization ACCEPTED — notification filters will now take effect!");
+        } else {
+            LOG.warn("Authorization REJECTED (action=0x{}) — notification filters will be ignored",
+                    String.format("%02X", userAction));
+        }
+    }
+
+    private static String bytesToHex(byte[] bytes) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < bytes.length; i++) {
+            if (i > 0) sb.append(' ');
+            sb.append(String.format("%02x", bytes[i]));
+        }
+        return sb.toString();
     }
 
     private void syncConfiguration() {
@@ -877,7 +985,14 @@ public class FossilQAdapter {
             case "3dda0003-957f-7d4a-34a6-74696673696d":
             case "3dda0004-957f-7d4a-34a6-74696673696d":
             case "3dda0005-957f-7d4a-34a6-74696673696d":
-                // Fossil protocol responses
+                // Auth indication intercept — if we're waiting for an auth response,
+                // complete the future and don't pass to the file transfer handler
+                if (pendingAuthResponse != null && !pendingAuthResponse.isDone()) {
+                    LOG.info("Auth indication received: {}", bytesToHex(value));
+                    pendingAuthResponse.complete(value);
+                    return;
+                }
+                // Fossil protocol responses (file transfer)
                 break;
 
             default:

@@ -64,7 +64,8 @@ public class Main implements Runnable {
 
         // For Fossil protocol, wait for the async init to complete
         if (adapter.isFossilProtocol()) {
-            if (!adapter.waitForInit(30_000)) {
+            // 60s timeout: allows 30s for auth button press + init overhead
+            if (!adapter.waitForInit(60_000)) {
                 LOG.warn("Initialization may not have completed fully");
             }
         }

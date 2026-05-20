@@ -24,7 +24,7 @@ Watch: Fossil Q Commuter (HW.0.0), Firmware HW0.0.2.9r.v3, Fossil protocol (2.x)
 
 ## Test Existing Commands
 
-- [x] `notify` — confirmed: vibration via call characteristic + hand animation via file protocol. Notification filter alone doesn't produce vibration on HW.0.0 firmware.
+- [x] `notify` — confirmed: vibration + hand animation via file-based notifications (lbl=12 format). Auth handshake enables notification filters. findDevice() workaround removed.
 - [x] `step-goal` — confirmed: goal 50 → sub-eye moved to ~19, goal 99999 → sub-eye at zero
 - [x] `vibration` — confirmed: setting to 10 triggered weak buzz, setting 100→100 (no change) no buzz. Watch gives feedback on actual change.
 - [x] `timezone` — confirmed: offset 0 shifted hour hand back 1h (BST→UTC), offset 60 restored correct time. Fixed: now sends time+offset together.
@@ -237,24 +237,19 @@ requires the lbl=12 format for vibration to trigger.
 - [x] `PlayTextNotificationRequest` (NOTIFICATION type) — no vibration (lbl=10)
 - [x] Official format with lbl=12 + extra fields — **VIBRATION WORKS!** ✅
 
-**Current notify approach (hybrid):**
-- `3dda0005` characteristic write for vibration (findDevice/stopFindDevice)
-- lbl=12 file notification also sent (correct format, but no visible effect)
-- The watch requires an **authentication handshake** on `3dda0005` before it will
-  process notification filters and play notifications. The official Fossil app
-  writes `01 07` then `02 06 30 75 00 00 01` to this char during init.
-  Without this auth step, filter uploads succeed but are silently ignored.
+**Notification system working (2026-05-20):**
+- Auth handshake implemented (`01 07` status check + `02 06` user confirmation)
+- File-based notifications produce vibration + hand animation
+- findDevice() workaround removed — notifications are fully file-based
+- Auth persists across reconnects (no button press on re-auth)
 
 **BLE capture findings (full pairing flow):**
 - Official app's notification filter format is now fully decoded (7 entries, 32 bytes each)
 - Our filter format is byte-identical to the official app's (verified)
-- Missing piece: authentication protocol on `3dda0005`
-- The auth involves the watch sending `AUTHENTICATION_REQUEST_EVENT` on async char,
-  and the app responding with crypto on the auth char
+- Auth protocol fully decoded and implemented (PROCESS_USER_AUTHORIZATION_V2)
 
 **Future improvements:**
-- [ ] Implement Fossil authentication handshake (would enable file-based vibration +
-      hand movement, eliminating the 3dda0005 findDevice workaround)
+- [x] Implement Fossil authentication handshake ✔️
 - [ ] Support hand position in notifications (filter format is now known)
 - [ ] Support different vibration patterns (CALL=1, TEXT=2, EMAIL=3, DEFAULT=4, etc.)
 - [ ] Support per-app notification mapping (CRC → hand position + vibe pattern)
