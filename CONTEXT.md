@@ -17,6 +17,9 @@ java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A info
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A time
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A notify SINGLE_SHORT
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A buttons stopwatch music forward_to_phone
+java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A buttons mode_toggle second_timezone forward_to_phone
+java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A second-timezone 330   # IST (UTC+5:30)
+java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A second-timezone off   # disable
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A monitor  # Ctrl+C to stop
 ```
 
@@ -43,7 +46,7 @@ gadgetbridge/              # Vendored GB code (124 files, zero patches, copied b
 1. **Persistent bluetoothctl** for notifications - busctl one-shot D-Bus connections can't hold StartNotify alive
 2. **gdbus monitor** for receiving BLE notifications - catches PropertiesChanged Value updates (handles both `[byte 0x...]` and `b'...'` formats)
 3. **Write type from flags** - `command` for notify chars, `request` for indicate chars
-4. **UTC epoch + TimezoneOffsetConfigItem** for time - watch uses the offset to shift display
+4. **UTC epoch + TimeConfigItem offset** for time — watch uses 0x000C's offset field for primary display; 0x0011 is second timezone only
 5. **Shim classes** instead of patching vendor code - `sync.sh` is pure copy
 6. **Auth on separate thread** - `fossil-auth` thread runs auth handshake to avoid deadlocking notification delivery thread
 7. **BleTransport interface** - `DbusTransport` (dbus-java, default) and `BluezTransport` (subprocess, `--subprocess` flag) share the same interface. Adapter/protocol code is transport-agnostic.
@@ -118,16 +121,16 @@ Bond benefits: encrypted link, WakeAllowed, faster reconnect (device stays known
 
 - **BlueZ agent required** - without it, pairing fails and GATT operations error silently
 - **`getRawOffset()` vs `getOffset(millis)`** - must use `getOffset()` for DST-aware offset (Europe/London: raw=0, actual=60 in summer)
-- **Config 0x0011 is SECOND timezone, not primary** — the official Fossil app sends 0x0011 ONLY when setting a second timezone. Primary TZ comes from TimeConfigItem (0x000C) offset field. Our code was incorrectly sending 0x0011 as primary TZ during init, overwriting any second timezone setting. See FINDINGS.md #21a.
+- **Config 0x0011 is SECOND timezone, not primary** - the official Fossil app sends 0x0011 ONLY when setting a second timezone. Primary TZ comes from TimeConfigItem (0x000C) offset field. **Fixed:** 0x0011 removed from `syncConfiguration()` and `setTimezoneOffset()`. New `setSecondTimezone()` method and `second-timezone` CLI command added. See FINDINGS.md #21a.
 - **Alarm file version must be 2** - version 0/1/3 return VERIFICATION_FAIL
 - **Weekday bitmask** bit3=Wed, bit4=Thu (hardware-verified). GB Alarm.java has them backwards.
 - **Watch does directed advertising** after pairing - won't appear in general scan, connect by MAC
-- **32 alarms max** — firmware limit, power-of-two. GB limits to 5, official app to 12 — both artificial. 33+ causes silent timeout (no error code). Alarm read-back not supported (INVALID_OPERATION_DATA).
+- **32 alarms max** - firmware limit, power-of-two. GB limits to 5, official app to 12 - both artificial. 33+ causes silent timeout (no error code). Alarm read-back not supported (INVALID_OPERATION_DATA).
 - **Watch only advertises ~30s after button press** - must wake watch before scanning
 - **GATT services fail on first connect** after `bluetoothctl remove` - auto-retry (up to 3 attempts) handles this. BlueZ caches service layout across retries.
 - **Stale "In Progress" connections** - a previous failed connect can block new ones. Disconnect before connecting to clear.
-- **BLE pairing works after Fossil auth** — `pair` CLI command or auto-pair after auth. Raw Agent1 for Just Works.
-- **Auth tied to BLE bond rejection** — watch clears auth when it attempts auto-reconnect to a bonded partner that deleted its link key. No Fossil de-auth command exists. Just removing bond from laptop doesn't clear auth (watch must actively try to reconnect and get rejected).
+- **BLE pairing works after Fossil auth** - `pair` CLI command or auto-pair after auth. Raw Agent1 for Just Works.
+- **Auth tied to BLE bond rejection** - watch clears auth when it attempts auto-reconnect to a bonded partner that deleted its link key. No Fossil de-auth command exists. Just removing bond from laptop doesn't clear auth (watch must actively try to reconnect and get rejected).
 - **gdbus byte literal format** - GLib 2.84+ uses `b'\003\007'` for small byte arrays, `[byte 0x03, 0x07]` for larger ones. Both must be parsed.
 - **Auth indication deadlock** - auth must run on a separate thread from `bluez-monitor` (which delivers the indications via CompletableFuture)
 - **2-byte auth status** - watch sends `03 07` (2 bytes) for status=0x00, not `03 07 00`. Handle missing trailing null.
@@ -141,7 +144,7 @@ Bond benefits: encrypted link, WakeAllowed, faster reconnect (device stays known
 | `tmp/bugreport/` | First capture - reconnect, auth `01 07` | Full ATT data |
 | `tmp/bugreport3/` | Third capture - reconnect, auth `02 06`, full init + notification | Full ATT data, 571 packets |
 | `tmp/bugreport2/` | Second capture | Truncated (btsnooz circular buffer) |
-| `tmp/bugreport5/` | Fifth capture — full Fossil app session: 2nd TZ, mode toggle, alarms, notif filters | 496 Fossil ATT ops, 780s |
+| `tmp/bugreport5/` | Fifth capture - full Fossil app session: 2nd TZ, mode toggle, alarms, notif filters | 496 Fossil ATT ops, 780s |
 
 ## Decompiled Official App
 

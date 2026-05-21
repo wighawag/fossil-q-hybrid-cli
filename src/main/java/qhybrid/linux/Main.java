@@ -32,6 +32,7 @@ import java.util.concurrent.Callable;
                 Main.PairCmd.class,
                 Main.MonitorCmd.class,
                 Main.ButtonsCmd.class,
+                Main.SecondTimezoneCmd.class,
         })
 public class Main implements Runnable {
     private static final Logger LOG = LoggerFactory.getLogger("fossil-q");
@@ -808,9 +809,50 @@ public class Main implements Runnable {
         }
     }
 
+    @Command(name = "second-timezone",
+             description = "Set or disable the second timezone (shown by SECOND_TIMEZONE button function)")
+    static class SecondTimezoneCmd implements Callable<Integer> {
+        @ParentCommand Main parent;
+
+        @Parameters(index = "0",
+                description = "Offset in minutes from UTC (e.g. -300 for EST, 330 for IST, 540 for JST). " +
+                        "Use 'off' or 'disable' to disable.")
+        String offset;
+
+        @Override
+        public Integer call() {
+            short minutes;
+            if (offset.equalsIgnoreCase("off") || offset.equalsIgnoreCase("disable") || offset.equals("1024")) {
+                minutes = 1024;
+            } else {
+                try {
+                    minutes = Short.parseShort(offset);
+                } catch (NumberFormatException e) {
+                    System.err.println("Invalid offset: " + offset);
+                    return 1;
+                }
+                if (minutes < -720 || minutes > 840) {
+                    System.err.println("Offset must be between -720 and 840 minutes (or 'off' to disable)");
+                    return 1;
+                }
+            }
+
+            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+            adapter.setSecondTimezone(minutes);
+            if (minutes == 1024) {
+                System.out.println("Second timezone disabled");
+            } else {
+                System.out.printf("Second timezone set to UTC%+.1f (%d minutes)%n", minutes / 60.0, minutes);
+            }
+            sleep(1000);
+            adapter.shutdown();
+            return 0;
+        }
+    }
+
     @Command(name = "buttons", mixinStandardHelpOptions = true,
              description = "Set button functions. Available: forward_to_phone, stopwatch, date, music, " +
-                     "volume_up, volume_down, step_goal, last_notification, second_timezone, ring_phone")
+                     "volume_up, volume_down, step_goal, last_notification, second_timezone, ring_phone, mode_toggle")
     static class ButtonsCmd implements Callable<Integer> {
         @ParentCommand Main parent;
 
@@ -825,6 +867,29 @@ public class Main implements Runnable {
 
         @Override
         public Integer call() {
+            boolean hasModeToggle = isModeToggle(top) || isModeToggle(middle) || isModeToggle(bottom);
+
+            if (hasModeToggle) {
+                // Mode toggle uses multi-entry button config — bypass ConfigFileBuilder.
+                // Parse non-toggle buttons normally (they must be single-entry).
+                ConfigPayload topPayload = isModeToggle(top) ? null : parsePayload(top, "top");
+                ConfigPayload midPayload = isModeToggle(middle) ? null : parsePayload(middle, "middle");
+                ConfigPayload botPayload = isModeToggle(bottom) ? null : parsePayload(bottom, "bottom");
+                // Check for parse errors on non-toggle buttons
+                if (!isModeToggle(top) && topPayload == null) return 1;
+                if (!isModeToggle(middle) && midPayload == null) return 1;
+                if (!isModeToggle(bottom) && botPayload == null) return 1;
+
+                FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+                adapter.overwriteButtonsWithModeToggle(
+                        isModeToggle(top), isModeToggle(middle), isModeToggle(bottom),
+                        topPayload, midPayload, botPayload);
+                System.out.printf("Buttons set: TOP=%s, MIDDLE=%s, BOTTOM=%s%n", top, middle, bottom);
+                sleep(2000);
+                adapter.shutdown();
+                return 0;
+            }
+
             ConfigPayload topPayload = parsePayload(top, "top");
             ConfigPayload middlePayload = parsePayload(middle, "middle");
             ConfigPayload bottomPayload = parsePayload(bottom, "bottom");
@@ -838,7 +903,12 @@ public class Main implements Runnable {
             return 0;
         }
 
-        private ConfigPayload parsePayload(String name, String position) {
+        private static boolean isModeToggle(String name) {
+            String n = name.toLowerCase().replace("-", "_");
+            return n.equals("mode_toggle") || n.equals("toggle") || n.equals("toggle_mode");
+        }
+
+        static ConfigPayload parsePayload(String name, String position) {
             return switch (name.toLowerCase().replace("-", "_")) {
                 case "forward", "forward_to_phone", "phone" -> ConfigPayload.FORWARD_TO_PHONE;
                 case "stopwatch", "stop_watch" -> ConfigPayload.STOPWATCH;
@@ -853,7 +923,7 @@ public class Main implements Runnable {
                 default -> {
                     System.err.printf("Unknown button function '%s' for %s button.%n", name, position);
                     System.err.println("Available: forward_to_phone, stopwatch, date, music, volume_up, " +
-                            "volume_down, step_goal, last_notification, second_timezone, ring_phone");
+                            "volume_down, step_goal, last_notification, second_timezone, ring_phone, mode_toggle");
                     yield null;
                 }
             };

@@ -533,18 +533,35 @@ public class FossilQAdapter {
             LOG.warn("Timezone offset not supported on Misfit protocol firmware");
             return;
         }
-        // Send both timezone offset AND time together — the watch uses the
-        // TimezoneOffsetConfigItem to shift the UTC epoch for display.
-        // TimeConfigItem carries the UTC epoch; the offset in TimeConfigItem
-        // is metadata for activity timestamps.
+        // Config 0x000C (TIME) carries the TZ offset the watch uses for display.
+        // Config 0x0011 is SECOND timezone — don't touch it here.
+        // See FINDINGS.md #21a.
         long millis = System.currentTimeMillis();
-        queueWrite(new ConfigurationPutRequest(new ConfigurationPutRequest.ConfigItem[]{
-                new ConfigurationPutRequest.TimezoneOffsetConfigItem(minutes),
+        queueWrite(new ConfigurationPutRequest(
                 new ConfigurationPutRequest.TimeConfigItem(
                         (int) (millis / 1000),
                         (short) (millis % 1000),
-                        minutes)
-        }, shimAdapter), false);
+                        minutes),
+                shimAdapter), false);
+    }
+
+    /**
+     * Set the second timezone offset (config 0x0011 = SECOND_TIMEZONE_OFFSET).
+     * This is displayed when the SECOND_TIMEZONE button function is activated.
+     *
+     * @param offsetMinutes offset from UTC in minutes (e.g. -300 for EST, 330 for IST).
+     *                      Use 1024 to disable the second timezone.
+     *                      Valid range: -720 to 840, or 1024.
+     * See FINDINGS.md #21a.
+     */
+    public void setSecondTimezone(short offsetMinutes) {
+        if (!useFossilProtocol) {
+            LOG.warn("Second timezone not supported on Misfit protocol firmware");
+            return;
+        }
+        queueWrite(new ConfigurationPutRequest(
+                new ConfigurationPutRequest.TimezoneOffsetConfigItem(offsetMinutes),
+                shimAdapter), false);
     }
 
     public void overwriteButtons(ConfigPayload[] payloads) {
@@ -557,6 +574,41 @@ public class FossilQAdapter {
             @Override
             public void onFilePut(boolean success) {
                 LOG.info("Button config: {}", success ? "success" : "FAILED");
+            }
+        }, false);
+    }
+
+    /**
+     * Build and upload a button config file that supports mode_toggle (multi-entry buttons).
+     * ConfigFileBuilder only supports 1 entry per button, so we build the binary manually
+     * when any button uses mode_toggle.
+     *
+     * Mode toggle = 3 entries cycled on press: SECOND_TIMEZONE → DATE → STEP_GOAL_PROGRESS.
+     * The STEP_GOAL_PROGRESS payload (appId 0x001a) was captured from the official Fossil app
+     * BLE trace (bugreport5, t=169.6s). See FINDINGS.md #21b.
+     *
+     * @param topIsToggle   true if TOP button is mode_toggle
+     * @param midIsToggle   true if MIDDLE button is mode_toggle
+     * @param botIsToggle   true if BOTTOM button is mode_toggle
+     * @param topElse       ConfigPayload for TOP if not toggle (ignored if topIsToggle)
+     * @param midElse       ConfigPayload for MIDDLE if not toggle (ignored if midIsToggle)
+     * @param botElse       ConfigPayload for BOTTOM if not toggle (ignored if botIsToggle)
+     */
+    public void overwriteButtonsWithModeToggle(
+            boolean topIsToggle, boolean midIsToggle, boolean botIsToggle,
+            ConfigPayload topElse, ConfigPayload midElse, ConfigPayload botElse) {
+        if (!useFossilProtocol) {
+            LOG.warn("Button config not supported on Misfit protocol firmware");
+            return;
+        }
+        byte[] file = ButtonConfigBuilder.buildWithModeToggle(
+                topIsToggle, midIsToggle, botIsToggle,
+                topElse, midElse, botElse);
+        LOG.info("Button config file: {} bytes (mode_toggle)", file.length);
+        queueWrite(new FilePutRequest(FileHandle.SETTINGS_BUTTONS, file, shimAdapter) {
+            @Override
+            public void onFilePut(boolean success) {
+                LOG.info("Button config (mode_toggle): {}", success ? "success" : "FAILED");
             }
         }, false);
     }
@@ -841,19 +893,14 @@ public class FossilQAdapter {
     private void syncConfiguration() {
         int stepGoal = 10000; // default
         byte vibrationStrength = 100;
-        // TimezoneOffsetConfigItem (0x0011): the watch uses this to shift
-        // the UTC epoch for display. Must include DST.
-        long now = System.currentTimeMillis();
-        TimeZone zone = TimeZone.getDefault();
-        short timezoneOffset = (short) (zone.getOffset(now) / 60000);
 
-        device.addDeviceInfo(new GenericItem(QHybridSupport.ITEM_TIMEZONE_OFFSET,
-                String.valueOf(timezoneOffset)));
-
+        // Do NOT send TimezoneOffsetConfigItem (0x0011) here — that's the SECOND
+        // timezone, not primary. The watch gets primary TZ from TimeConfigItem
+        // (0x000C) offset field. Sending 0x0011 overwrites the user's second
+        // timezone setting. See FINDINGS.md #21a.
         queueWrite(new ConfigurationPutRequest(new ConfigurationPutRequest.ConfigItem[]{
                 new ConfigurationPutRequest.DailyStepGoalConfigItem(stepGoal),
                 new ConfigurationPutRequest.VibrationStrengthConfigItem(vibrationStrength),
-                new ConfigurationPutRequest.TimezoneOffsetConfigItem(timezoneOffset),
                 generateTimeConfigItem()
         }, shimAdapter), false);
 
@@ -979,11 +1026,11 @@ public class FossilQAdapter {
     /**
      * Generate a time config item for the Fossil protocol.
      *
-     * Send UTC epoch. The watch uses TimezoneOffsetConfigItem (0x0011)
-     * to shift the displayed time. The offset field inside TimeConfigItem
-     * is metadata (activity timestamps etc.).
+     * Send UTC epoch. The watch uses the offset field in TimeConfigItem
+     * (0x000C) to shift displayed time — NOT config 0x0011, which is for
+     * the SECOND timezone only.
      *
-     * See FINDINGS.md #4 for full analysis.
+     * See FINDINGS.md #4 and #21a for full analysis.
      */
     private ConfigurationPutRequest.TimeConfigItem generateTimeConfigItem() {
         long millis = System.currentTimeMillis();
