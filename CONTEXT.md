@@ -119,9 +119,9 @@ Bond benefits: encrypted link, WakeAllowed, faster reconnect (device stays known
 - **BlueZ agent required** - without it, pairing fails and GATT operations error silently
 - **`getRawOffset()` vs `getOffset(millis)`** - must use `getOffset()` for DST-aware offset (Europe/London: raw=0, actual=60 in summer)
 - **Alarm file version must be 2** - version 0/1/3 return VERIFICATION_FAIL
-- **Thursday/Wednesday swapped** in alarm day bitmask (bit3=Thu, bit4=Wed)
+- **Weekday bitmask** bit3=Wed, bit4=Thu (hardware-verified). GB Alarm.java has them backwards.
 - **Watch does directed advertising** after pairing - won't appear in general scan, connect by MAC
-- **12+ alarms work** despite GadgetBridge limiting to 5
+- **32 alarms max** — firmware limit, power-of-two. GB limits to 5, official app to 12 — both artificial. 33+ causes silent timeout (no error code). Alarm read-back not supported (INVALID_OPERATION_DATA).
 - **Watch only advertises ~30s after button press** - must wake watch before scanning
 - **GATT services fail on first connect** after `bluetoothctl remove` - auto-retry (up to 3 attempts) handles this. BlueZ caches service layout across retries.
 - **Stale "In Progress" connections** - a previous failed connect can block new ones. Disconnect before connecting to clear.

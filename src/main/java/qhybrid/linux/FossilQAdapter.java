@@ -14,6 +14,7 @@ import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fos
 import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.RequestMtuRequest;
 import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.SetDeviceStateRequest;
 import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.alarm.Alarm;
+import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.alarm.AlarmsGetRequest;
 import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.alarm.AlarmsSetRequest;
 import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.configuration.ConfigurationPutRequest;
 import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.device_info.DeviceInfo;
@@ -23,6 +24,7 @@ import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fos
 import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.file.FileDeleteRequest;
 import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.file.FileLookupAndGetRequest;
 import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.file.FilePutRequest;
+import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.file.FilePutRawRequest;
 import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.notification.NotificationFilterPutRequest;
 import nodomain.freeyourgadget.gadgetbridge.devices.qhybrid.NotificationConfiguration;
 import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.misfit.AnimationRequest;
@@ -326,6 +328,141 @@ public class FossilQAdapter {
                 LOG.info("Alarm set: {}", success ? "success" : "FAILED");
             }
         }, false);
+    }
+
+    /**
+     * Set alarms with a CompletableFuture result for success/failure reporting.
+     * Reports detailed error codes from the watch firmware.
+     */
+    public void setAlarmsWithResult(Alarm[] alarms, CompletableFuture<Boolean> result) {
+        if (!useFossilProtocol) {
+            LOG.warn("Alarms not supported on Misfit protocol firmware");
+            result.complete(false);
+            return;
+        }
+        LOG.info("Setting {} alarm(s), file size {} bytes", alarms.length, alarms.length * 3);
+        queueWrite(new AlarmsSetRequest(alarms, shimAdapter) {
+            private boolean errorOccurred = false;
+
+            @Override
+            public void onFilePut(boolean success) {
+                super.onFilePut(success);
+                LOG.info("Alarm upload: {}", success ? "SUCCESS" : "FAILED");
+                if (!result.isDone()) result.complete(success);
+            }
+
+            @Override
+            public void handleResponse(BluetoothGattCharacteristic characteristic, byte[] value) {
+                try {
+                    super.handleResponse(characteristic, value);
+                } catch (RuntimeException e) {
+                    LOG.warn("Alarm upload error: {}", e.getMessage());
+                    errorOccurred = true;
+                    if (!result.isDone()) result.complete(false);
+                }
+            }
+
+            @Override
+            public boolean isFinished() {
+                return errorOccurred || super.isFinished();
+            }
+        }, false);
+    }
+
+    /**
+     * Read current alarms from the watch via FileGetRequest on handle 0x0A00.
+     * Note: returns empty array if the watch rejects the read (e.g. no alarms file exists).
+     */
+    public void getAlarms(CompletableFuture<Alarm[]> result) {
+        if (!useFossilProtocol) {
+            LOG.warn("Alarms not supported on Misfit protocol firmware");
+            result.complete(new Alarm[0]);
+            return;
+        }
+        queueWrite(new AlarmsGetRequest(shimAdapter) {
+            private boolean errorOccurred = false;
+
+            @Override
+            public void handleAlarms(Alarm[] alarms) {
+                LOG.info("Read {} alarm(s) from watch", alarms.length);
+                result.complete(alarms);
+            }
+
+            @Override
+            public void handleFileData(byte[] fileData) {
+                LOG.info("Alarm file: {} bytes", fileData.length);
+                super.handleFileData(fileData);
+            }
+
+            @Override
+            public void handleResponse(BluetoothGattCharacteristic characteristic, byte[] value) {
+                try {
+                    super.handleResponse(characteristic, value);
+                } catch (RuntimeException e) {
+                    LOG.warn("Alarm read failed: {}", e.getMessage());
+                    errorOccurred = true;
+                    result.complete(new Alarm[0]);
+                }
+            }
+
+            @Override
+            public boolean isFinished() {
+                return errorOccurred || super.isFinished();
+            }
+        }, false);
+    }
+
+    /**
+     * Set alarms using raw 3-byte-per-alarm data.
+     * Each alarm is [byte0] [byte1] [byte2] in the wire format.
+     * This allows testing non-standard byte combinations that the Alarm class can't produce.
+     */
+    public void setAlarmsRaw(byte[] rawAlarmData, CompletableFuture<Boolean> result) {
+        if (!useFossilProtocol) {
+            LOG.warn("Alarms not supported on Misfit protocol firmware");
+            result.complete(false);
+            return;
+        }
+        LOG.info("Setting raw alarm data: {} bytes (hex: {})", rawAlarmData.length, bytesToHex(rawAlarmData));
+        queueWrite(new FilePutRequest(FileHandle.ALARMS, rawAlarmData, shimAdapter) {
+            private boolean errorOccurred = false;
+
+            @Override
+            public void onFilePut(boolean success) {
+                super.onFilePut(success);
+                LOG.info("Raw alarm upload: {}", success ? "SUCCESS" : "FAILED");
+                if (!result.isDone()) result.complete(success);
+            }
+
+            @Override
+            public void handleResponse(BluetoothGattCharacteristic characteristic, byte[] value) {
+                try {
+                    super.handleResponse(characteristic, value);
+                } catch (RuntimeException e) {
+                    LOG.warn("Raw alarm upload error: {}", e.getMessage());
+                    errorOccurred = true;
+                    if (!result.isDone()) result.complete(false);
+                }
+            }
+
+            @Override
+            public boolean isFinished() {
+                return errorOccurred || super.isFinished();
+            }
+        }, false);
+    }
+
+    /**
+     * Clear all alarms by uploading an empty alarm file (0 alarms = 0 bytes).
+     */
+    public void clearAlarms(CompletableFuture<Boolean> result) {
+        if (!useFossilProtocol) {
+            LOG.warn("Alarms not supported on Misfit protocol firmware");
+            result.complete(false);
+            return;
+        }
+        LOG.info("Clearing all alarms (uploading empty alarm file)");
+        setAlarmsWithResult(new Alarm[0], result);
     }
 
     public void fetchActivity() {

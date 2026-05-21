@@ -28,7 +28,7 @@ Watch: Fossil Q Commuter (HW.0.0), Firmware HW0.0.2.9r.v3, Fossil protocol (2.x)
 - [x] `step-goal` — confirmed: goal 50 → sub-eye moved to ~19, goal 99999 → sub-eye at zero
 - [x] `vibration` — confirmed: setting to 10 triggered weak buzz, setting 100→100 (no change) no buzz. Watch gives feedback on actual change.
 - [x] `timezone` — confirmed: offset 0 shifted hour hand back 1h (BST→UTC), offset 60 restored correct time. Fixed: now sends time+offset together.
-- [x] `alarm` — confirmed: 07:30 vibration fired on watch
+- [x] `alarm` — confirmed: set/clear/test subcommands. Multi-alarm support (up to 32). Max count experiment: exactly 32 slots (firmware limit). Read-back not supported (INVALID_OPERATION_DATA).
 - [x] `find` — confirmed: 2 vibration bursts + hand rotation over 3 seconds
 - [x] `activity` — confirmed: downloads + parses activity data (steps, calories, variability per minute). Multi-segment support, hourly summary, NDJSON output.
 
@@ -55,14 +55,18 @@ Watch: Fossil Q Commuter (HW.0.0), Firmware HW0.0.2.9r.v3, Fossil protocol (2.x)
 - [ ] Activity hand as notification counter mode
 
 ### Alarms
-- [ ] Test alarm set (file handle 0x0A00, version 2)
-- [ ] Multiple alarms in single upload
-- [ ] Repeating alarms (day bitmask — note: Thu/Wed swapped per Python findings)
-- [ ] Alarm list/get (AlarmsGetRequest — if watch supports reading back)
-- [ ] Alarm clear (upload empty alarm file or FileDeleteRequest)
-- [ ] Find max alarm count — official Fossil app allows 12+, GB limits to 5 artificially
-  - Test: 1, 5, 10, 12, 15, 20... until SIZE_OVER_LIMIT error
-  - Safe: watch rejects bad uploads, existing alarms unchanged
+- [x] Test alarm set (file handle 0x0A00, version 2) — working
+- [x] Multiple alarms in single upload — `alarm set 07:30 08:00 12:00`
+- [x] Repeating alarms (day bitmask — note: Thu/Wed swapped per Python findings)
+- [x] Alarm list/get (AlarmsGetRequest) — **not supported**: watch returns INVALID_OPERATION_DATA (1). Alarms are write-only on this firmware.
+- [x] Alarm clear (upload empty alarm file) — `alarm clear`
+- [x] Find max alarm count — **exactly 32** (firmware limit, power-of-two). Official Fossil app limits to 12, GadgetBridge to 5 — both artificial.
+  - Tested: 1, 5, 10, 12, 15, 20, 30, 32 ✅ | 33, 35, 40, 50 ❌ (silent timeout)
+  - Safe: failed uploads don't affect existing alarms
+  - Storage per file handle is independent (activity data doesn't reduce alarm capacity)
+- [x] Specific-date alarms — **working!** Undocumented non-repeating weekday format: `[0x80|day_bits] [minute] [hour]` (no repeat flag in byte1). `alarm at tomorrow 07:30` / `alarm at friday 14:30` / `alarm at 2026-05-23T09:00`. Validated within 7 days.
+- [x] Weekday bitmask corrected — hardware-verified: bit3=Wed, bit4=Thu (opposite of GB docs).
+- [x] Alarms use local time (not UTC) — confirmed on hardware
 
 ### Button Configuration
 - [ ] Read current button config (ButtonConfigurationGetRequest)

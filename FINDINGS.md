@@ -241,17 +241,129 @@ Key parsing details:
 
 ---
 
-## 12. Alarm Slot Count
+## 12. Alarm Slot Count — Maximum 32 (Confirmed)
 
-**GadgetBridge limits to 5 alarm slots** (`QHybridCoordinator.getAlarmSlotCount() = 5`). This is an artificial software limit.
+**Date:** 2026-05-21
 
-**The official Fossil app allows at least 12 alarms** — confirmed on real hardware (Q Commuter HW.0.0). The actual firmware limit is unknown but > 12.
+**GadgetBridge limits to 5 alarm slots** (`QHybridCoordinator.getAlarmSlotCount() = 5`). This is
+an artificial software limit. **The official Fossil app allows 12** (also artificial).
 
-Each alarm is 3 bytes in the old format (file version 2), so 12 alarms = 36 bytes of payload — well within any reasonable file size limit. The new format (version 3, with labels) is ~17+ bytes per alarm.
+**The actual firmware limit is exactly 32 alarms** — confirmed by binary search on real hardware
+(Q Commuter HW.0.0, firmware HW0.0.2.9r.v3).
 
-The watch firmware validates uploads and returns `SIZE_OVER_LIMIT (7)` or `OVERFLOW (6)` if the limit is exceeded. No risk of bricking — the upload simply fails and existing alarms remain unchanged. Sending 0 alarms clears all.
+### Test results
 
-**Testing plan:** increment alarm count (1, 5, 10, 12, 15, 20...) and find the exact firmware limit by watching for error codes.
+| Count | File size | Result |
+|-------|-----------|--------|
+| 1 | 3 bytes | ✅ SUCCESS |
+| 5 | 15 bytes | ✅ SUCCESS |
+| 10 | 30 bytes | ✅ SUCCESS |
+| 12 | 36 bytes | ✅ SUCCESS |
+| 15 | 45 bytes | ✅ SUCCESS |
+| 20 | 60 bytes | ✅ SUCCESS |
+| 30 | 90 bytes | ✅ SUCCESS |
+| 32 | 96 bytes | ✅ SUCCESS |
+| 33 | 99 bytes | ❌ TIMEOUT (no response) |
+| 35 | 105 bytes | ❌ TIMEOUT |
+| 40 | 120 bytes | ❌ TIMEOUT |
+| 50 | 150 bytes | ❌ TIMEOUT |
+
+32 alarms × 3 bytes = 96 bytes — a clean power-of-two slot count, suggesting a fixed
+32-entry alarm table in firmware.
+
+### Failure mode
+
+When the limit is exceeded, the watch does **not** return an error code like
+`SIZE_OVER_LIMIT (7)` or `OVERFLOW (6)`. Instead, it simply **does not respond** to the
+file-put request at all (no acceptance on type 3). The upload times out. Existing alarms
+remain unchanged — confirmed by clearing alarms successfully after a failed 33-alarm upload.
+
+### Storage independence
+
+32 alarms succeed even with activity data accumulated on the watch. Each file handle
+(ALARMS 0x0A00, ACTIVITY 0x0100, SETTINGS_BUTTONS 0x0600, etc.) has **independent storage**.
+Alarm capacity is not affected by other file handles.
+
+### Alarm file read-back
+
+`AlarmsGetRequest` (FileGetRequest on handle 0x0A00) returns `INVALID_OPERATION_DATA (1)` on
+this firmware — the watch does not support reading back the alarm file. Alarms are write-only.
+The companion app must track alarm state locally.
+
+### Non-repeating weekday alarms (undocumented format, hardware-verified)
+
+**Date:** 2026-05-21
+
+The standard alarm wire format has two known modes:
+- **One-shot** (`repeat=false`): `[0xFF] [minute] [hour]` — fires at next HH:MM regardless of day
+- **Repeating** (`repeat=true`): `[0x80|days] [minute|0x80] [hour]` — fires on specified weekdays, repeats weekly
+
+**Discovery:** There is a third, undocumented mode that combines weekday targeting with non-repeat:
+- **Non-repeating weekday**: `[0x80|days] [minute] [hour]` — fires once on the specified weekday, then stops
+
+The key difference from repeating is that byte1 does NOT have bit7 (0x80) set.
+
+**Hardware-verified test sequence (Q Commuter HW.0.0, Thursday 2026-05-21):**
+
+| Test | byte0 | byte1 | byte2 | Format | Result |
+|------|-------|-------|-------|--------|--------|
+| One-shot 11:01 | FF | 01 | 0B | standard one-shot | ✅ Rang |
+| Repeat Thu(bit3=8) 11:04 | 88 | 84 | 0B | repeat+wrong bit | ❌ Silent |
+| Repeat Thu(bit4=16) 11:07 | 90 | 87 | 0B | repeat+correct bit | ✅ Rang |
+| Non-repeat Thu(bit4) 11:10 | 10 | 0A | 0B | days without 0x80 marker | ❌ Silent |
+| Non-repeat Thu(0x80+bit4) 11:14 | 90 | 0E | 0B | **non-repeat weekday** | ✅ Rang |
+| Non-repeat Fri(0x80+bit5) 11:17 | A0 | 11 | 0B | wrong day (Friday≠Thursday) | ❌ Silent (correct) |
+| `alarm at today 11:21` | 90 | 15 | 0B | via CLI command | ✅ Rang |
+| `alarm at today 11:24` | 90 | 18 | 0B | via CLI command | ✅ Rang |
+
+**Conclusions:**
+1. The 0x80 marker in byte0 is required for weekday bits to be recognized
+2. Byte1 bit7 controls repeat (1) vs one-shot (0)
+3. Weekday bits without byte0's 0x80 marker are ignored (alarm doesn't fire)
+4. The non-repeating weekday format is not used by the official Fossil app or GadgetBridge
+
+### Corrected weekday bitmask (hardware-verified)
+
+GadgetBridge documents bit3=Thursday, bit4=Wednesday. **This is wrong.** Real hardware testing
+confirms the opposite:
+
+| Bit | Value | Actual weekday | GB Alarm.java says |
+|-----|-------|---------------|--------------------|
+| 0 | 1 | Sunday | Sunday |
+| 1 | 2 | Monday | Monday |
+| 2 | 4 | Tuesday | Tuesday |
+| 3 | 8 | **Wednesday** | Thursday (WRONG) |
+| 4 | 16 | **Thursday** | Wednesday (WRONG) |
+| 5 | 32 | Friday | Friday |
+| 6 | 64 | Saturday | Saturday |
+
+The CONTEXT.md note "Thursday/Wednesday swapped in day bitmask (bit3=Thu, bit4=Wed) — GB bug"
+was itself backwards. The actual hardware has bit3=Wed, bit4=Thu.
+
+### Alarm time interpretation
+
+Alarms use **local time** (not UTC). The watch applies the TimezoneOffsetConfigItem internally.
+Verified: setting alarm for 11:01 local (UTC 10:01) rang at 11:01 local.
+
+### CLI usage
+
+```bash
+# Set alarms (replaces all existing)
+fossil-q alarm set 07:30 08:00 12:00
+fossil-q alarm set 07:30 --days 30    # Mon-Fri (2+4+8+16=30, corrected bits)
+
+# One-shot alarm for a specific date/time (within 7 days)
+fossil-q alarm at tomorrow 07:30
+fossil-q alarm at friday 14:30
+fossil-q alarm at 2026-05-23T09:00
+
+# Clear all alarms
+fossil-q alarm clear
+
+# Test max count (for experimentation)
+fossil-q alarm test 32                 # max that works
+fossil-q alarm test 32 --start 06:00   # stagger from 06:00
+```
 
 ---
 
