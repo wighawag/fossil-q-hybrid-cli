@@ -707,3 +707,103 @@ fossil-q -d D9:20:71:11:74:2A buttons stopwatch music forward_to_phone
 # Monitor button events (only phone-dependent buttons send events)
 fossil-q -d D9:20:71:11:74:2A monitor
 ```
+
+---
+
+## 20. Activity File Format (version 22, no-HR coin-cell variant) (2026-05-21)
+
+**Date:** 2026-05-21
+
+**Source:** GadgetBridge `ActivityFileParser.java` (not vendored — heavy entity deps) +
+binary analysis of real activity data from Fossil Q Commuter (HW.0.0).
+
+### File layout
+
+```
+[0-1]   File marker (01 01)
+[2-3]   Version (22 LE)
+[4-7]   Reserved (FFFFFFFF)
+[8-11]  Timestamp (LE Unix epoch, UTC)
+[12-13] Timezone offset (LE, minutes)
+[14-15] Interval (LE, seconds — always 60)
+[16-17] File ID (LE, incrementing per fetch)
+[18-31] Device metadata (14 bytes, constant per device)
+[32+]   Segments (one or more)
+Trailing bytes after last valid record are ignored.
+```
+
+### Segment format
+
+```
+[E2] [type(1)] [timestamp(4 LE)] [tz_offset(2 LE)] [interval(2 LE)] [FE FE]
+[records: 4 bytes each until byte[2] != 0xFF]
+```
+
+- **type 0x04**: current/latest segment (timestamp matches file header)
+- **type 0x03**: historical segment (earlier data, can overlap with 0x04)
+- Segments can be out of chronological order in the file
+- `FE FE` marker separates header from records
+
+### Record format (4 bytes, 1-minute intervals)
+
+```
+[b0] [b1] [b2=0xFF] [b3]
+```
+
+- **b2** must be `0xFF` (no-HR marker). Non-0xFF terminates the record stream.
+- **b3**: bits 0-5 = calories, bit 6 = isActive flag
+
+**Step count decoding (two modes based on b0 bit 0):**
+
+| Mode | Condition | Steps | Variability |
+|------|-----------|-------|-------------|
+| Low-step | b0 bit 0 = 1 | `b0 & 0x0E` (0-14) | Complex: uses b0 bits 4-7 + b1 |
+| High-step | b0 bit 0 = 0 | `b0 & 0xFE` (0-254) | `b1² × 64` |
+
+Low-step mode provides fine-grained variability data (wrist movement intensity).
+High-step mode is used when many steps occur in one minute.
+
+### Real data characteristics
+
+- **activity.bin** (3488 bytes): 857 records across 2 segments, 14-hour span, 2 steps
+  (watch was sitting on desk during development — almost zero physical activity)
+- **activity-test.bin** (120 bytes): 18 records, 1 segment, 17-minute span, 6 steps
+- Most records are idle: `01 00 FF 00` (0 steps, 0 calories, not active)
+- File is deleted from watch after fetch (official app behavior). `--keep` flag preserves it.
+
+### Implementation note: Java ByteBuffer.wrap() gotcha
+
+`ByteBuffer.wrap(array, offset, length)` creates a buffer where **absolute-index
+methods** (`getInt(index)`, `getShort(index)`) use indices relative to **the array
+start**, not the offset. For reading segment headers at variable positions, use
+a single `ByteBuffer.wrap(file)` and compute absolute offsets:
+```java
+ByteBuffer buf = ByteBuffer.wrap(file).order(ByteOrder.LITTLE_ENDIAN);
+long ts = buf.getInt(pos + 2) & 0xFFFFFFFFL;       // correct
+int interval = buf.getShort(pos + 8) & 0xFFFF;     // correct
+```
+
+### GadgetBridge differences
+
+- GB's `ActivityFileParser` only handles the first segment (E2 04 at offset 32);
+  our parser handles multiple segments including E2 03 historical segments
+- GB's no-HR variant parser reads records from fixed offset 44; ours follows
+  FEFE markers for each segment
+- GB uses entity classes (`HybridHRActivitySample`, `BaseActivitySummary`);
+  ours uses standalone POJOs with no Android/DB dependencies
+
+### CLI usage
+
+```bash
+# Fetch activity, show summary (default: deletes data from watch)
+fossil-q -d D9:20:71:11:74:2A activity
+
+# Keep data on watch + save raw binary
+fossil-q -d D9:20:71:11:74:2A activity --keep -o activity.bin
+
+# NDJSON output (records with steps only)
+fossil-q -d D9:20:71:11:74:2A activity --raw
+
+# NDJSON output (all records including idle)
+fossil-q -d D9:20:71:11:74:2A activity --raw --all
+```

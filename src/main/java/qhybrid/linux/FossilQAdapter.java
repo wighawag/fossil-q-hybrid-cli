@@ -329,6 +329,10 @@ public class FossilQAdapter {
     }
 
     public void fetchActivity() {
+        fetchActivity(false);
+    }
+
+    public void fetchActivity(boolean keep) {
         if (!useFossilProtocol) {
             LOG.info("Activity fetch for Misfit protocol — requesting step count");
             sendMisfitRequest(new ActivityPointGetRequest());
@@ -342,14 +346,21 @@ public class FossilQAdapter {
                 if (onActivityData != null) {
                     onActivityData.accept(fileData);
                 }
-                // Delete the file after reading
-                queueWrite(new FileDeleteRequest(getHandle()), false);
+                if (!keep) {
+                    // Delete the file after reading (official app does this too)
+                    queueWrite(new FileDeleteRequest(getHandle()), false);
+                } else {
+                    LOG.info("Keeping activity data on watch (--keep)");
+                }
             }
 
             @Override
             public void handleFileLookupError(FILE_LOOKUP_ERROR error) {
                 if (error == FILE_LOOKUP_ERROR.FILE_EMPTY) {
                     LOG.info("No activity data on watch");
+                    if (onActivityData != null) {
+                        onActivityData.accept(new byte[0]);
+                    }
                 } else {
                     LOG.error("Activity file lookup error: {}", error);
                 }

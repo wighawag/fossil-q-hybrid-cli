@@ -30,7 +30,7 @@ Watch: Fossil Q Commuter (HW.0.0), Firmware HW0.0.2.9r.v3, Fossil protocol (2.x)
 - [x] `timezone` — confirmed: offset 0 shifted hour hand back 1h (BST→UTC), offset 60 restored correct time. Fixed: now sends time+offset together.
 - [x] `alarm` — confirmed: 07:30 vibration fired on watch
 - [x] `find` — confirmed: 2 vibration bursts + hand rotation over 3 seconds
-- [x] `activity` — confirmed: downloads valid structured data (timestamp, 60s intervals, step records)
+- [x] `activity` — confirmed: downloads + parses activity data (steps, calories, variability per minute). Multi-segment support, hourly summary, NDJSON output.
 
 ---
 
@@ -44,10 +44,12 @@ Watch: Fossil Q Commuter (HW.0.0), Firmware HW0.0.2.9r.v3, Fossil protocol (2.x)
 - [ ] `NotificationFilterPutRequest` — upload notification settings file
 
 ### Activity & Step Tracking
-- [ ] Fetch activity data file (FileLookupAndGetRequest on 0x0100)
-- [ ] Parse activity data format (GB's `ActivityFileParser` not vendored — write our own)
-- [ ] Display step count, activity points
-- [ ] Delete activity data after fetch (FileDeleteRequest)
+- [x] Fetch activity data file (FileLookupAndGetRequest on 0x0100)
+- [x] Parse activity data format (ActivityParser.java — multi-segment, no-HR variant, file v22)
+- [x] Display step count, hourly breakdown, summary
+- [x] Delete activity data after fetch (FileDeleteRequest, default; `--keep` to preserve)
+- [x] NDJSON output (`--raw` for records with steps, `--raw --all` for everything)
+- [x] Save raw binary (`-o activity.bin`)
 - [ ] Read current step count (ConfigurationGetRequest item 0x0002)
 - [ ] Set current step count (for activity hand position)
 - [ ] Activity hand as notification counter mode

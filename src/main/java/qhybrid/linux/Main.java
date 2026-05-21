@@ -461,29 +461,82 @@ public class Main implements Runnable {
         }
     }
 
-    @Command(name = "activity", description = "Fetch activity data from watch (Fossil protocol only)")
+    @Command(name = "activity", description = "Fetch and display activity/step data from watch")
     static class ActivityCmd implements Callable<Integer> {
         @ParentCommand Main parent;
 
-        @Option(names = {"-o", "--output"}, description = "Output file for raw activity data", defaultValue = "activity.bin")
+        @Option(names = {"-o", "--output"}, description = "Save raw binary to file (e.g. activity.bin)")
         Path outputFile;
+
+        @Option(names = {"--raw"}, description = "Print raw NDJSON (one JSON line per minute-record)")
+        boolean raw;
+
+        @Option(names = {"--all"}, description = "Include zero-step records in NDJSON output")
+        boolean all;
+
+        @Option(names = {"--keep"}, description = "Don't delete activity data from watch after fetching")
+        boolean keep;
 
         @Override
         public Integer call() {
             FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
 
-            adapter.setOnActivityData(data -> {
+            var future = new java.util.concurrent.CompletableFuture<byte[]>();
+            adapter.setOnActivityData(future::complete);
+
+            adapter.fetchActivity(keep);
+
+            byte[] data;
+            try {
+                data = future.get(30, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (java.util.concurrent.TimeoutException e) {
+                System.err.println("Timeout waiting for activity data (30s)");
+                adapter.shutdown();
+                return 1;
+            } catch (Exception e) {
+                System.err.println("Error fetching activity data: " + e.getMessage());
+                adapter.shutdown();
+                return 1;
+            }
+
+            if (data.length == 0) {
+                System.out.println("No activity data on watch.");
+                adapter.shutdown();
+                return 0;
+            }
+
+            // Save raw binary if requested
+            if (outputFile != null) {
                 try {
                     Files.write(outputFile, data);
-                    System.out.println("Activity data saved to " + outputFile + " (" + data.length + " bytes)");
+                    System.err.println("Raw data saved to " + outputFile + " (" + data.length + " bytes)");
                 } catch (IOException e) {
-                    System.err.println("Error writing activity data: " + e.getMessage());
+                    System.err.println("Error writing file: " + e.getMessage());
                 }
-            });
+            }
 
-            adapter.fetchActivity();
-            System.out.println("Fetching activity data...");
-            sleep(10_000); // Wait for file transfer to complete
+            // Parse and display
+            try {
+                var activity = ActivityParser.parse(data);
+                if (raw) {
+                    System.out.print(all ? ActivityParser.formatNdjson(activity)
+                                         : ActivityParser.formatNdjsonStepsOnly(activity));
+                } else {
+                    System.out.print(ActivityParser.formatSummary(activity));
+                }
+            } catch (Exception e) {
+                System.err.println("Parse error: " + e.getMessage());
+                // Still save raw data so user can investigate
+                if (outputFile == null) {
+                    try {
+                        Path fallback = Path.of("activity.bin");
+                        Files.write(fallback, data);
+                        System.err.println("Raw data saved to " + fallback + " for inspection");
+                    } catch (IOException ex) { /* ignore */ }
+                }
+            }
+
+            sleep(1000); // let delete complete if queued
             adapter.shutdown();
             return 0;
         }

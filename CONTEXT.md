@@ -27,6 +27,7 @@ src/main/java/
   qhybrid/linux/
     Main.java              # picocli CLI, 14 subcommands, --subprocess flag
     FossilQAdapter.java    # Protocol adapter (request queue, init, dispatch)
+    ActivityParser.java    # Activity file parser (version 22, no-HR, multi-segment)
     DbusTransport.java     # BLE via dbus-java + bluez-dbus (default, direct D-Bus)
     BluezTransport.java    # BLE via busctl + persistent bluetoothctl + gdbus monitor (--subprocess fallback)
     BleTransport.java      # Interface
