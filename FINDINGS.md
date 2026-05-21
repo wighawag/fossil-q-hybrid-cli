@@ -919,3 +919,220 @@ fossil-q -d D9:20:71:11:74:2A activity --raw
 # NDJSON output (all records including idle)
 fossil-q -d D9:20:71:11:74:2A activity --raw --all
 ```
+
+---
+
+## 21. BLE Capture Analysis — Official Fossil App (bugreport5, 2026-05-21)
+
+**Date:** 2026-05-21
+
+**Source:** BLE HCI snoop log from Pixel 8a running official Fossil app, connected to
+Fossil Q Commuter (HW.0.0). Full session: pairing → second timezone → mode toggle →
+alarms → notification filters → notification triggers. 496 Fossil ATT operations over
+~780 seconds.
+
+**ATT handle map (from GATT discovery):**
+
+| Handle | UUID | Name |
+|--------|------|------|
+| 0x0042 | 3dda0002 | CMD (commands, write+notify) |
+| 0x0045 | 3dda0003 | CTL (file control, write+indicate) |
+| 0x0048 | 3dda0004 | DAT (file data, write) |
+| 0x004b | 3dda0005 | AUTH (authentication, write+indicate) |
+| 0x004e | 3dda0006 | EVT (async events, write+notify) |
+| 0x0051 | 3dda0007 | CHR7 (notification play data, write) |
+
+### 21a. Config 0x0011 Is SECOND TIMEZONE, Not Primary
+
+**The official app does NOT send config 0x0011 during initial time sync.**
+
+Initial config upload (t=43.1s) contains:
+- 0x0001 (BIOMETRIC_PROFILE): 7 bytes
+- 0x0002 (DAILY_STEP): current step count
+- 0x0003 (DAILY_STEP_GOAL): 5700
+- 0x0004 (DAILY_CALORIE): 0
+- 0x0005 (DAILY_CALORIE_GOAL): 240
+- 0x0006 (DAILY_TOTAL_ACTIVE_MIN): 0
+- 0x0007 (DAILY_ACTIVE_MIN_GOAL): 30
+- 0x000A (VIBE_STRENGTH): 75 (NOT 100)
+- 0x000C (TIME): UTC epoch + millis + TZ offset (60 min = BST)
+- 0x0009 (INACTIVE_NUDGE): disabled
+
+Config 0x0011 is sent **only** when the user configures a second timezone:
+```
+t=103.8s: Config write 0x0011, length=2, value=0x014A (330 minutes = UTC+5:30)
+```
+
+From decompiled app: `DeviceConfigKey.SECOND_TIMEZONE_OFFSET(17, "second_timezone_offset")`
+Special value 1024 = disabled. Range: -720 to 840 minutes.
+
+Watch's stored config (read at t=41.5s) showed 0x0011=60 — this was set by **our CLI**
+during previous sessions, incorrectly overwriting the second timezone with the primary
+offset.
+
+**Impact:** Our `syncConfiguration()` has been sending `TimezoneOffsetConfigItem(localOffset)`
+as config 0x0011 on every connect. This overwrites any second timezone the user set.
+The watch gets primary timezone from `TimeConfigItem` (0x000C) offset field — it does NOT
+need 0x0011 for primary time display.
+
+**Fix needed:** Remove `TimezoneOffsetConfigItem` from `syncConfiguration()`. Add a
+dedicated `second-timezone` command that writes config 0x0011.
+
+### 21b. Mode Toggle = Multi-Entry Button Config
+
+Mode toggle is **not** a single function with a unique binary payload. It's a button
+assigned **multiple entries** — the watch firmware cycles through them on each press.
+
+Captured button config at t=169.6s (TOP button set to Mode Toggle):
+```
+Button TOP: 3 entries
+  [0] header: 01 01 16 00 = SECOND_TIMEZONE
+  [1] header: 01 02 14 00 = DATE
+  [2] header: 01 02 1a 00 = STEP_GOAL_PROGRESS (appId=0x001a=26)
+
+Button MIDDLE: 1 entry
+  [0] header: 01 01 16 00 = SECOND_TIMEZONE
+
+Button BOTTOM: 1 entry
+  [0] header: 01 01 0c 00 = FORWARD_TO_PHONE
+```
+
+Each press cycles: SECOND_TIMEZONE → DATE → STEP_GOAL_PROGRESS → repeat.
+
+The 3rd entry (appId 0x001a) has a dedicated payload blob:
+```
+01 00 01 02 1a 36 00 00 00 01 00 08 00 04 00 00
+07 02 00 00 01 01 1d 00 89 02 01 04 b0 03 00 89
+05 01 07 b0 03 00 b0 03 00 b0 03 00 08 01 50 00
+01 00 a6 79 57 cc
+```
+
+**Implementation:** No new GadgetBridge code needed. `ConfigFileBuilder` already supports
+multiple entries per button (`entryCount` field). We just need to:
+1. Add a `ConfigPayload` entry for appId 0x001a with the captured payload
+2. Allow the `buttons` command to accept `+`-separated multi-functions
+3. Example: `buttons "second_timezone+date+step_goal_progress" music forward_to_phone`
+
+**Customization section** at end of button config file:
+```
+[count=5] then for each entry:
+  [header(4)] [0a 00 01 02 01 00]  // 6 bytes per button×entry combination
+```
+
+### 21c. Alarm Format — Official App Confirmed
+
+Three sequential alarm uploads captured:
+
+| Upload | Time | Data | Decoded |
+|--------|------|------|---------|
+| 1 | t=216.7s | `FF 26 0C` | One-shot at 12:38 |
+| 2 | t=235.0s | `FF 26 0C` `BE A7 0C` | + Mon-Fri repeat at 12:39 |
+| 3 | t=262.5s | `FF 26 0C` `BE A7 0C` `A0 A7 09` | + Fri repeat at 09:39 |
+
+Byte decode:
+- `0xFF` = one-shot marker (standard)
+- `0xBE` = `10111110` = 0x80 flag + bits 1-5 (Mon-Fri)
+- `0xA0` = `10100000` = 0x80 flag + bit 5 (Fri)
+- `0xA7` = `10100111` = 0x80 repeat flag + 0x27 (39 minutes)
+
+**Confirmed:**
+- Official app uses standard one-shot (`0xFF`) and repeating (`0x80|days`, `0x80|minute`) formats
+- Does NOT use our discovered non-repeating weekday format (undocumented, hardware-only)
+- Alarms uploaded atomically — all alarms replaced on each write
+- Day bits match our hardware-verified mapping: bit1=Mon, bit2=Tue, bit3=Wed, bit4=Thu, bit5=Fri
+
+### 21d. Notification Filter — Variable-Length Entries with Sender Name
+
+Filter entries can include a **SENDER_NAME field (0x02)** for per-contact filtering.
+This makes entries variable-length.
+
+**Entry format:**
+```
+[packetLength(2 LE)] [field...]...
+Field: [id(1)] [length(1)] [data(length)]
+
+  0x04: PACKAGE_CRC    (4 bytes) — CRC32(packageName + '\0')
+  0x80: GROUP_ID       (1 byte)  — always 0
+  0x02: SENDER_NAME    (var)     — null-terminated contact name (OPTIONAL)
+  0xC1: PRIORITY       (1 byte)  — always 0
+  0xC2: HAND_MOVEMENT  (10 bytes)— hour°(2) min°(2) subeye(2) duration(2) subeye2(2)
+  0xC4: DISPLAY_CONFIG (1 byte)  — always 0
+  0xC3: VIBRATION      (1 byte)  — pattern (CALL=1, TEXT=2, DEFAULT=4, etc.)
+```
+
+Multiple entries can share the same package CRC with different senders, hand positions,
+and vibration patterns. Example from capture:
+
+| CRC | Sender | Hand | Vibe | Notes |
+|-----|--------|------|------|-------|
+| 0xB7590080 | `4 Cumnock Place, Dundee` | 359° | CALL(1) | Contact-specific |
+| 0xB7590080 | `247HomeResc` | 240° | CALL(1) | Different contact, different position |
+| 0xB7590080 | *(none)* | 60° | CALL(1) | Default for this app |
+| 0x8B56BE06 | `4 Cumnock Place, Dundee` | 359° | TEXT(2) | Same contact, different app |
+| 0x8B56BE06 | `247HomeResc` | 240° | TEXT(2) | Same contact, different app |
+| 0xBA3DC156 | *(none)* | 300° | DEFAULT(4) | Google Calendar |
+| 0x40C7ED7C | *(none)* | 90° | DEFAULT(4) | WhatsApp |
+
+**CRC identification** (null-terminated CRC32):
+- `0xBA3DC156` = `com.google.android.calendar`
+- `0x40C7ED7C` = `com.whatsapp`
+- `0xB7590080` = Phone/Dialer (package name unknown — Fossil app preset)
+- `0x8B56BE06` = SMS/Messages (package name unknown — Fossil app preset)
+- Others unmatched — Fossil app may use internal identifiers
+
+**Vibration patterns observed:** Only CALL(1), TEXT(2), and DEFAULT(4) are used.
+The Fossil app UI does not let users pick vibe patterns. Patterns are hardcoded:
+CALL for phone, TEXT for SMS, DEFAULT for everything else.
+
+### 21e. Notification Play — Type Field and CHR7 Delivery
+
+The lbl=12 notification play file has a `type` byte that controls behavior:
+
+| Type | Name | Vibration | Hand animation |
+|------|------|-----------|----------------|
+| 3 | NOTIFICATION | ✅ Yes | ✅ Yes |
+| 5 | DISMISSAL | ❌ No | ✅ Return to normal |
+| 7 | UPDATE/REPLAY | ❌ No | ✅ Yes |
+
+`flags` byte: `0x02` = live, `0x06` = pending (queued while disconnected).
+
+**Key discovery:** The official app writes notification play data to **3dda0007 (CHR7)**,
+not 3dda0004 (DAT). The file-put sequence opens on CTL (3dda0003) with the notification
+file handle (0x5D09, 0x5E09, ...), then the actual play data goes to CHR7.
+
+Our implementation writes to 3dda0004 via the standard `FilePutRequest` — this appears to
+work (vibration triggers), but the official app's use of 3dda0007 for notification payloads
+suggests there may be a reason for the separate characteristic (perhaps better delivery
+guarantees or different buffering).
+
+Notification file handles increment: 0x5D09, 0x5E09, 0x5F09, 0x6009, 0x6109, ...
+
+### 21f. Full DeviceConfigKey Map
+
+From decompiled `DeviceConfigKey.java`:
+
+| ID | Key | Type | Notes |
+|----|-----|------|-------|
+| 1 | BIOMETRIC_PROFILE | 7 bytes | Age, height, weight, gender |
+| 2 | DAILY_STEP | int(4) | Current step count |
+| 3 | DAILY_STEP_GOAL | int(4) | Step goal |
+| 4 | DAILY_CALORIE | int(4) | Current calories |
+| 5 | DAILY_CALORIE_GOAL | int(4) | Calorie goal |
+| 6 | DAILY_TOTAL_ACTIVE_MIN | short(2) | Current active minutes |
+| 7 | DAILY_ACTIVE_MIN_GOAL | short(2) | Active minute goal |
+| 8 | DAILY_DISTANCE | — | Daily distance |
+| 9 | INACTIVE_NUDGE | 6 bytes | fromH, fromM, toH, toM, minutes, enabled |
+| 10 | VIBE_STRENGTH | byte(1) | 0-100 (official app default: 75) |
+| 11 | DO_NOT_DISTURB | — | DND schedule |
+| 12 | TIME | 8 bytes | epoch(4) + millis(2) + offset(2) |
+| 13 | BATTERY | 3 bytes | voltage(2) + percent(1) — read-only |
+| 14 | HEART_RATE_MODE | byte(1) | HR sensor mode |
+| 15 | DAILY_SLEEP | — | Sleep data |
+| 16 | DISPLAY_UNIT | int(4) | Metric/imperial |
+| 17 | SECOND_TIMEZONE_OFFSET | short(2) | Minutes from UTC. 1024=disabled. Range: [-720, 840] |
+| 18 | CURRENT_HEART_RATE | — | Current HR reading |
+| 20 | AUTO_WORKOUT_DETECTION | 30 bytes | Running/biking/walking/rowing detection |
+| 21 | CYCLING_CADENCE | — | Cycling cadence |
+| 22 | DAILY_SLEEP_GOAL | — | Sleep goal |
+| 23 | DAILY_TASK_TRACKING_GOAL | — | Task goal |
+| 24 | DAILY_TASK_TRACKING_VALUE | — | Task value |

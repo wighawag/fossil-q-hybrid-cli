@@ -118,6 +118,7 @@ Bond benefits: encrypted link, WakeAllowed, faster reconnect (device stays known
 
 - **BlueZ agent required** - without it, pairing fails and GATT operations error silently
 - **`getRawOffset()` vs `getOffset(millis)`** - must use `getOffset()` for DST-aware offset (Europe/London: raw=0, actual=60 in summer)
+- **Config 0x0011 is SECOND timezone, not primary** — the official Fossil app sends 0x0011 ONLY when setting a second timezone. Primary TZ comes from TimeConfigItem (0x000C) offset field. Our code was incorrectly sending 0x0011 as primary TZ during init, overwriting any second timezone setting. See FINDINGS.md #21a.
 - **Alarm file version must be 2** - version 0/1/3 return VERIFICATION_FAIL
 - **Weekday bitmask** bit3=Wed, bit4=Thu (hardware-verified). GB Alarm.java has them backwards.
 - **Watch does directed advertising** after pairing - won't appear in general scan, connect by MAC
@@ -140,6 +141,7 @@ Bond benefits: encrypted link, WakeAllowed, faster reconnect (device stays known
 | `tmp/bugreport/` | First capture - reconnect, auth `01 07` | Full ATT data |
 | `tmp/bugreport3/` | Third capture - reconnect, auth `02 06`, full init + notification | Full ATT data, 571 packets |
 | `tmp/bugreport2/` | Second capture | Truncated (btsnooz circular buffer) |
+| `tmp/bugreport5/` | Fifth capture — full Fossil app session: 2nd TZ, mode toggle, alarms, notif filters | 496 Fossil ATT ops, 780s |
 
 ## Decompiled Official App
 

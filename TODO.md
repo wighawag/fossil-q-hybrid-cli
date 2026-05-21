@@ -74,7 +74,7 @@ Watch: Fossil Q Commuter (HW.0.0), Firmware HW0.0.2.9r.v3, Fossil protocol (2.x)
 - [x] Listen for button press events on 3dda0006 (micro_app events decoded)
 - [ ] Map button presses to custom actions (run command, send notification, etc.)
 - [ ] Multi-button press detection (SINGLE, DOUBLE, LONG) — firmware handles for MUSIC_CONTROL; software timing needed for FORWARD_TO_PHONE
-- [ ] Mode toggle support — needs binary payload capture from official app
+- [ ] Mode toggle support — multi-entry button config (SECOND_TZ+DATE+STEP_PROGRESS), not a new payload. See FINDINGS.md #21b.
 - [ ] Take a photo support — needs phone-side camera trigger implementation
 
 ### Watch Events & Monitoring
@@ -273,6 +273,9 @@ requires the lbl=12 format for vibration to trigger.
 - [ ] Support hand position in notifications (filter format is now known)
 - [ ] Support different vibration patterns (CALL=1, TEXT=2, EMAIL=3, DEFAULT=4, etc.)
 - [ ] Support per-app notification mapping (CRC → hand position + vibe pattern)
+- [ ] Support per-contact notification filtering (SENDER_NAME field 0x02 in filter)
+- [ ] Fix: remove TimezoneOffsetConfigItem (0x0011) from syncConfiguration() — it's SECOND timezone, not primary. See FINDINGS.md #21a.
+- [ ] Add `second-timezone` command — write config 0x0011 (short, minutes from UTC, 1024=disabled)
 
 ---
 
