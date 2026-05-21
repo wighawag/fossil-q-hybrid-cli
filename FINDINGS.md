@@ -484,3 +484,226 @@ processes:
 | `busctl` one-shot D-Bus connections | StartNotify immediately un-registers | Persistent process (finding #3) |
 | `dbus-monitor` AccessDenied | Can't use BecomeMonitor API | Use `gdbus monitor` instead (falls back to eavesdropping) |
 | Directed advertising after pairing | Device invisible to general scan | Connect using known MAC directly |
+
+---
+
+## 18. Async Event Protocol on 3dda0006 (2026-05-20)
+
+**Date:** 2026-05-20
+
+**Source:** Decompiled official Fossil app (`DeviceEventParser.java`, `AsyncEventType.java`,
+`AsyncOperationCode.java`) + real-hardware testing with `monitor` command.
+
+The watch sends async events on characteristic `3dda0006`. These include button presses,
+heartbeats, JSON messages, music control, battery updates, and more.
+
+### Binary format
+
+```
+[opCode(1)] [eventType(1)] [sequence(1)] [data...]
+```
+
+- **opCode**: `0x01` = REQUEST, `0x02` = NOTIFY
+- **sequence**: incrementing counter per event type (wraps at 255)
+- **eventType**: see table below
+- **data**: event-specific payload (may be empty)
+
+### Event types (from `AsyncEventType.java`)
+
+| Byte | Name | Data format | Notes |
+|------|------|-------------|-------|
+| 0x01 | JSON_FILE_EVENT | UTF-8 JSON string | e.g. `{"req":{"id":43,"buddyChallengeApp":{"type":"sync_pkg"}}}` |
+| 0x02 | HEARTBEAT_EVENT | (empty) | Periodic keep-alive |
+| 0x03 | CONNECTION_PARAM_CHANGE | (unknown) | Not observed on coin-cell |
+| 0x04 | APP_NOTIFICATION_EVENT | notifId(4 LE) + actionType(1) + ... | Dismiss/accept/reject/reply |
+| 0x05 | MUSIC_EVENT | actionByte(1) | 0=PLAY,1=PAUSE,2=TOGGLE,3=NEXT,4=PREV,5=VOL_UP,6=VOL_DOWN |
+| 0x06 | BACKGROUND_SYNC_EVENT | chains of 3-byte frames | Activity sync frames |
+| 0x07 | SERVICE_CHANGE_EVENT | (empty) | GATT service change notification |
+| 0x08 | MICRO_APP_EVENT | 9+ bytes (see below) | Button press → micro app dispatch |
+| 0x09 | AUTHENTICATION_REQUEST | (empty) | Watch requesting re-auth |
+| 0x0B | TIME_SYNC_EVENT | (empty) | Watch requesting time sync |
+| 0x0C | BATTERY_EVENT | state(1) + level(1) | state: 0=DISCHARGING,1=CHARGING,2=FULL |
+| 0x0D | ENCRYPTED_DATA | type(1)+method(1)+key(1)+data | Encrypted payload |
+| 0x0F | ALARM_SYNC_EVENT | (variable) | Alarm sync |
+| 0x10 | WATCH_APP_SYNC_EVENT | (variable) | Watch app config sync |
+| 0x11 | WATCH_APP_EVENT | (variable) | Watch app runtime event |
+
+### Micro App Event format (eventType=0x08)
+
+This is how **button presses** are delivered when a button is configured with
+a micro app (RING_PHONE, MUSIC_CONTROL, etc.).
+
+```
+[version(1)] [declarationId(2 LE)] [variationNumber(1)] [contextNumber(1)]
+[activityId(1)] [eventId(1)] [requestId(1)] [microAppEvent(1)]
+```
+
+**Button identification:** `eventId >> 4` = button index:
+- `0x10` = TOP button
+- `0x20` = MIDDLE button
+- `0x30` = BOTTOM button
+
+**App identification:** `declarationId` maps to a micro app:
+
+| declarationId | MicroAppId | Variant |
+|---------------|------------|--------|
+| 1025 | GOAL_TRACKING | STANDARD |
+| 3073 | RING_PHONE | STANDARD |
+| 4097 | SELFIE | STANDARD |
+| 4609 | MUSIC_CONTROL | PLAY_PAUSE |
+| 4610 | MUSIC_CONTROL | NEXT |
+| 4611 | MUSIC_CONTROL | PREVIOUS |
+| 4612 | MUSIC_CONTROL | VOLUME_UP |
+| 4613 | MUSIC_CONTROL | VOLUME_DOWN |
+| 4614 | MUSIC_CONTROL | STANDARD |
+| 5121 | DATE | STANDARD |
+| 5122 | DATE | SEQUENCED |
+| 5633 | TIME2 | STANDARD |
+| 5634 | TIME2 | SEQUENCED |
+| 6145 | ALERT | STANDARD |
+| 6146 | ALERT | SEQUENCED |
+| 6657 | ALARM | STANDARD |
+| 6658 | ALARM | SEQUENCED |
+| 7169 | PROGRESS | STANDARD |
+| 7170 | PROGRESS | SWEEP |
+| 7681 | TWENTY_FOUR_HOUR | STANDARD |
+| 7682 | TWENTY_FOUR_HOUR | SEQUENCED |
+| 8193 | STOPWATCH | STANDARD |
+| 8705 | WEATHER | STANDARD |
+| 9217 | COMMUTE_TIME | TRAVEL |
+| 9218 | COMMUTE_TIME | ETA |
+
+**`contextNumber` and `requestId`** are incrementing sequence counters, not button identifiers.
+
+### Real hardware test results
+
+With TOP=STOPWATCH, MIDDLE=FORWARD_TO_PHONE, BOTTOM=FORWARD_TO_PHONE:
+- Pressing MIDDLE → micro_app event with declarationId=3073 (RING_PHONE), eventId=0x20 (MIDDLE) ✅
+- Pressing BOTTOM → micro_app event with declarationId=3073 (RING_PHONE), eventId=0x30 (BOTTOM) ✅
+- Pressing TOP → **no event sent** — STOPWATCH runs entirely on watch firmware ✅
+
+**Key insight:** Built-in watch functions (STOPWATCH, DATE, SECOND_TIMEZONE, etc.) run
+on the watch firmware and do NOT send events over BLE. Only phone-dependent functions
+(RING_PHONE/FORWARD_TO_PHONE, MUSIC_CONTROL, etc.) send micro_app events.
+
+---
+
+## 19. Button Configuration & Built-in Watch Functions (2026-05-20)
+
+**Date:** 2026-05-20
+
+**Source:** GadgetBridge `ConfigPayload.java`, official app `WatchAppId.java`,
+`MicroAppUtility.java`, `Action.java`, real-hardware testing.
+
+### Button config file format
+
+Button assignments are stored in file handle `SETTINGS_BUTTONS` (0x0600). The binary
+format is built by `ConfigFileBuilder.java`:
+
+```
+[version: 01 00 00] [buttonCount(1)]
+For each button:
+  [buttonIndex(1)] [entryCount(1)] [header(4-6 bytes)] [null(1)]
+[payloadCount(1)]
+For each distinct payload:
+  [payloadData(variable)]
+[customizationCount: 00]
+[CRC32(4)]
+```
+
+- `buttonIndex`: `0x10`=TOP, `0x20`=MIDDLE, `0x30`=BOTTOM
+- Button config persists on the watch across disconnects — no need to re-upload on reconnect
+- **Bug fixed:** init no longer overwrites button config (was resetting all to FORWARD_TO_PHONE)
+
+### Available button functions (coin-cell Q Commuter HW.0.0)
+
+**Built-in (run entirely on watch firmware, no phone needed):**
+
+| Function | ConfigPayload | Header bytes | What it does |
+|----------|--------------|-------------|-------------|
+| Stopwatch | `STOPWATCH` | `02 01 20 01` | Start/stop/lap — hands show elapsed time |
+| Date | `DATE` | `01 01 14 00` | Hands sweep to show current date |
+| Second timezone | `SECOND_TIMEZONE` | `01 01 16 00` | Hands show time in second timezone |
+| Step goal | `STEP_GOAL_COMPLETION` | `01 02 1C 00` | Hands show step goal progress |
+| Last notification | `LAST_NOTIFICATION` | `01 01 18 00` | Hands show last notification position |
+
+These do NOT send BLE events — the watch handles everything locally.
+
+**Phone-dependent (send events via BLE for the phone to handle):**
+
+| Function | ConfigPayload | Header bytes | What it does |
+|----------|--------------|-------------|-------------|
+| Forward to phone | `FORWARD_TO_PHONE` | `01 01 0C 00` | Single press → micro_app event (RING_PHONE) |
+| Ring phone | `RING_PHONE` | `01 01 0C 00` | Same binary as above — app interprets differently |
+| Music control | `MUSIC_CONTROL` | `01 06 12 00` | Single=play/pause, double=next, long=previous |
+| Forward multi | `FORWARD_TO_PHONE_MULTI` | `01 06 12 00` | Same binary as MUSIC_CONTROL — app interprets differently |
+| Volume up | `VOLUME_UP` | `01 04 12 00` | Single=vol up, double=vol up (repeat), long=mute(?) |
+| Volume down | `VOLUME_DOWN` | `01 05 12 00` | Single=vol down, double=vol down (repeat), long=mute(?) |
+
+Note: `FORWARD_TO_PHONE` / `RING_PHONE` and `MUSIC_CONTROL` / `FORWARD_TO_PHONE_MULTI`
+have **identical binary payloads** — the distinction is only in how the companion app
+interprets the received events.
+
+### Double/long press detection
+
+The **watch firmware** handles multi-press detection for `MUSIC_CONTROL` and `VOLUME_UP/DOWN`
+configs. The binary payload encodes multiple gesture→action mappings:
+- Action 0x02 = single press
+- Action 0x03 = double press
+- Action 0x04 = long press
+
+For `FORWARD_TO_PHONE` (simple), only single press is detected by the firmware.
+Double/long press would need to be detected in software by the CLI/app (timing-based).
+
+### Mode Toggle (from Fossil app)
+
+The official Fossil app offers "mode toggle" as a button action. From the decompiled code:
+
+- `Action.DisplayMode.TOGGLE_MODE = 2006`
+- `WatchAppId.BTN_MODE_TOGGLE = 1` (protobuf config)
+- Legacy migration maps it to the string `"toggle-mode"`
+
+**What it does:** Cycles the sub-eye (small hand) through display modes:
+- Activity/step progress (2001)
+- Last notification (2002)
+- Date (2003)
+- Second timezone (2004)
+- Alarm (2005)
+
+Each press cycles to the next mode. The sub-eye hand moves to show the selected
+data. This is a **firmware-built-in function** — no phone needed.
+
+**Status:** Not yet available in our CLI. The binary payload for mode toggle is not
+in GadgetBridge's `ConfigPayload` enum. To support it, we'd need to either:
+1. Capture the binary payload from the official app (BLE sniff while setting mode toggle)
+2. Reverse-engineer the payload format from the protobuf definitions
+3. Build the payload manually based on the header pattern
+
+The header bytes likely follow the same pattern: `[type] [variant] [appId LE]` where
+the app ID would correspond to the mode toggle declaration.
+
+### Functions in the official Fossil app vs our CLI
+
+| Fossil app | Our CLI | Status |
+|-----------|---------|--------|
+| Date | `date` | ✅ Working |
+| Goal tracking | `step_goal` | ✅ Working |
+| Mode toggle | — | ❌ Not yet (needs binary payload capture) |
+| Music control | `music` | ✅ Working |
+| Volume up | `volume_up` | ✅ Working |
+| Volume down | `volume_down` | ✅ Working |
+| Notifications | `last_notification` | ✅ Working |
+| Ring phone | `ring_phone` / `forward_to_phone` | ✅ Working |
+| Take a photo | — | ❌ Not yet (needs phone-side camera trigger) |
+| Second timezone | `second_timezone` | ✅ Working |
+| Stopwatch | `stopwatch` | ✅ Working |
+
+### CLI usage
+
+```bash
+# Set buttons: TOP=stopwatch, MIDDLE=music, BOTTOM=forward_to_phone
+fossil-q -d D9:20:71:11:74:2A buttons stopwatch music forward_to_phone
+
+# Monitor button events (only phone-dependent buttons send events)
+fossil-q -d D9:20:71:11:74:2A monitor
+```

@@ -16,6 +16,8 @@ A Linux CLI tool that talks to Fossil Q Hybrid coin-cell watches (Q Commuter HW.
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A info
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A time
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A notify SINGLE_SHORT
+java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A buttons stopwatch music forward_to_phone
+java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A monitor  # Ctrl+C to stop
 ```
 
 ## Project Layout
@@ -23,7 +25,7 @@ java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A notify SINGLE_SHORT
 ```
 src/main/java/
   qhybrid/linux/
-    Main.java              # picocli CLI, 11 subcommands, --subprocess flag
+    Main.java              # picocli CLI, 14 subcommands, --subprocess flag
     FossilQAdapter.java    # Protocol adapter (request queue, init, dispatch)
     DbusTransport.java     # BLE via dbus-java + bluez-dbus (default, direct D-Bus)
     BluezTransport.java    # BLE via busctl + persistent bluetoothctl + gdbus monitor (--subprocess fallback)
@@ -72,7 +74,7 @@ GATT retry is a BlueZ/firmware issue (not transport-specific) - adds ~6.5s when 
 |------|---------|
 | DBUS-JAVA-MIGRATION.md | Plan for dbus-java transport (implemented, kept for reference) |
 | AUTHENTICATION-PLAN.md | Full auth protocol decode + plan to crack notification system |
-| FINDINGS.md | 15 technical discoveries from real-hardware testing |
+| FINDINGS.md | 19 technical discoveries from real-hardware testing |
 | TODO.md | Feature checklist with priorities |
 | CALIBRATION-PLAN.md | Interactive calibration UX design |
 | ROADMAP.md | CLI → shared library → Android app |

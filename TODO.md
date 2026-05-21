@@ -63,18 +63,22 @@ Watch: Fossil Q Commuter (HW.0.0), Firmware HW0.0.2.9r.v3, Fossil protocol (2.x)
   - Safe: watch rejects bad uploads, existing alarms unchanged
 
 ### Button Configuration
-- [ ] Read current button config
-- [ ] Set button actions (FORWARD_TO_PHONE, RING_PHONE, MUSIC_CONTROL, etc.)
-- [ ] Listen for button press events on 3dda0006
+- [ ] Read current button config (ButtonConfigurationGetRequest)
+- [x] Set button actions — `buttons` command with 10 functions: stopwatch, date, music, etc.
+- [x] Listen for button press events on 3dda0006 (micro_app events decoded)
 - [ ] Map button presses to custom actions (run command, send notification, etc.)
-- [ ] Multi-button press detection (SINGLE, DOUBLE, LONG)
+- [ ] Multi-button press detection (SINGLE, DOUBLE, LONG) — firmware handles for MUSIC_CONTROL; software timing needed for FORWARD_TO_PHONE
+- [ ] Mode toggle support — needs binary payload capture from official app
+- [ ] Take a photo support — needs phone-side camera trigger implementation
 
 ### Watch Events & Monitoring
-- [ ] `monitor` command — long-running listener for button presses, heartbeats
-- [ ] Parse JSON messages on 3dda0006 (buddyChallengeApp sync, etc.)
-- [ ] Heartbeat events (type 0x02 on 3dda0006)
-- [ ] Button press events (type 0x08 on 3dda0006)
-- [ ] Multi-button actions (type 0x05 on 3dda0006)
+- [x] `monitor` command — long-running NDJSON event stream to stdout, Ctrl+C to stop
+- [x] Parse JSON messages on 3dda0006 (eventType 0x01: buddyChallengeApp sync, etc.)
+- [x] Heartbeat events (eventType 0x02 on 3dda0006)
+- [x] Button press events (eventType 0x08 = MICRO_APP_EVENT, decoded with button name + app name)
+- [x] Music events (eventType 0x05: play/pause/next/prev/volume)
+- [x] Full async event protocol decoded (15 event types from official app)
+- [x] Fixed: init no longer overwrites button config on connect
 - [ ] Connection state monitoring (auto-reconnect)
 
 ### Vibration Patterns
