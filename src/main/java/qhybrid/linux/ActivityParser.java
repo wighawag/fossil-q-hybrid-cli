@@ -268,6 +268,211 @@ public class ActivityParser {
         return sb.toString();
     }
 
+    // ========== Sleep detection ==========
+
+    /**
+     * A detected sleep period.
+     */
+    public static class SleepPeriod {
+        public final long startTimestamp;
+        public final long endTimestamp;
+        public final int durationMinutes;
+        public final int restlessMinutes;  // minutes with some movement during sleep
+        public final double avgVariability;
+
+        SleepPeriod(long startTimestamp, long endTimestamp, int durationMinutes,
+                    int restlessMinutes, double avgVariability) {
+            this.startTimestamp = startTimestamp;
+            this.endTimestamp = endTimestamp;
+            this.durationMinutes = durationMinutes;
+            this.restlessMinutes = restlessMinutes;
+            this.avgVariability = avgVariability;
+        }
+
+        /** Sleep quality based on restless percentage. */
+        public String quality() {
+            double restlessPct = (double) restlessMinutes / durationMinutes * 100;
+            if (restlessPct < 10) return "good";
+            if (restlessPct < 25) return "fair";
+            return "restless";
+        }
+
+        @Override
+        public String toString() {
+            LocalDateTime start = LocalDateTime.ofInstant(
+                    Instant.ofEpochSecond(startTimestamp), ZoneOffset.systemDefault());
+            LocalDateTime end = LocalDateTime.ofInstant(
+                    Instant.ofEpochSecond(endTimestamp), ZoneOffset.systemDefault());
+            int hours = durationMinutes / 60;
+            int mins = durationMinutes % 60;
+            return String.format("%s \u2014 %s  (%dh %02dm)  quality: %s",
+                    start.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")),
+                    end.format(DateTimeFormatter.ofPattern("HH:mm")),
+                    hours, mins, quality());
+        }
+    }
+
+    /**
+     * Detect sleep periods from activity data.
+     *
+     * Algorithm:
+     * 1. A minute is "asleep" if: steps == 0, isActive == false, and variability < threshold
+     * 2. Consecutive asleep minutes form a sleep block
+     * 3. Small gaps of movement (< GAP_TOLERANCE minutes) within a sleep block are merged
+     *    (restless periods, e.g. rolling over)
+     * 4. Sleep blocks shorter than MIN_SLEEP_MINUTES are discarded (naps vs real sleep)
+     *
+     * The variability threshold is adaptive: we use the median variability of all
+     * non-active, zero-step records as the baseline, then set threshold at 2x that.
+     * This handles different watch wearing tightness and individual movement patterns.
+     *
+     * @param data parsed activity data
+     * @return list of detected sleep periods, sorted chronologically
+     */
+    public static List<SleepPeriod> detectSleep(ActivityData data) {
+        return detectSleep(data, 30, 15);
+    }
+
+    /**
+     * Detect sleep periods with configurable parameters.
+     *
+     * @param data parsed activity data
+     * @param minSleepMinutes minimum duration to count as sleep (default: 30)
+     * @param gapTolerance max awake gap in minutes to merge into one sleep period (default: 15)
+     * @return list of detected sleep periods
+     */
+    public static List<SleepPeriod> detectSleep(ActivityData data, int minSleepMinutes, int gapTolerance) {
+        if (data.records.size() < minSleepMinutes) {
+            return List.of();
+        }
+
+        // Step 1: Compute adaptive variability threshold
+        // Collect variability values from all quiet minutes (no steps, not active)
+        List<Integer> quietVariabilities = new ArrayList<>();
+        for (ActivityRecord r : data.records) {
+            if (r.steps == 0 && !r.isActive) {
+                quietVariabilities.add(r.variability);
+            }
+        }
+
+        int variabilityThreshold;
+        if (quietVariabilities.isEmpty()) {
+            // No quiet minutes at all — use a reasonable default
+            variabilityThreshold = 100;
+        } else {
+            // Use the 75th percentile of quiet variability as threshold
+            // This means ~75% of quiet minutes will be classified as "asleep"
+            quietVariabilities.sort(Integer::compareTo);
+            int p75Index = Math.min(quietVariabilities.size() - 1,
+                    (int) (quietVariabilities.size() * 0.75));
+            variabilityThreshold = Math.max(quietVariabilities.get(p75Index), 50);
+        }
+
+        // Step 2: Classify each minute as asleep or awake
+        boolean[] asleep = new boolean[data.records.size()];
+        for (int i = 0; i < data.records.size(); i++) {
+            ActivityRecord r = data.records.get(i);
+            asleep[i] = (r.steps == 0 && !r.isActive && r.variability <= variabilityThreshold);
+        }
+
+        // Step 3: Find contiguous sleep blocks, merging small gaps
+        List<SleepPeriod> periods = new ArrayList<>();
+        int i = 0;
+        while (i < asleep.length) {
+            // Find start of a sleep block
+            if (!asleep[i]) {
+                i++;
+                continue;
+            }
+
+            int blockStart = i;
+            int restless = 0;
+            long variabilitySum = 0;
+            int sleepMinuteCount = 0;
+
+            while (i < asleep.length) {
+                if (asleep[i]) {
+                    variabilitySum += data.records.get(i).variability;
+                    sleepMinuteCount++;
+                    i++;
+                } else {
+                    // Count how long the gap is
+                    int gapStart = i;
+                    while (i < asleep.length && !asleep[i] && (i - gapStart) < gapTolerance) {
+                        i++;
+                    }
+                    if (i < asleep.length && asleep[i]) {
+                        // Gap was short enough — merge (count as restless)
+                        restless += (i - gapStart);
+                    } else {
+                        // Gap too long — end of this sleep block
+                        // Back up to end of last asleep minute
+                        i = gapStart;
+                        break;
+                    }
+                }
+            }
+
+            int blockEnd = i - 1;
+            if (blockEnd < blockStart) blockEnd = blockStart;
+
+            int totalMinutes = blockEnd - blockStart + 1;
+            if (totalMinutes >= minSleepMinutes) {
+                double avgVar = sleepMinuteCount > 0
+                        ? (double) variabilitySum / sleepMinuteCount : 0;
+                periods.add(new SleepPeriod(
+                        data.records.get(blockStart).timestamp,
+                        data.records.get(blockEnd).timestamp + data.intervalSeconds,
+                        totalMinutes,
+                        restless,
+                        avgVar));
+            }
+
+            i++;
+        }
+
+        return periods;
+    }
+
+    /**
+     * Format sleep detection results as human-readable text.
+     */
+    public static String formatSleepSummary(List<SleepPeriod> periods) {
+        if (periods.isEmpty()) {
+            return "  No sleep periods detected.\n";
+        }
+
+        StringBuilder sb = new StringBuilder();
+        int totalSleep = 0;
+        for (SleepPeriod p : periods) {
+            sb.append(String.format("    %s%n", p));
+            totalSleep += p.durationMinutes;
+        }
+        if (periods.size() > 1) {
+            sb.append(String.format("    Total: %dh %02dm across %d period(s)%n",
+                    totalSleep / 60, totalSleep % 60, periods.size()));
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Format sleep periods as NDJSON.
+     */
+    public static String formatSleepNdjson(List<SleepPeriod> periods) {
+        StringBuilder sb = new StringBuilder();
+        for (SleepPeriod p : periods) {
+            sb.append(String.format(
+                    "{\"type\":\"sleep\",\"start\":\"%s\",\"end\":\"%s\"," +
+                    "\"duration_min\":%d,\"restless_min\":%d,\"quality\":\"%s\"," +
+                    "\"avg_variability\":%.1f}%n",
+                    Instant.ofEpochSecond(p.startTimestamp).toString(),
+                    Instant.ofEpochSecond(p.endTimestamp).toString(),
+                    p.durationMinutes, p.restlessMinutes, p.quality(),
+                    p.avgVariability));
+        }
+        return sb.toString();
+    }
+
     /**
      * Format activity data as NDJSON (one JSON object per record).
      */

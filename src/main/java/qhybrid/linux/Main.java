@@ -1892,6 +1892,9 @@ public class Main implements Runnable {
         @Option(names = {"--keep"}, description = "Don't delete activity data from watch after fetching")
         boolean keep;
 
+        @Option(names = {"--sleep"}, description = "Show only sleep analysis (no step/activity data)")
+        boolean sleepOnly;
+
         @Override
         public Integer call() {
             FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
@@ -1933,9 +1936,21 @@ public class Main implements Runnable {
             // Parse and display
             try {
                 var activity = ActivityParser.parse(data);
-                if (raw) {
+                if (sleepOnly) {
+                    // Sleep-only mode
+                    var sleepPeriods = ActivityParser.detectSleep(activity);
+                    if (raw) {
+                        System.out.print(ActivityParser.formatSleepNdjson(sleepPeriods));
+                    } else {
+                        System.out.println("Sleep analysis (" + activity.records.size() + " activity records):");
+                        System.out.print(ActivityParser.formatSleepSummary(sleepPeriods));
+                    }
+                } else if (raw) {
                     System.out.print(all ? ActivityParser.formatNdjson(activity)
                                          : ActivityParser.formatNdjsonStepsOnly(activity));
+                    // Append sleep data as NDJSON too
+                    var sleepPeriods = ActivityParser.detectSleep(activity);
+                    System.out.print(ActivityParser.formatSleepNdjson(sleepPeriods));
                 } else {
                     System.out.print(ActivityParser.formatSummary(activity));
                 }
