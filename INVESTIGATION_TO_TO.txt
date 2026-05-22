@@ -1,0 +1,30 @@
+ ### 🔴 High interest — could unlock new functionality
+
+ 1. Different vibration patterns — We currently only use DEFAULT (4) vibration. The watch supports at least CALL(1), TEXT(2), EMAIL(3), DEFAULT(4), ONE_SHORT(5), TWO_SHORT(6), THREE_SHORT(7), ONE_LONG(8). We
+ could test these by sending notifications with different vibe pattern bytes. This would let you distinguish notification types by vibration feel.
+ 2. Notification hand positions — Our notify command always moves hands to 3:15 (90°/90°). The filter system supports arbitrary hour/minute degree positions per "app". You could have WhatsApp → 3:00, SMS →
+ 6:00, email → 9:00, etc. Already decoded from captures, just needs implementing.
+ 3. ConfigurationGetRequest — read back config — We've never tried reading the watch's current config. This would tell us what configs are actually stored (step count, goal values, battery voltage, etc.)
+ without guessing. Could reveal what other config IDs exist.
+ 4. Inactivity warning (config 0x0009) — Configurable nudge: "vibrate if idle for X minutes between HH:MM and HH:MM". The official app supports this. Just needs sending the 6-byte config item.
+ 5. STOPWATCH in toggle — Stopwatch has a different header type (02 instead of 01). We never tested it in a toggle combo. Does it work? It could add a useful 6th entry.
+
+ ### 🟡 Medium interest — incremental improvements
+
+ 6. Read current step count (config 0x0002) — Know how many steps without fetching full activity data. Useful for scripting.
+ 7. Set current step count — Reset step counter or set it to a value. Could be used to calibrate the passive sub-eye indicator.
+ 8. Custom notification filters — Per-app hand positions and vibe patterns. The format is fully decoded. Could map real Linux desktop notifications to different watch positions.
+ 9. Multi-press detection for FORWARD_TO_PHONE — MUSIC_CONTROL has firmware-level single/double/long press. FORWARD_TO_PHONE only sends single press events. Software-level timing could detect double/long press
+ in the monitor command.
+ 10. Interactive calibration — The CALIBRATION-PLAN.md describes a nice TUI for nudging hands with keyboard. Needs JLine dependency.
+
+ ### 🟢 Curiosity / research
+
+ 11. Hand action files (0x0900) — Complex choreographed hand animations. The format uses RLE encoding. Could create custom "dances" for notifications.
+ 12. HID service (0x1812) — The watch has an HID profile. What reports does it send? Could it act as a keyboard/media controller at the HID level?
+ 13. PlayCrazyShitRequest — Yes, that's the actual class name in GadgetBridge. What does it do?
+ 14. ALERT button function (appId 0x18) — Different from ALARM. What does it display? Timer countdown?
+ 15. TWENTY_FOUR_HOUR function (appId 0x1e) — 24-hour time display? Military time on the sub-eye?
+ 16. What's the max toggle entry count? — We confirmed 5. Could there be 6, 7, 8?
+
+ Which of these interest you? I'd recommend #1 (vibration patterns) and #3 (read config) as the most immediately useful. Both are quick to implement and test.
