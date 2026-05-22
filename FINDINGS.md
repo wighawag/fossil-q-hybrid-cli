@@ -1660,3 +1660,218 @@ fossil-q -d <MAC> read-config --raw
 # Read alarms (now works!)
 fossil-q -d <MAC> alarm list
 ```
+
+---
+
+## 26. BLE HID Service (0x1812) — Dormant, Not Used by Watch Firmware (2026-05-22)
+
+**Date:** 2026-05-22
+
+**Source:** Direct GATT enumeration via BlueZ + gdbus monitor + BLE capture analysis
+across 7 bugreport sessions (official Fossil app and our CLI) on Fossil Q Commuter
+(HW.0.0), firmware HW0.0.2.9r.v3.
+
+### Summary
+
+The watch exposes a fully-structured BLE HID service with a valid Report Map descriptor
+defining both a Keyboard report and a Consumer Control (media keys) report. However,
+**the watch firmware never sends HID reports**. All button events are delivered exclusively
+through the Fossil proprietary protocol on characteristic 3dda0006. The HID service
+appears to be a vestigial/placeholder from Misfit's original firmware platform, shared
+across multiple hybrid watch models but unused on the Q Commuter.
+
+### Service structure
+
+BLE Service UUID: `00001812-0000-1000-8000-00805f9b34fb` (Human Interface Device)
+
+| Characteristic | UUID | Flags | Purpose |
+|---------------|------|-------|---------|
+| char0071 | 0x2A4A | read | HID Information |
+| char0073 | 0x2A4B | read | Report Map |
+| char0075 | 0x2A4D | read, notify | Report (Input, ID 1 = Keyboard) |
+| char0079 | 0x2A4D | read, notify | Report (Input, ID 2 = Consumer Control) |
+| char007d | 0x2A4C | write-without-response | HID Control Point |
+
+Descriptors on Report characteristics:
+- 0x2902 (CCCD) — enables notifications. Works correctly when bonded (Notifying=true).
+- 0x2908 (Report Reference) — identifies report ID and type.
+
+Not present: Protocol Mode (0x2A4E), Output Reports, Feature Reports.
+
+### HID Information (0x2A4A)
+
+```
+Raw: 00 00 00 00
+  bcdHID:        0x0000 (version 0.0 — unusual, should be 0x0111 for HID v1.11)
+  bCountryCode:  0x00 (Not Localized)
+  Flags:         0x00 (no RemoteWake, no NormallyConnectable)
+```
+
+The zero version number suggests this was never properly configured for production use.
+
+### Report Reference Descriptors (0x2908)
+
+| Characteristic | Report ID | Report Type | Decoded |
+|---------------|-----------|-------------|----------|
+| char0075 | 1 | 1 (Input) | Keyboard report |
+| char0079 | 2 | 1 (Input) | Consumer Control report |
+
+### Report Map (0x2A4B) — Full Decode
+
+90-byte HID Report Descriptor:
+```
+05 01 09 07 a1 01 85 01 05 07 19 e0 29 e7 15 00
+25 01 75 01 95 08 81 02 95 01 75 08 81 01 95 08
+75 01 15 00 25 01 05 07 09 05 09 1a 09 4f 09 50
+09 90 09 4b 09 4e 09 58 81 02 c0 05 0c 09 01 a1
+01 85 02 15 00 25 01 95 08 75 01 09 b5 09 b6 09
+cd 09 e9 09 ea 09 e2 81 62 c0
+```
+
+#### Report ID 1: Keyboard (Usage Page 0x07 = Keyboard/Keypad)
+
+Application Collection: Generic Desktop → Keypad (0x07)
+
+| Byte | Bits | Type | Content |
+|------|------|------|---------|
+| 0 | — | — | Report ID = 0x01 |
+| 1 | 0-7 | Data, Variable, Absolute | Modifier keys (Ctrl/Shift/Alt/GUI, left+right) |
+| 2 | 0-7 | Constant | Reserved/padding |
+| 3 | 0-7 | Data, Variable, Absolute | 8 individual key bits (see below) |
+
+Modifier key bits (byte 1):
+```
+  Bit 0: Left Control   (0xE0)
+  Bit 1: Left Shift     (0xE1)
+  Bit 2: Left Alt       (0xE2)
+  Bit 3: Left GUI       (0xE3)
+  Bit 4: Right Control  (0xE4)
+  Bit 5: Right Shift    (0xE5)
+  Bit 6: Right Alt      (0xE6)
+  Bit 7: Right GUI      (0xE7)
+```
+
+Key bits (byte 3) — unusual selection for a watch:
+```
+  Bit 0: Keyboard B         (0x05)  — iOS camera shutter
+  Bit 1: Keyboard W         (0x1A)  — unknown purpose
+  Bit 2: Right Arrow        (0x4F)  — presentation/navigation
+  Bit 3: Left Arrow         (0x50)  — presentation/navigation
+  Bit 4: Keyboard LANG1     (0x90)  — Hangul/English toggle (Asian market)
+  Bit 5: Page Up            (0x4B)  — e-reader/presentation
+  Bit 6: Page Down          (0x4E)  — e-reader/presentation
+  Bit 7: Keypad Enter       (0x58)  — confirmation
+```
+
+#### Report ID 2: Consumer Control (Usage Page 0x0C)
+
+Application Collection: Consumer Control (0x01)
+
+| Byte | Bits | Type | Content |
+|------|------|------|---------|
+| 0 | — | — | Report ID = 0x02 |
+| 1 | 0-7 | Data, Variable, Absolute, No Preferred, Null State | Media key bits |
+
+Media key bits (byte 1):
+```
+  Bit 0: Scan Next Track     (0xB5)
+  Bit 1: Scan Previous Track (0xB6)
+  Bit 2: Play/Pause          (0xCD)
+  Bit 3: Volume Increment    (0xE9)
+  Bit 4: Volume Decrement    (0xEA)
+  Bit 5: Mute                (0xE2)
+  Bits 6-7: (unused padding)
+```
+
+The Consumer Control report has `No Preferred State` and `Null State` flags (Input 0x62),
+meaning all-zero = no keys pressed (null state). Standard for momentary media controls.
+
+### Static report values (never change)
+
+| Report | Read value | Meaning |
+|--------|-----------|----------|
+| ID 1 (Keyboard) | `0x00` | No keys pressed |
+| ID 2 (Consumer) | `0x01` | Scan Next Track bit stuck high |
+
+Report 2's stuck `0x01` value is likely an uninitialized default — it never changes
+regardless of button presses or connection state. This confirms the firmware never
+actively writes to these report characteristics.
+
+### Test methodology
+
+1. **Enabled HID notifications** on both Report characteristics via persistent bluetoothctl.
+   Confirmed `Notifying = true` on both (CCCD writes succeed because device is bonded).
+
+2. **Pressed all buttons** (TOP=MUSIC_CONTROL, MIDDLE=FORWARD_TO_PHONE, BOTTOM=STOPWATCH)
+   with single press, double press, and long press gestures. Hardware-verified at 21:49 UTC.
+
+3. **Monitored all GATT characteristic changes** via `gdbus monitor --system --dest org.bluez`
+   for the full device path.
+
+4. **Results (with timestamps):**
+   ```
+   21:49:47 — TOP single  → MUSIC_EVENT TOGGLE_PLAY_PAUSE  on char004d (3dda0006)
+   21:49:51 — TOP double  → MUSIC_EVENT NEXT               on char004d (3dda0006)
+   21:49:53 — TOP long    → MUSIC_EVENT PREVIOUS            on char004d (3dda0006)
+   21:49:55 — MID single  → MICRO_APP RING_PHONE            on char004d (3dda0006)
+   (BOTTOM = STOPWATCH — firmware-only, no BLE event expected or received)
+
+   HID char0075 (keyboard): ZERO events
+   HID char0079 (consumer): ZERO events
+   ```
+
+5. **Checked 7 BLE captures** (bugreport1-8) from the official Fossil app on Android.
+   All show the same pattern: Android's Bluetooth stack discovers the HID service,
+   reads Report Map/HID Info/Report References, writes CCCDs — but zero HID notifications
+   are ever received across hundreds of seconds of active use with button presses.
+
+### Why the HID service exists (likely explanation)
+
+The Fossil Q Hybrid series is based on Misfit's wearable platform. Misfit's earlier
+products (e.g. Misfit Flash Link) were advertised as BLE remotes that could control
+music and take photos via standard HID. The HID service with its keyboard + consumer
+control reports is almost certainly **shared firmware infrastructure** from those products.
+
+The key selection in the keyboard report supports this theory:
+- **Keyboard B (0x05)** — iOS uses volume keys (mapped to certain keyboard keys) as
+  camera shutter triggers
+- **Arrows + Page Up/Down** — presentation remote / e-reader control (Misfit Flash Link feature)
+- **LANG1 (0x90)** — Korean market requirement (Hangul/English toggle)
+- **Consumer Control media keys** — standard play/pause/next/previous/volume
+
+On the Q Commuter (and likely all Fossil Q Hybrid models), the firmware uses the
+proprietary Fossil protocol exclusively. The HID service structure remains in the
+GATT server but the firmware never populates the reports.
+
+### Could we make it work?
+
+The HID service is **read-only from our perspective** — there are no Output or Feature
+reports to write to, and no way to trigger the firmware to start sending HID reports.
+The firmware would need to be modified to actually populate these reports on button press.
+
+To use the watch as a standard BLE media controller without a custom app, we would need
+to either:
+1. **Act as a proxy** — our CLI receives MUSIC_EVENT on the Fossil characteristic and
+   translates it to synthetic HID input events via `uinput` (Linux) or equivalent.
+   This works but requires our software running.
+2. **Custom firmware** — modify the watch firmware to send HID reports on button press.
+   Not feasible without firmware source code / flash access.
+
+The proxy approach (#1) is practical and would let the watch control any media player
+on Linux (MPRIS), macOS, or Windows via synthetic HID events.
+
+### Official Fossil app interaction with HID
+
+The official Fossil app (decompiled) has **zero references** to the HID service UUID
+(0x1812), Report Map (0x2A4B), or any HID-related characteristics. Android's Bluetooth
+stack automatically discovers and subscribes to HID services on bonded devices (visible
+in BLE captures), but the Fossil app never reads or processes HID data.
+
+### Answers to investigation questions
+
+| Question | Answer |
+|----------|--------|
+| Does the watch send HID media key events on MUSIC_CONTROL? | **No.** Only proprietary Fossil events on 3dda0006. |
+| Does FORWARD_TO_PHONE produce HID output? | **No.** Only MICRO_APP_EVENT on 3dda0006. |
+| Are there Feature Reports to configure HID behavior? | **No.** Only Input reports (read+notify). No Output or Feature reports. |
+| Could the HID profile make the watch a standard BLE media controller? | **Not directly.** The firmware never sends HID reports. A proxy translating Fossil events → synthetic HID input would work. |
