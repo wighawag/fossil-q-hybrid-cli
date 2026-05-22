@@ -1208,9 +1208,10 @@ Fossil app's mode toggle uses TZ + DATE + ALARM, matching DisplayMode enum value
 
 ### Sub-eye indicator positions (A, B, C)
 
-The watch dial has three labeled positions (A, B, C) for the sub-eye hand.
-Testing reveals these are **hardwired to specific display functions**, not to
-entry position within the toggle list:
+The watch dial has labeled positions for the sub-eye hand. The number of labeled
+positions varies by watch model:
+
+**Q Commuter (HW.0.0) — 3-position dial: A, B, C**
 
 | Indicator | Function | Confirmed |
 |-----------|----------|-----------|
@@ -1218,6 +1219,27 @@ entry position within the toggle list:
 | B | DATE | ✅ Always points to B regardless of entry order |
 | C | **ALARM** | ✅ Points to C when alarm is set (home/zero if no alarm) |
 | 0 (home) | STEP_GOAL_COMPLETION, LAST_NOTIFICATION, GOAL_TRACKING | ✅ All point to sub-eye home/zero or are skipped entirely |
+
+**Other models (e.g. Q Activist) — 5-position dial: Alert, Time 2, Alarm, Date, 24HR**
+
+| Dial label | Function | Maps to Q Commuter |
+|------------|----------|--------------------|
+| Time 2 | SECOND_TIMEZONE (appId 0x16) | = A |
+| Date | DATE (appId 0x14) | = B |
+| Alarm | ALARM (appId 0x1A) | = C |
+| Alert | ALERT / LAST_NOTIFICATION (appId 0x18) | No labeled position on Q Commuter |
+| 24HR | TWENTY_FOUR_HOUR (appId 0x1E) | No labeled position on Q Commuter |
+
+**Key discovery:** ALERT and LAST_NOTIFICATION are the **same firmware app** (appId
+0x18). LAST_NOTIFICATION header = `01 01 18 00`, ALERT declarationId 6145 = 0x1801 →
+both decode to appId 0x18. GadgetBridge calls it "LAST_NOTIFICATION"; the official
+app dial labels it "Alert". On 5-position dials, it has a dedicated sub-eye position.
+
+**TWENTY_FOUR_HOUR** (appId 0x1E) is untested. Given it has a labeled dial position
+on 5-position watches, it likely shows the current hour in 24h format on the sub-eye.
+
+Positions are **hardwired to specific display functions**, not to
+entry position within the toggle list:
 
 ### Multi-entry toggle testing results
 
@@ -1529,8 +1551,16 @@ fossil-q -d <MAC> position-test --positions "60/300,180/0,330/30"  # custom list
 2. **What does indicator C display?** — does sub-eye position on C encode the alarm time
    (e.g. proportional to hours until alarm)? Test with alarms at different times.
 3. **6+ entries** — is there an upper limit? Could add STOPWATCH or other functions.
-4. **ALERT (appId 0x18, declarationId 6145/6146)** — what does this display mode do?
-   Construct payload and test in toggle.
+4. **ALERT (appId 0x18, declarationId 6145/6146)** — this IS LAST_NOTIFICATION.
+   ALERT and LAST_NOTIFICATION share appId 0x18 (header `01 01 18 00`, declarationId
+   6145 = 0x1801). Same firmware app, different naming (GadgetBridge = "LAST_NOTIFICATION",
+   official app/dial = "Alert"). On watches with 5-position dials (e.g. Q Activist),
+   ALERT has its own labeled sub-eye position. On Q Commuter (3-position: A/B/C),
+   LAST_NOTIFICATION has no labeled position (sub-eye goes to home/zero, hands move
+   to notification position). **Resolved — no further testing needed.**
+5. **TWENTY_FOUR_HOUR (appId 0x1E, declarationId 7681/7682)** — untested. Has a
+   labeled sub-eye position ("24HR") on 5-position dial watches. Likely shows
+   current hour in 24h format on sub-eye. Construct payload and test in toggle.
 
 ---
 
