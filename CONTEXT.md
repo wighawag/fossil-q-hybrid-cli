@@ -81,7 +81,7 @@ GATT retry is a BlueZ/firmware issue (not transport-specific) - adds ~6.5s when 
 |------|---------|
 | DBUS-JAVA-MIGRATION.md | Plan for dbus-java transport (implemented, kept for reference) |
 | AUTHENTICATION-PLAN.md | Full auth protocol decode + plan to crack notification system |
-| FINDINGS.md | 19 technical discoveries from real-hardware testing |
+| FINDINGS.md | 22+ technical discoveries from real-hardware testing |
 | TODO.md | Feature checklist with priorities |
 | CALIBRATION-PLAN.md | Interactive calibration UX design |
 | ROADMAP.md | CLI → shared library → Android app |
@@ -139,6 +139,11 @@ Bond benefits: encrypted link, WakeAllowed, faster reconnect (device stays known
 - **2-byte auth status** - watch sends `03 07` (2 bytes) for status=0x00, not `03 07 00`. Handle missing trailing null.
 - **dbus-java Properties.Get() unwraps Variant** - returns `UInt16` directly, not `Variant<UInt16>`. Must handle both forms when reading MTU.
 - **StartNotify throws NotPermitted on Fossil chars** - expected without BLE bonding. Notifications still delivered via PropertiesChanged signal handler.
+- **Toggle entries skip when no data** - ALARM (no alarm set), LAST_NOTIFICATION (no cached notif), STEP_GOAL_COMPLETION (0% steps) are silently skipped in multi-entry toggles. Not an entry count limit. 5-entry toggle confirmed working.
+- **GOAL_TRACKING breaks toggle** - appId 0x04 produces error vibration and aborts remaining toggle entries. Incompatible payload structure (no `B0 XX 00` display-mode blocks). Works only as standalone button (blind counter).
+- **"STEP_GOAL_PROGRESS" was ALARM** - appId 0x1a is ALARM (MicroAppId 6657/6658), not step goal progress. PROGRESS is appId 0x1c. See FINDINGS.md #22.
+- **Sub-eye indicators: A=TZ, B=DATE, C=ALARM** - all three confirmed. Sub-eye default = passive step progress (steps/goal). Celebration vibration when goal met.
+- **Config 0x17/0x18 (task tracking goal/value)** - no visual effect on watch. Blind counter only. See FINDINGS.md #22.
 
 ## BLE Captures
 

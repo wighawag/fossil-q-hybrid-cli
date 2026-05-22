@@ -25,6 +25,10 @@
 | `step-goal` | ✅ Works | Goal 50 → sub-eye at ~19, goal 99999 → sub-eye at zero |
 | `vibration` | ✅ Works | Strength 10 → weak feedback buzz, 100→100 (no change) → no buzz |
 | `timezone` | ✅ Works | Offset 0 → hour hand shifted back 1h, offset 60 → restored correct time |
+| `second-timezone` | ✅ Works | `330` sets IST (UTC+5:30), `off` disables. Config 0x0011. |
+| `goal-config` | ✅ Works | Config 0x17/0x18 accepted, but no visual effect on watch (blind counter) |
+| `buttons` (mode_toggle) | ✅ Works | 5-entry toggle confirmed: TZ(A)→DATE(B)→ALARM(C)→STEP_GOAL→LAST_NOTIF |
+| `buttons` (goal_tracking) | ⚠️ Partial | Standalone: vibrates on press (blind counter). Toggle: breaks chain (error vibe) |
 
 ---
 

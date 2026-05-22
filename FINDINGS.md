@@ -1316,7 +1316,11 @@ This is not a firmware limit on entry count — all entries with data are shown.
 **GOAL_TRACKING (appId 0x04) is not usable in toggle.** When placed in the middle
 of a toggle sequence (e.g. `tz+goal_tracking+date`), it produces an error vibration
 and aborts — subsequent entries (date) never display. As a standalone button it only
-vibrates (blind counter), and config 0x17/0x18 does not help.
+vibrates (blind counter), and config 0x17/0x18 does not help. Changing the variant
+byte to 0x02 (SEQUENCED) with recomputed CRC also fails — the internal payload
+structure is fundamentally incompatible with toggle mode. GOAL_TRACKING's payload
+lacks the `B0 XX 00` display-mode blocks and `08 01 50` section that toggle-compatible
+entries share.
 
 **5-entry toggle confirmed:** TZ + DATE + ALARM + STEP_GOAL + LAST_NOTIFICATION all
 display when their data requirements are met. No firmware entry count limit observed.

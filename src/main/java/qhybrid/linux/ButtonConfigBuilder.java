@@ -109,6 +109,8 @@ public class ButtonConfigBuilder {
     public static final ButtonEntry GOAL_TRACKING_ENTRY =
             new ButtonEntry(GOAL_TRACKING_HEADER, GOAL_TRACKING_DATA);
 
+
+
     // LAST_NOTIFICATION payload — already in ConfigPayload, but note the
     // variant difference: standalone = variant 0x01 (01 01 18 00).
     // Inside toggle context it may behave differently (see FINDINGS testing).

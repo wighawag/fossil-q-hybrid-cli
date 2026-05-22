@@ -984,6 +984,7 @@ public class Main implements Runnable {
                 return ButtonConfigBuilder.GOAL_TRACKING_ENTRY;
             }
 
+
             System.err.printf("Unknown button function '%s' for %s button.%n", name, position);
             System.err.println("Available: forward_to_phone, stopwatch, date, music, volume_up, " +
                     "volume_down, step_goal, goal_tracking, alarm_toggle, last_notification, " +
