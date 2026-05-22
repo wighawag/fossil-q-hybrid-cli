@@ -62,7 +62,20 @@ public class Main implements Runnable {
 
     // --- Shared connection logic ---
 
+    /**
+     * Connect with minimal init (auth + file versions, no animation/config sync/filter upload).
+     * This is the fast path for most commands.
+     */
     static FossilQAdapter connectAndInit(String mac, boolean useSubprocess) {
+        return connectAndInit(mac, useSubprocess, false);
+    }
+
+    /**
+     * Connect and initialize.
+     * @param fullInit true = full init (animation + config sync + filter upload);
+     *                 false = minimal init (auth + file versions only, ~2-3s faster)
+     */
+    static FossilQAdapter connectAndInit(String mac, boolean useSubprocess, boolean fullInit) {
         if (mac == null || mac.isBlank()) {
             System.err.println("Error: --device <MAC> is required");
             System.exit(1);
@@ -82,7 +95,7 @@ public class Main implements Runnable {
         }
 
         FossilQAdapter adapter = new FossilQAdapter(transport);
-        adapter.initialize();
+        adapter.initialize(fullInit);
 
         // For Fossil protocol, wait for the async init to complete
         if (adapter.isFossilProtocol()) {
@@ -347,7 +360,7 @@ public class Main implements Runnable {
                     mDeg = (short) pos[1];
                 }
                 FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
-                sleep(5000);
+                sleep(500);
                 String patternName = VIBE_PATTERN_NAMES[pattern];
                 adapter.playNotificationWithPattern((byte) pattern, hDeg, mDeg);
                 System.out.printf("Notification sent: vibe=%d (%s), hands=%d\u00b0/%d\u00b0%n",
@@ -361,7 +374,7 @@ public class Main implements Runnable {
             if (direct) {
                 VibrationType vt = parseVibrationType(typeOrVibration);
                 FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
-                sleep(5000);
+                sleep(500);
                 adapter.playMisfitNotification(vt, hourDeg, minDeg);
                 System.out.println("Direct notification sent: " + vt);
                 sleep(2000);
@@ -372,7 +385,7 @@ public class Main implements Runnable {
             // --- Mode 4: Legacy (bare VibrationType name, no --vibe/--position) ---
             VibrationType vt = parseVibrationType(typeOrVibration);
             FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
-            sleep(5000);
+            sleep(500);
             adapter.playNotification(vt, -1, -1);
             System.out.println("Notification sent: " + vt);
             sleep(2000);
@@ -383,7 +396,7 @@ public class Main implements Runnable {
         /** Trigger a configured notification type. Uploads all filters, then plays the specific one. */
         private int triggerConfigured(NotificationConfig.NotifType type, NotificationConfig config) {
             FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
-            sleep(5000);
+            sleep(500);
 
             // Upload all configured filters (so the watch knows about all types)
             adapter.uploadNotificationFilter(config);

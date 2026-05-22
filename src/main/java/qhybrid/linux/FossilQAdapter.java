@@ -92,6 +92,9 @@ public class FossilQAdapter {
     private ScheduledFuture<?> timeoutFuture;
     private static final int REQUEST_TIMEOUT_SECS = 300; // 5 minutes
 
+    // Init mode: full (animation + config sync + filter upload) vs minimal (auth only)
+    private boolean fullInit = false;
+
     // Authentication handshake
     private CompletableFuture<byte[]> pendingAuthResponse;
 
@@ -130,9 +133,18 @@ public class FossilQAdapter {
     // ========== Public API (called by CLI commands) ==========
 
     /**
-     * Initialize the watch. Reads device info, detects protocol, runs init sequence.
+     * Initialize the watch with full init (animation + config sync + filter upload).
      */
     public void initialize() {
+        initialize(true);
+    }
+
+    /**
+     * Initialize the watch. Reads device info, detects protocol, runs init sequence.
+     * @param fullInit true = animation + config sync + filter upload; false = minimal (auth only)
+     */
+    public void initialize(boolean fullInit) {
+        this.fullInit = fullInit;
         LOG.info("Initializing watch...");
 
         // Notifications are enabled by BluezTransport.connect() — no need to do it here
@@ -863,11 +875,13 @@ public class FossilQAdapter {
     // ========== Fossil protocol init ==========
 
     private void initFossilProtocol() {
-        LOG.info("Initializing Fossil protocol...");
+        LOG.info("Initializing Fossil protocol ({})...", fullInit ? "full" : "minimal");
         device.setState(GBDevice.State.INITIALIZING);
 
-        // 1. Pairing animation
-        queueWrite(new AnimationRequest(), false);
+        // 1. Pairing animation (full init only — cosmetic)
+        if (fullInit) {
+            queueWrite(new AnimationRequest(), false);
+        }
 
         // 2. Request MTU (TransactionBuilder handles the BLE call)
         queueWrite(new RequestMtuRequest(512), false);
@@ -906,11 +920,13 @@ public class FossilQAdapter {
                     try {
                         performAuthentication();
 
-                        // 5. Sync configuration
-                        syncConfiguration();
+                        if (fullInit) {
+                            // 5. Sync configuration (time, step goal, vibe strength)
+                            syncConfiguration();
 
-                        // 6. Sync notification filter
-                        syncNotificationSettings();
+                            // 6. Sync notification filter
+                            syncNotificationSettings();
+                        }
 
                         // 7. Set initialized
                         device.setState(GBDevice.State.INITIALIZED);
