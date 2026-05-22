@@ -7,17 +7,14 @@
  3. ConfigurationGetRequest — read back config — We've never tried reading the watch's current config. This would tell us what configs are actually stored (step count, goal values, battery voltage, etc.)
  without guessing. Could reveal what other config IDs exist.
  4. Inactivity warning (config 0x0009) — Configurable nudge: "vibrate if idle for X minutes between HH:MM and HH:MM". The official app supports this. Just needs sending the 6-byte config item.
- 5. STOPWATCH in toggle — Stopwatch has a different header type (02 instead of 01). We never tested it in a toggle combo. Does it work? It could add a useful 6th entry.
-
+ 
  ### 🟡 Medium interest — incremental improvements
 
  6. Read current step count (config 0x0002) — Know how many steps without fetching full activity data. Useful for scripting.
  7. Set current step count — Reset step counter or set it to a value. Could be used to calibrate the passive sub-eye indicator.
- 8. Custom notification filters — Per-app hand positions and vibe patterns. The format is fully decoded. Could map real Linux desktop notifications to different watch positions.
  9. Multi-press detection for FORWARD_TO_PHONE — MUSIC_CONTROL has firmware-level single/double/long press. FORWARD_TO_PHONE only sends single press events. Software-level timing could detect double/long press
  in the monitor command.
- 10. Interactive calibration — The CALIBRATION-PLAN.md describes a nice TUI for nudging hands with keyboard. Needs JLine dependency.
-
+ 
  ### 🟢 Curiosity / research
 
  11. Hand action files (0x0900) — Complex choreographed hand animations. The format uses RLE encoding. Could create custom "dances" for notifications.
