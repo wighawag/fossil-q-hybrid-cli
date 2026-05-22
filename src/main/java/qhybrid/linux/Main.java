@@ -13,6 +13,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.Callable;
 
+import org.jline.terminal.Terminal;
+import org.jline.terminal.TerminalBuilder;
+
 @Command(name = "fossil-q",
         description = "Fossil Q Hybrid CLI for Linux (coin-cell watches: Q Commuter, Q Activist)",
         mixinStandardHelpOptions = true,
@@ -360,17 +363,139 @@ public class Main implements Runnable {
         }
     }
 
-    @Command(name = "calibrate", description = "Save current hand positions as calibration reference")
+    @Command(name = "calibrate", description = "Interactive hand calibration — nudge hands to 12:00:00, then save")
     static class CalibrateCmd implements Callable<Integer> {
         @ParentCommand Main parent;
 
         @Override
         public Integer call() {
             FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
-            adapter.saveCalibration();
-            System.out.println("Calibration saved");
+
+            // Track hand positions (degrees, 0-359)
+            int hourDeg = 0, minDeg = 0, subDeg = 0;
+            int step = 6; // default coarse = 6° (one minute mark)
+
+            // Take hand control and move to 0°/0°/0°
+            adapter.requestHandsControl();
+            sleep(300);
+            adapter.setHands(0, 0, 0);
+            sleep(500);
+
+            System.out.println();
+            System.out.println("  ╔══════════════════════════════════════════════════════╗");
+            System.out.println("  ║          INTERACTIVE HAND CALIBRATION                ║");
+            System.out.println("  ╠══════════════════════════════════════════════════════╣");
+            System.out.println("  ║  All hands have been moved to 0°.                   ║");
+            System.out.println("  ║  Nudge each hand until it points exactly at 12.     ║");
+            System.out.println("  ║                                                      ║");
+            System.out.println("  ║  h / H  — nudge hour hand  +step / −step            ║");
+            System.out.println("  ║  m / M  — nudge minute hand +step / −step           ║");
+            System.out.println("  ║  s / S  — nudge sub-eye    +step / −step            ║");
+            System.out.println("  ║  f      — fine step   (1°)                          ║");
+            System.out.println("  ║  c      — coarse step (6°, default)                 ║");
+            System.out.println("  ║  Enter  — save calibration & sync time              ║");
+            System.out.println("  ║  q      — quit without saving                       ║");
+            System.out.println("  ╚══════════════════════════════════════════════════════╝");
+            System.out.println();
+
+            Terminal terminal = null;
+            try {
+                terminal = TerminalBuilder.builder()
+                        .system(true)
+                        .jansi(false)
+                        .build();
+                terminal.enterRawMode();
+                var reader = terminal.reader();
+
+                printStatus(hourDeg, minDeg, subDeg, step);
+
+                boolean saved = false;
+                loop:
+                while (true) {
+                    int ch = reader.read();
+                    if (ch == -1) break; // EOF
+
+                    switch (ch) {
+                        case 'h': hourDeg = wrap(hourDeg + step); break;
+                        case 'H': hourDeg = wrap(hourDeg - step); break;
+                        case 'm': minDeg  = wrap(minDeg + step);  break;
+                        case 'M': minDeg  = wrap(minDeg - step);  break;
+                        case 's': subDeg  = wrap(subDeg + step);  break;
+                        case 'S': subDeg  = wrap(subDeg - step);  break;
+                        case 'f': step = 1; printStatus(hourDeg, minDeg, subDeg, step); continue loop;
+                        case 'c': step = 6; printStatus(hourDeg, minDeg, subDeg, step); continue loop;
+                        case 'q':
+                            System.out.print("\r\033[K"); // clear line
+                            System.out.println("Aborted — releasing hands without saving.");
+                            adapter.releaseHandsControl();
+                            sleep(300);
+                            adapter.shutdown();
+                            return 0;
+                        case '\r': case '\n': // Enter
+                            saved = true;
+                            break loop;
+                        default:
+                            continue loop; // ignore unknown keys
+                    }
+
+                    // Send the updated hand positions to the watch
+                    adapter.setHands(hourDeg, minDeg, subDeg);
+                    printStatus(hourDeg, minDeg, subDeg, step);
+                    sleep(200); // let watch respond before next keystroke
+                }
+
+                if (saved) {
+                    System.out.print("\r\033[K");
+                    System.out.println("Saving calibration...");
+                    adapter.saveCalibration();
+                    sleep(300);
+                    adapter.releaseHandsControl();
+                    sleep(300);
+                    adapter.syncTime();
+                    sleep(500);
+                    System.out.println("Calibration saved. Time synced. Hands should show correct time.");
+                }
+
+            } catch (IOException e) {
+                System.err.println("Terminal error: " + e.getMessage());
+                // Release hands on error
+                try { adapter.releaseHandsControl(); } catch (Exception ignored) {}
+                adapter.shutdown();
+                return 1;
+            } finally {
+                if (terminal != null) {
+                    try { terminal.close(); } catch (IOException ignored) {}
+                }
+            }
+
             adapter.shutdown();
             return 0;
+        }
+
+        /** Wrap degrees to 0-359 range. */
+        private static int wrap(int deg) {
+            return ((deg % 360) + 360) % 360;
+        }
+
+        /** Format degrees as a clock-face time string. */
+        private static String clockStr(int deg, String hand) {
+            if (hand.equals("hour")) {
+                // 360° = 12 hours, each degree = 12/360 = 1/30 hour = 2 minutes
+                int totalMin = (deg * 2) % (12 * 60);
+                return String.format("%d:%02d", totalMin / 60, totalMin % 60);
+            } else {
+                // minute/sub: 360° = 60 minutes, each degree = 1/6 minute = 10 seconds
+                int totalSec = (deg * 10) % 3600;
+                return String.format("%d:%02d", totalSec / 60, totalSec % 60);
+            }
+        }
+
+        private static void printStatus(int hourDeg, int minDeg, int subDeg, int step) {
+            System.out.printf("\r\033[K  Hour: %3d° (%5s)  Min: %3d° (%5s)  Sub: %3d°  [step=%d°]",
+                    hourDeg, clockStr(hourDeg, "hour"),
+                    minDeg, clockStr(minDeg, "min"),
+                    subDeg, step);
+            System.out.flush();
         }
     }
 

@@ -28,6 +28,9 @@ dependencies {
     // dbus-java + bluez-dbus: direct D-Bus access to BlueZ (no subprocess needed)
     implementation 'com.github.hypfvieh:bluez-dbus:0.3.2'
     implementation 'com.github.hypfvieh:dbus-java-transport-native-unixsocket:5.1.1'
+
+    // JLine 3: raw terminal input for interactive calibration TUI
+    implementation 'org.jline:jline:3.26.3'
 }
 
 sourceSets {
