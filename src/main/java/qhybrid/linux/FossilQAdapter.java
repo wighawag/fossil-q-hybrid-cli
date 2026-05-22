@@ -249,12 +249,77 @@ public class FossilQAdapter {
     }
 
     /**
+     * Upload a multi-entry notification filter from a NotificationConfig.
+     * Each configured type gets its own filter entry with a unique CRC
+     * derived from "qhybrid.linux.<name>". The watch matches the play file's
+     * CRC to the filter entry to determine hand position + vibe pattern.
+     */
+    public void uploadNotificationFilter(NotificationConfig config) {
+        if (!useFossilProtocol) {
+            LOG.warn("Notification filter not supported on Misfit protocol");
+            return;
+        }
+        var types = config.getTypes();
+        if (types.isEmpty()) {
+            LOG.warn("No notification types configured — skipping filter upload");
+            return;
+        }
+
+        // Build concatenated filter data (one 32-byte entry per type)
+        java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(types.size() * 32);
+        buf.order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        for (var type : types) {
+            byte[] entry = buildNotificationFilterData(
+                    type.packageName(), (byte) type.vibe,
+                    (short) type.hourDeg, (short) type.minDeg);
+            buf.put(entry);
+        }
+        byte[] filter = buf.array();
+
+        LOG.info("Uploading notification filter with {} entries ({} bytes)",
+                types.size(), filter.length);
+        for (var type : types) {
+            LOG.info("  {} → CRC=0x{}", type,
+                    String.format("%08X", computeNullTerminatedCrc(type.packageName())));
+        }
+
+        queueWrite(new FilePutRequest(FileHandle.NOTIFICATION_FILTER, filter, shimAdapter) {
+            @Override
+            public void onFilePut(boolean success) {
+                LOG.info("Notification filter ({} entries) sync: {}",
+                        types.size(), success ? "success" : "FAILED");
+            }
+        }, false);
+    }
+
+    /**
+     * Play a notification using a specific package name for CRC matching.
+     * The package name must match one of the filter entries uploaded by
+     * uploadNotificationFilter(). The watch looks up the matching entry
+     * to determine hand position and vibration pattern.
+     */
+    public void playNotificationByPackageName(String packageName) {
+        if (!useFossilProtocol) {
+            LOG.warn("Notification play requires Fossil protocol");
+            return;
+        }
+        byte[] notifData = buildOfficialNotificationFile(
+                "Notification", "fossil-q", "Notification", packageName);
+        queueWrite(new FilePutRequest(
+                FileHandle.NOTIFICATION_PLAY, notifData, shimAdapter), false);
+    }
+
+    /**
      * Build notification file data matching the official Fossil app format.
      * Key difference from GB: lengthBufferLength=12 (not 10), with 2 extra fields
      * (0xFFFFFFFF sentinel + Unix timestamp). The HW.0.0 firmware requires this
      * format for vibration to work.
      */
     private byte[] buildOfficialNotificationFile(String title, String sender, String message) {
+        return buildOfficialNotificationFile(title, sender, message, "qhybrid.linux");
+    }
+
+    private byte[] buildOfficialNotificationFile(String title, String sender, String message, String packageName) {
         java.nio.charset.Charset utf8 = java.nio.charset.StandardCharsets.UTF_8;
         byte[] titleBytes = (title + "\0").getBytes(utf8);
         byte[] senderBytes = (sender + "\0").getBytes(utf8);
@@ -276,8 +341,8 @@ public class FossilQAdapter {
 
         // CRC of package name — must match the CRC in the notification filter.
         // Use null-terminated CRC to match the official Fossil app format.
-        int packageCrc = computeNullTerminatedCrc("qhybrid.linux");
-        LOG.info("Notification CRC: 0x{}", String.format("%08X", packageCrc));
+        int packageCrc = computeNullTerminatedCrc(packageName);
+        LOG.info("Notification CRC: 0x{} (package: {})", String.format("%08X", packageCrc), packageName);
 
         short mainBufferLength = (short) (lengthBufferLength + uidLength + appBundleCRCLength
                 + titleBytes.length + senderBytes.length + messageBytes.length
@@ -1075,20 +1140,9 @@ public class FossilQAdapter {
 
     private void syncNotificationSettings() {
         LOG.info("Syncing notification filter...");
-        // Build filter data manually with null-terminated CRC (matching official Fossil app).
-        // Official app requires at least 2 filter entries (GB duplicates if only 1).
-        String packageName = "qhybrid.linux";
-        byte vibePattern = 4; // DEFAULT_OTHER_APPS (official Fossil app default)
-        short hourDeg = 90;   // 3 o'clock position for generic notifications
-        short minDeg = 90;
-        byte[] filter = buildNotificationFilterData(packageName, vibePattern, hourDeg, minDeg);
-
-        queueWrite(new FilePutRequest(FileHandle.NOTIFICATION_FILTER, filter, shimAdapter) {
-            @Override
-            public void onFilePut(boolean success) {
-                LOG.info("Notification filter sync: {}", success ? "success" : "FAILED");
-            }
-        }, false);
+        // Load notification config from disk (or defaults)
+        NotificationConfig config = NotificationConfig.load();
+        uploadNotificationFilter(config);
     }
 
     // ========== Misfit protocol init ==========

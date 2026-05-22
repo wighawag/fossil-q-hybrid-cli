@@ -39,6 +39,7 @@ import org.jline.terminal.TerminalBuilder;
                 Main.ButtonsCmd.class,
                 Main.SecondTimezoneCmd.class,
                 Main.GoalConfigCmd.class,
+                Main.NotifyConfigCmd.class,
         })
 public class Main implements Runnable {
     private static final Logger LOG = LoggerFactory.getLogger("fossil-q");
@@ -280,13 +281,15 @@ public class Main implements Runnable {
     }
 
     @Command(name = "notify", mixinStandardHelpOptions = true,
-             description = "Send a notification (vibration + hand movement)")
+             description = "Send a notification. Use a configured type name (from notify-config), " +
+                     "or specify --vibe/--position for ad-hoc notifications.")
     static class NotifyCmd implements Callable<Integer> {
         @ParentCommand Main parent;
 
-        @Parameters(index = "0", description = "Vibration type: ${COMPLETION-CANDIDATES}",
-                defaultValue = "SINGLE_SHORT")
-        VibrationType vibration;
+        @Parameters(index = "0", arity = "0..1",
+                description = "Configured notification type name or index (from notify-config), " +
+                        "or a VibrationType for legacy mode (SINGLE_SHORT, DOUBLE_SHORT, etc.)")
+        String typeOrVibration;
 
         @Option(names = {"--direct"}, description = "Use misfit-style direct characteristic write instead of Fossil file protocol")
         boolean direct;
@@ -297,36 +300,40 @@ public class Main implements Runnable {
         @Option(names = {"-M", "--minute"}, description = "Minute hand degrees (0-360, only with --direct)", defaultValue = "-1")
         int minDeg;
 
-        @Option(names = {"--vibe", "-v"}, description = "Notification vibration pattern (0-9 or name). " +
+        @Option(names = {"--vibe", "-v"}, description = "Vibration pattern (0-9 or name). " +
                 "0=AUTO(silent), 1=CALL(triple), 2=TEXT(double), 3=EMAIL(single), 4=DEFAULT(single), " +
                 "5=ONE_SHORT(strong single), 6=TWO_SHORT(strong double), 7=THREE_SHORT(strong triple), " +
                 "8=ONE_LONG(long), 9=NO_VIBE(silent)")
         String vibePattern;
 
-        @Option(names = {"-p", "--position"}, description = "Hand position for notification. " +
-                "Accepts: degrees (90 or 90/180), clock time (3:00), or presets " +
-                "(phone, sms, email, whatsapp, calendar, 1-12). Default: 90\u00b0/90\u00b0 (3:00).")
+        @Option(names = {"-p", "--position"}, description = "Hand position (degrees, clock time, or preset). " +
+                "E.g. 90, 3:00, 120/240, phone, email, calendar.")
         String position;
 
         @Override
         public Integer call() {
-            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
-            // Wait for init animation and notification filter upload to complete
-            sleep(5000);
-
-            if (vibePattern != null && !direct) {
-                // Use Fossil notification vibe pattern (filter-based)
-                int pattern = parseVibePattern(vibePattern);
-                if (pattern < 0) {
-                    System.err.println("Invalid vibration pattern: " + vibePattern);
-                    System.err.println("Use 0-9 or name: AUTO, CALL, TEXT, EMAIL, DEFAULT, " +
-                            "ONE_SHORT, TWO_SHORT, THREE_SHORT, ONE_LONG, NO_VIBE");
-                    adapter.shutdown();
-                    return 1;
+            // --- Mode 1: Trigger a configured notification type by name/index ---
+            if (typeOrVibration != null && vibePattern == null && position == null && !direct) {
+                NotificationConfig config = NotificationConfig.load();
+                NotificationConfig.NotifType type = config.resolve(typeOrVibration);
+                if (type != null) {
+                    return triggerConfigured(type, config);
                 }
-                String patternName = VIBE_PATTERN_NAMES[pattern];
+                // Not a configured name — fall through to try as VibrationType
+            }
 
-                // Parse hand position (default: 90°/90° = 3:00)
+            // --- Mode 2: Ad-hoc with --vibe and/or --position ---
+            if ((vibePattern != null || position != null) && !direct) {
+                int pattern = 4; // DEFAULT
+                if (vibePattern != null) {
+                    pattern = parseVibePattern(vibePattern);
+                    if (pattern < 0) {
+                        System.err.println("Invalid vibration pattern: " + vibePattern);
+                        System.err.println("Use 0-9 or name: AUTO, CALL, TEXT, EMAIL, DEFAULT, " +
+                                "ONE_SHORT, TWO_SHORT, THREE_SHORT, ONE_LONG, NO_VIBE");
+                        return 1;
+                    }
+                }
                 short hDeg = 90, mDeg = 90;
                 if (position != null) {
                     int[] pos = parseHandPosition(position);
@@ -334,40 +341,72 @@ public class Main implements Runnable {
                         System.err.println("Invalid hand position: " + position);
                         System.err.println("Use: degrees (90 or 90/180), clock (3:00), " +
                                 "or preset (phone, sms, email, whatsapp, calendar, 1-12)");
-                        adapter.shutdown();
                         return 1;
                     }
                     hDeg = (short) pos[0];
                     mDeg = (short) pos[1];
                 }
-
+                FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+                sleep(5000);
+                String patternName = VIBE_PATTERN_NAMES[pattern];
                 adapter.playNotificationWithPattern((byte) pattern, hDeg, mDeg);
                 System.out.printf("Notification sent: vibe=%d (%s), hands=%d\u00b0/%d\u00b0%n",
                         pattern, patternName, hDeg, mDeg);
-            } else if (direct) {
-                adapter.playMisfitNotification(vibration, hourDeg, minDeg);
-                System.out.println("Direct notification sent: " + vibration);
-            } else {
-                // Default Fossil notification with optional position
-                if (position != null) {
-                    int[] pos = parseHandPosition(position);
-                    if (pos == null) {
-                        System.err.println("Invalid hand position: " + position);
-                        adapter.shutdown();
-                        return 1;
-                    }
-                    // Use Fossil filter system with DEFAULT vibe + custom position
-                    adapter.playNotificationWithPattern((byte) 4, (short) pos[0], (short) pos[1]);
-                    System.out.printf("Notification sent: hands=%d\u00b0/%d\u00b0%n", pos[0], pos[1]);
-                } else {
-                    adapter.playNotification(vibration, hourDeg, minDeg);
-                    System.out.println("Notification sent: " + vibration);
-                }
+                sleep(2000);
+                adapter.shutdown();
+                return 0;
             }
-            // Give time for the vibration to happen
+
+            // --- Mode 3: Direct misfit-style ---
+            if (direct) {
+                VibrationType vt = parseVibrationType(typeOrVibration);
+                FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+                sleep(5000);
+                adapter.playMisfitNotification(vt, hourDeg, minDeg);
+                System.out.println("Direct notification sent: " + vt);
+                sleep(2000);
+                adapter.shutdown();
+                return 0;
+            }
+
+            // --- Mode 4: Legacy (bare VibrationType name, no --vibe/--position) ---
+            VibrationType vt = parseVibrationType(typeOrVibration);
+            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+            sleep(5000);
+            adapter.playNotification(vt, -1, -1);
+            System.out.println("Notification sent: " + vt);
             sleep(2000);
             adapter.shutdown();
             return 0;
+        }
+
+        /** Trigger a configured notification type. Uploads all filters, then plays the specific one. */
+        private int triggerConfigured(NotificationConfig.NotifType type, NotificationConfig config) {
+            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+            sleep(5000);
+
+            // Upload all configured filters (so the watch knows about all types)
+            adapter.uploadNotificationFilter(config);
+            // Play the specific type by its package name
+            adapter.playNotificationByPackageName(type.packageName());
+
+            String vibeName = (type.vibe >= 0 && type.vibe < VIBE_PATTERN_NAMES.length)
+                    ? VIBE_PATTERN_NAMES[type.vibe] : "?";
+            System.out.printf("Notification '%s' sent: hands=%d\u00b0/%d\u00b0, vibe=%d (%s)%n",
+                    type.name, type.hourDeg, type.minDeg, type.vibe, vibeName);
+            sleep(2000);
+            adapter.shutdown();
+            return 0;
+        }
+
+        /** Parse VibrationType from string, defaulting to SINGLE_SHORT. */
+        private static VibrationType parseVibrationType(String s) {
+            if (s == null || s.isBlank()) return VibrationType.SINGLE_SHORT;
+            try {
+                return VibrationType.valueOf(s.toUpperCase());
+            } catch (IllegalArgumentException e) {
+                return VibrationType.SINGLE_SHORT;
+            }
         }
     }
 
@@ -1313,6 +1352,221 @@ public class Main implements Runnable {
             System.out.printf("Goal config set: target=%d, current=%d%n", target, current);
             sleep(1000);
             adapter.shutdown();
+            return 0;
+        }
+    }
+
+    @Command(name = "notify-config", mixinStandardHelpOptions = true,
+             description = "Configure notification types (name → hand position + vibration pattern). " +
+                     "Stored in ~/.config/fossil-q/notifications.json")
+    static class NotifyConfigCmd implements Callable<Integer> {
+        @ParentCommand Main parent;
+
+        @Option(names = {"--list", "-l"}, description = "List all configured notification types")
+        boolean list;
+
+        @Option(names = {"--add", "-a"}, description = "Add/update a notification type: NAME")
+        String addName;
+
+        @Option(names = {"--remove", "-r"}, description = "Remove a notification type by name")
+        String removeName;
+
+        @Option(names = {"-p", "--position"}, description = "Hand position (degrees, clock time, or preset). Used with --add.")
+        String position;
+
+        @Option(names = {"-v", "--vibe"}, description = "Vibration pattern (0-9 or name). Used with --add.", defaultValue = "4")
+        String vibe;
+
+        @Option(names = {"--sync", "-s"}, description = "Upload current config to watch (requires -d)")
+        boolean sync;
+
+        @Option(names = {"--interactive", "-i"}, description = "Interactive mode: add types one by one")
+        boolean interactive;
+
+        @Override
+        public Integer call() {
+            NotificationConfig config = NotificationConfig.load();
+
+            if (removeName != null) {
+                if (config.remove(removeName)) {
+                    System.out.println("Removed: " + removeName);
+                    try { config.save(); } catch (Exception e) {
+                        System.err.println("Error saving config: " + e.getMessage());
+                        return 1;
+                    }
+                } else {
+                    System.err.println("Not found: " + removeName);
+                    return 1;
+                }
+                printTypes(config);
+                return 0;
+            }
+
+            if (addName != null) {
+                int[] pos = null;
+                if (position != null) {
+                    pos = parseHandPosition(position);
+                    if (pos == null) {
+                        System.err.println("Invalid position: " + position);
+                        return 1;
+                    }
+                } else {
+                    pos = new int[]{90, 90}; // default 3:00
+                }
+                int vibeNum = parseVibePattern(vibe);
+                if (vibeNum < 0) {
+                    System.err.println("Invalid vibe pattern: " + vibe);
+                    return 1;
+                }
+
+                var type = new NotificationConfig.NotifType(addName, pos[0], pos[1], vibeNum);
+                config.addOrUpdate(type);
+                System.out.println("Added/updated: " + type);
+                try { config.save(); } catch (Exception e) {
+                    System.err.println("Error saving config: " + e.getMessage());
+                    return 1;
+                }
+                printTypes(config);
+                return 0;
+            }
+
+            if (interactive) {
+                return runInteractive(config);
+            }
+
+            if (sync) {
+                if (config.getTypes().isEmpty()) {
+                    System.err.println("No notification types configured. Use --add or --interactive first.");
+                    return 1;
+                }
+                FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+                sleep(3000);
+                adapter.uploadNotificationFilter(config);
+                System.out.printf("Uploaded %d notification type(s) to watch.%n", config.getTypes().size());
+                sleep(2000);
+                adapter.shutdown();
+                return 0;
+            }
+
+            // Default: list
+            printTypes(config);
+            System.out.println("\nConfig file: " + NotificationConfig.configPath());
+            System.out.println("\nUsage:");
+            System.out.println("  notify-config --add phone --position 2:00 --vibe call");
+            System.out.println("  notify-config --add email --position 4:00 --vibe email");
+            System.out.println("  notify-config --remove phone");
+            System.out.println("  notify-config --interactive");
+            System.out.println("  notify-config --sync -d <MAC>   # upload to watch");
+            System.out.println("  notify <name> -d <MAC>          # trigger by name");
+            return 0;
+        }
+
+        private void printTypes(NotificationConfig config) {
+            var types = config.getTypes();
+            if (types.isEmpty()) {
+                System.out.println("No notification types configured.");
+                return;
+            }
+            System.out.println("Notification types:");
+            for (int i = 0; i < types.size(); i++) {
+                System.out.printf("  [%d] %s%n", i + 1, types.get(i));
+            }
+        }
+
+        private int runInteractive(NotificationConfig config) {
+            Terminal terminal = null;
+            try {
+                terminal = TerminalBuilder.builder()
+                        .system(true)
+                        .jansi(false)
+                        .build();
+                var lineReader = org.jline.reader.LineReaderBuilder.builder()
+                        .terminal(terminal)
+                        .build();
+
+                System.out.println();
+                System.out.println("  ╔══════════════════════════════════════════════════════╗");
+                System.out.println("  ║     NOTIFICATION TYPE CONFIGURATION          ║");
+                System.out.println("  ╠══════════════════════════════════════════════════════╣");
+                System.out.println("  ║  Define notification types that map to       ║");
+                System.out.println("  ║  specific hand positions + vibe patterns.     ║");
+                System.out.println("  ║                                                ║");
+                System.out.println("  ║  Enter blank name to finish.                  ║");
+                System.out.println("  ╚══════════════════════════════════════════════════════╝");
+                System.out.println();
+
+                if (!config.getTypes().isEmpty()) {
+                    printTypes(config);
+                    System.out.println();
+                }
+
+                while (true) {
+                    String name;
+                    try {
+                        name = lineReader.readLine("  Name (blank to finish): ").trim();
+                    } catch (org.jline.reader.EndOfFileException | org.jline.reader.UserInterruptException e) {
+                        break;
+                    }
+                    if (name.isEmpty()) break;
+
+                    // Position
+                    int[] pos = null;
+                    while (pos == null) {
+                        String posStr;
+                        try {
+                            posStr = lineReader.readLine("  Position (degrees, clock time, or preset): ").trim();
+                        } catch (org.jline.reader.EndOfFileException | org.jline.reader.UserInterruptException e) {
+                            return 0;
+                        }
+                        pos = parseHandPosition(posStr);
+                        if (pos == null) {
+                            System.out.println("    Invalid. Try: 90, 3:00, 120/240, phone, email, calendar");
+                        }
+                    }
+
+                    // Vibe pattern
+                    int vibeNum = -1;
+                    while (vibeNum < 0) {
+                        String vibeStr;
+                        try {
+                            vibeStr = lineReader.readLine("  Vibe pattern (0-9, name, or Enter for default): ").trim();
+                        } catch (org.jline.reader.EndOfFileException | org.jline.reader.UserInterruptException e) {
+                            return 0;
+                        }
+                        if (vibeStr.isEmpty()) {
+                            vibeNum = 4; // DEFAULT
+                        } else {
+                            vibeNum = parseVibePattern(vibeStr);
+                            if (vibeNum < 0) {
+                                System.out.println("    Invalid. Try: 0-9, call, text, email, default, one_short, long");
+                            }
+                        }
+                    }
+
+                    var type = new NotificationConfig.NotifType(name, pos[0], pos[1], vibeNum);
+                    config.addOrUpdate(type);
+                    System.out.println("  → Added: " + type);
+                    System.out.println();
+                }
+
+                try {
+                    config.save();
+                    System.out.println("Saved to " + NotificationConfig.configPath());
+                } catch (Exception e) {
+                    System.err.println("Error saving: " + e.getMessage());
+                    return 1;
+                }
+
+                printTypes(config);
+
+            } catch (java.io.IOException e) {
+                System.err.println("Terminal error: " + e.getMessage());
+                return 1;
+            } finally {
+                if (terminal != null) {
+                    try { terminal.close(); } catch (java.io.IOException ignored) {}
+                }
+            }
             return 0;
         }
     }
