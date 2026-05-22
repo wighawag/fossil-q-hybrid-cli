@@ -765,6 +765,41 @@ public class FossilQAdapter {
                 shimAdapter), false);
     }
 
+    /**
+     * Set the inactivity warning (config 0x0009 = INACTIVE_NUDGE).
+     * The watch vibrates if idle for the specified minutes between the given times.
+     *
+     * @param fromHour start hour (0-23)
+     * @param fromMinute start minute (0-59)
+     * @param toHour end hour (0-23)
+     * @param toMinute end minute (0-59)
+     * @param inactiveMinutes minutes of inactivity before nudge (e.g. 30, 60)
+     * @param enabled true to enable, false to disable
+     */
+    public void setInactivityNudge(int fromHour, int fromMinute,
+                                    int toHour, int toMinute,
+                                    int inactiveMinutes, boolean enabled) {
+        if (!useFossilProtocol) {
+            LOG.warn("Inactivity nudge not supported on Misfit protocol firmware");
+            return;
+        }
+        queueWrite(new ConfigurationPutRequest(
+                new ConfigurationPutRequest.InactivityWarningItem(
+                        fromHour, fromMinute, toHour, toMinute, inactiveMinutes, enabled),
+                shimAdapter) {
+            @Override
+            public void onFilePut(boolean success) {
+                if (enabled) {
+                    LOG.info("Inactivity nudge ENABLED (every {} min, {}:{}-{}:{}): {}",
+                            inactiveMinutes, fromHour, fromMinute, toHour, toMinute,
+                            success ? "success" : "FAILED");
+                } else {
+                    LOG.info("Inactivity nudge DISABLED: {}", success ? "success" : "FAILED");
+                }
+            }
+        }, false);
+    }
+
     public void overwriteButtons(ConfigPayload[] payloads) {
         if (!useFossilProtocol) {
             LOG.warn("Button config not supported on Misfit protocol firmware");

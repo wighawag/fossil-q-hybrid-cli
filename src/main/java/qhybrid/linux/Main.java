@@ -41,6 +41,7 @@ import org.jline.terminal.TerminalBuilder;
                 Main.GoalConfigCmd.class,
                 Main.NotifyConfigCmd.class,
                 Main.ReadConfigCmd.class,
+                Main.InactivityNudgeCmd.class,
         })
 public class Main implements Runnable {
     private static final Logger LOG = LoggerFactory.getLogger("fossil-q");
@@ -1419,6 +1420,95 @@ public class Main implements Runnable {
             System.out.println();
             adapter.shutdown();
             return 0;
+        }
+    }
+
+    @Command(name = "inactivity-nudge", mixinStandardHelpOptions = true,
+             description = "Configure inactivity warning — watch vibrates if idle for X minutes within a time window")
+    static class InactivityNudgeCmd implements Callable<Integer> {
+        @ParentCommand Main parent;
+
+        @Parameters(index = "0",
+                description = "'on' to enable, 'off' to disable, or idle minutes (e.g. 30, 60)")
+        String action;
+
+        @Option(names = {"--from"}, description = "Start time HH:MM (default: 08:00)", defaultValue = "08:00")
+        String from;
+
+        @Option(names = {"--to"}, description = "End time HH:MM (default: 20:00)", defaultValue = "20:00")
+        String to;
+
+        @Option(names = {"--minutes", "-m"}, description = "Minutes of inactivity before nudge (default: 60)", defaultValue = "60")
+        int minutes;
+
+        @Override
+        public Integer call() {
+            boolean enabled;
+            int nudgeMinutes = minutes;
+
+            String norm = action.toLowerCase();
+            if (norm.equals("off") || norm.equals("disable") || norm.equals("0")) {
+                enabled = false;
+            } else if (norm.equals("on") || norm.equals("enable")) {
+                enabled = true;
+            } else {
+                // Try parsing as minutes
+                try {
+                    nudgeMinutes = Integer.parseInt(norm);
+                    if (nudgeMinutes < 1 || nudgeMinutes > 255) {
+                        System.err.println("Minutes must be 1-255");
+                        return 1;
+                    }
+                    enabled = true;
+                } catch (NumberFormatException e) {
+                    System.err.println("Invalid action: '" + action + "'. Use 'on', 'off', or a number of minutes.");
+                    return 1;
+                }
+            }
+
+            int fromH = 8, fromM = 0, toH = 20, toM = 0;
+            if (enabled) {
+                int[] fromParsed = parseTime(from);
+                int[] toParsed = parseTime(to);
+                if (fromParsed == null) {
+                    System.err.println("Invalid --from time: " + from + ". Use HH:MM");
+                    return 1;
+                }
+                if (toParsed == null) {
+                    System.err.println("Invalid --to time: " + to + ". Use HH:MM");
+                    return 1;
+                }
+                fromH = fromParsed[0]; fromM = fromParsed[1];
+                toH = toParsed[0]; toM = toParsed[1];
+            }
+
+            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+            adapter.setInactivityNudge(fromH, fromM, toH, toM, nudgeMinutes, enabled);
+
+            if (enabled) {
+                System.out.printf("Inactivity nudge ENABLED: vibrate after %d min idle, %02d:%02d-%02d:%02d%n",
+                        nudgeMinutes, fromH, fromM, toH, toM);
+            } else {
+                System.out.println("Inactivity nudge DISABLED");
+            }
+
+            sleep(1000);
+            adapter.shutdown();
+            return 0;
+        }
+
+        private static int[] parseTime(String s) {
+            if (s == null) return null;
+            String[] parts = s.split(":");
+            if (parts.length != 2) return null;
+            try {
+                int h = Integer.parseInt(parts[0]);
+                int m = Integer.parseInt(parts[1]);
+                if (h < 0 || h > 23 || m < 0 || m > 59) return null;
+                return new int[]{h, m};
+            } catch (NumberFormatException e) {
+                return null;
+            }
         }
     }
 
