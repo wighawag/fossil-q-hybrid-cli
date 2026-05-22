@@ -1225,22 +1225,32 @@ entry position within the toggle list:
 | `second_timezone+date+alarm_seq+step_goal` | 3 states: A→B→home (one entry skipped) |
 | `second_timezone+date+alarm_seq+last_notification` | 3 states: A→B→hands 4:20 (alarm skipped—no alarm set?) |
 | `alarm_seq+second_timezone+date` | 2 states: A→B (alarm skipped as first entry—no alarm set?) |
-| `second_timezone+date+goal_tracking` (0x17=8) | 2 states: A→B→normal (goal_tracking skipped, small vibe on return) |
-| `mode_toggle` with step-goal=20 + real steps (no alarm set) | 2 states: A→B→normal (ALARM skipped—no alarm!) |
+| `second_timezone+date+goal_tracking` (0x17=8) | 2 states: A→B→normal + error vibe (goal_tracking skipped) |
+| `second_timezone+goal_tracking+date` | 1 state: A→normal + error vibe (goal_tracking breaks chain, date never shows) |
+| `mode_toggle` with no alarm set | 2 states: A→B→normal (ALARM skipped—no alarm!) |
 | `mode_toggle` with alarm set | ✅ 3 states: A→B→C, cycles correctly |
+| `tz+date+step_goal` (step-goal=10, ≥10 steps) | ✅ 3 states: A→B→sub-eye 100% |
+| `tz+date+alarm+step_goal` (alarm set, step-goal=10) | ✅ 4 states: A→B→C→sub-eye 100% |
+| `tz+date+alarm+step_goal+last_notification` (all data present) | ✅ **5 states**: A→B→C→sub-eye step%→hands to notif pos |
+| `tz+date+alarm+last_notification` (no cached notif) | 3 states: A→B→C (last_notification skipped) |
+| `tz+date+last_notification+alarm` (no cached notif) | 3 states: A→B→C (last_notification skipped) |
 
 **Observations:**
-- The firmware accepts up to 4 entries without error, but **only displays 3 at most**
-  before cycling back to normal time.
-- **ALARM (SEQUENCED) gets skipped when no alarm is set.** Earlier tests that showed
-  it being "skipped" were because no alarm was configured on the watch. With an alarm
-  set, it works as the 3rd toggle entry and points sub-eye to indicator C.
+- **No fixed entry limit.** The firmware displays all entries that have data. Entries
+  with no data (no alarm, no notification, 0% step progress) are silently skipped.
+  Earlier tests appeared to show a "3-entry limit" because entries lacked required data.
+- **5-entry toggle confirmed working** (2026-05-22): TZ + DATE + ALARM + STEP_GOAL +
+  LAST_NOTIFICATION → all 5 displayed when each had data to show.
+- **Entries without data are skipped:** ALARM (no alarm set), LAST_NOTIFICATION (no
+  cached notification), STEP_GOAL_COMPLETION (0% progress) — all silently omitted.
+- **GOAL_TRACKING (appId 0x04) breaks the toggle chain** — produces error vibration
+  and aborts remaining entries. Not usable in toggle.
 - **Entry order doesn't affect A/B/C mapping** — SECOND_TIMEZONE always→A, DATE always→B,
   ALARM always→C.
-- **LAST_NOTIFICATION moves the main hands** to the cached notification position (4:20 in
-  our test) but sub-eye goes to home/zero, not C.
-- The official mode_toggle combo (TZ + DATE_v2 + ALARM_SEQ) works reliably as a unit
-  when an alarm is set.
+- **LAST_NOTIFICATION moves the main hands** to the cached notification position (3:15 in
+  our test) but sub-eye goes to home/zero.
+- **STEP_GOAL_COMPLETION moves sub-eye** to show step progress (proportional), main hands
+  stay at previous position.
 
 ### GOAL_TRACKING button function
 
@@ -1289,21 +1299,27 @@ likely only read during activity sync (the companion app displays the dashboard)
 | `tmp/bugreport7/` | Goal tracking "add" events + sync (no config 0x17/0x18 sent) |
 | `tmp/bugreport8/` | Button presses on goal_tracking + last_notification (no BLE events) |
 
-### ALARM in mode toggle requires alarm to be set (hardware-tested, 2026-05-22)
+### Toggle entries: skip behavior and data requirements (hardware-tested, 2026-05-22)
 
-| Test | Setup | Alarm set? | Result |
-|------|-------|------------|--------|
-| mode_toggle, no alarm | step-goal=20, TOP=mode_toggle | No | 2 states: A→B→normal (ALARM skipped) |
-| mode_toggle, alarm set | alarm 23:59, TOP=mode_toggle | Yes | ✅ 3 states: A→B→C, cycles correctly |
+Toggle entries are **silently skipped** when they have no data to display.
+This is not a firmware limit on entry count — all entries with data are shown.
 
-**Conclusion:** The 3rd mode_toggle entry (ALARM SEQUENCED, appId 0x1a) is **skipped
-when no alarm is configured.** With an alarm set, it works correctly and points the
-sub-eye to indicator C. This explains all previous "SGP gets skipped" observations —
-the entry was actually ALARM, and we never had an alarm set during those tests.
+| Entry | Requires | Skip behavior when no data |
+|-------|----------|---------------------------|
+| SECOND_TIMEZONE | Second TZ configured (config 0x0011) | Shows home/zero if disabled (1024) |
+| DATE | Nothing | Always works |
+| ALARM (SEQUENCED) | At least one alarm set | Silently skipped |
+| STEP_GOAL_COMPLETION | Steps > 0 toward goal | Silently skipped at 0% |
+| LAST_NOTIFICATION | Cached notification | Silently skipped if none |
+| GOAL_TRACKING | N/A | **Error: produces vibration and breaks toggle chain** |
 
-**Notable difference:** With `tz+date+goal_tracking` (real goal_tracking, appId 0x04),
-there IS a small vibration on the return step. GOAL_TRACKING is acknowledged by firmware
-(vibration) but has no visual sub-eye component — it's always skipped in toggle.
+**GOAL_TRACKING (appId 0x04) is not usable in toggle.** When placed in the middle
+of a toggle sequence (e.g. `tz+goal_tracking+date`), it produces an error vibration
+and aborts — subsequent entries (date) never display. As a standalone button it only
+vibrates (blind counter), and config 0x17/0x18 does not help.
+
+**5-entry toggle confirmed:** TZ + DATE + ALARM + STEP_GOAL + LAST_NOTIFICATION all
+display when their data requirements are met. No firmware entry count limit observed.
 
 ### Sub-eye behavior (hardware-verified, 2026-05-22)
 
@@ -1341,18 +1357,23 @@ All three indicators are exercised by the default mode toggle configuration.
 
 ### Resolved experiments (2026-05-22)
 
-1. ✅ **ALARM = indicator C** — confirmed! The 3rd mode_toggle entry (appId 0x1a) is
+1. ✅ **ALARM = indicator C** — confirmed! The mode_toggle entry (appId 0x1a) is
    ALARM SEQUENCED, not "step goal progress". Sub-eye points to C when alarm is set.
-2. ✅ **ALARM skipped when no alarm set** — explains all previous "skipped" observations.
-3. ✅ **Config 0x17/0x18 does NOT affect sub-eye** — task tracking is invisible on watch.
-4. ✅ **Sub-eye is passive step progress** — always shows steps/goal, no button needed.
-5. ✅ **Step goal celebration vibration** — watch vibrates when step goal is met.
+2. ✅ **Entries skipped when no data** — ALARM (no alarm), LAST_NOTIFICATION (no notif),
+   STEP_GOAL_COMPLETION (0% progress) are all silently skipped. Not an entry count limit.
+3. ✅ **5-entry toggle works** — TZ+DATE+ALARM+STEP_GOAL+LAST_NOTIFICATION all display.
+4. ✅ **Config 0x17/0x18 does NOT affect sub-eye** — task tracking is invisible on watch.
+5. ✅ **Sub-eye is passive step progress** — always shows steps/goal, no button needed.
+6. ✅ **Step goal celebration vibration** — watch vibrates when step goal is met.
+7. ✅ **GOAL_TRACKING breaks toggle chain** — error vibration, aborts remaining entries.
+8. ✅ **STEP_GOAL_COMPLETION works in toggle** — sub-eye shows step %, hands stay.
 
 ### Further experiments to try
 
 1. **ALARM STANDARD (appId 0x1a, variant 0x01, header `01 01 1a 00`)** — does it work
    as a standalone button (like DATE standalone)? Would show next alarm time on press.
-2. **What does indicator C display?** — does sub-eye position encode the alarm time
+2. **What does indicator C display?** — does sub-eye position on C encode the alarm time
    (e.g. proportional to hours until alarm)? Test with alarms at different times.
-3. **4-entry toggle** — `second_timezone+date+alarm_toggle+last_notification` —
-   confirm the 3-entry display limit vs. 4th being skipped.
+3. **6+ entries** — is there an upper limit? Could add STOPWATCH or other functions.
+4. **ALERT (appId 0x18, declarationId 6145/6146)** — what does this display mode do?
+   Construct payload and test in toggle.

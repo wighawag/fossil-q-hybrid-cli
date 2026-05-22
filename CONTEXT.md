@@ -17,7 +17,8 @@ java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A info
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A time
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A notify SINGLE_SHORT
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A buttons stopwatch music forward_to_phone
-java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A buttons mode_toggle second_timezone forward_to_phone  # A→B→C toggle
+java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A buttons mode_toggle second_timezone forward_to_phone  # A→B→C (needs alarm set)
+java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A buttons "second_timezone+date+alarm_toggle+step_goal+last_notification" second_timezone forward_to_phone  # 5-entry toggle
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A second-timezone 330   # IST (UTC+5:30)
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A second-timezone off   # disable
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A goal-config 8         # set goal target to 8
