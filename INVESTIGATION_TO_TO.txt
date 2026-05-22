@@ -1,5 +1,4 @@
  
- 10. Multi-press detection for FORWARD_TO_PHONE — MUSIC_CONTROL has firmware-level single/double/long press. FORWARD_TO_PHONE only sends single press events. Software-level timing could detect double/long press in the monitor command.
  11. Hand action files (0x0900) — Complex choreographed hand animations. The format uses RLE encoding. Could create custom "dances" for notifications.
  12. HID service (0x1812) — The watch has an HID profile. What reports does it send? Could it act as a keyboard/media controller at the HID level?
  13. PlayCrazyShitRequest — Yes, that's the actual class name in GadgetBridge. What does it do?
