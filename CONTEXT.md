@@ -17,9 +17,11 @@ java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A info
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A time
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A notify SINGLE_SHORT
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A buttons stopwatch music forward_to_phone
-java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A buttons mode_toggle second_timezone forward_to_phone
+java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A buttons mode_toggle second_timezone forward_to_phone  # A→B→C toggle
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A second-timezone 330   # IST (UTC+5:30)
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A second-timezone off   # disable
+java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A goal-config 8         # set goal target to 8
+java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A goal-config 8 3       # target=8, current=3
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A monitor  # Ctrl+C to stop
 ```
 
@@ -46,7 +48,7 @@ gadgetbridge/              # Vendored GB code (124 files, zero patches, copied b
 1. **Persistent bluetoothctl** for notifications - busctl one-shot D-Bus connections can't hold StartNotify alive
 2. **gdbus monitor** for receiving BLE notifications - catches PropertiesChanged Value updates (handles both `[byte 0x...]` and `b'...'` formats)
 3. **Write type from flags** - `command` for notify chars, `request` for indicate chars
-4. **UTC epoch + TimeConfigItem offset** for time — watch uses 0x000C's offset field for primary display; 0x0011 is second timezone only
+4. **UTC epoch + TimeConfigItem offset** for time - watch uses 0x000C's offset field for primary display; 0x0011 is second timezone only
 5. **Shim classes** instead of patching vendor code - `sync.sh` is pure copy
 6. **Auth on separate thread** - `fossil-auth` thread runs auth handshake to avoid deadlocking notification delivery thread
 7. **BleTransport interface** - `DbusTransport` (dbus-java, default) and `BluezTransport` (subprocess, `--subprocess` flag) share the same interface. Adapter/protocol code is transport-agnostic.
@@ -144,7 +146,10 @@ Bond benefits: encrypted link, WakeAllowed, faster reconnect (device stays known
 | `tmp/bugreport/` | First capture - reconnect, auth `01 07` | Full ATT data |
 | `tmp/bugreport3/` | Third capture - reconnect, auth `02 06`, full init + notification | Full ATT data, 571 packets |
 | `tmp/bugreport2/` | Second capture | Truncated (btsnooz circular buffer) |
-| `tmp/bugreport5/` | Fifth capture - full Fossil app session: 2nd TZ, mode toggle, alarms, notif filters | 496 Fossil ATT ops, 780s |
+| `tmp/bugreport5/` | Fifth capture — full Fossil app session: 2nd TZ, mode toggle, alarms, notif filters | 496 Fossil ATT ops, 780s |
+| `tmp/bugreport6/` | Sixth capture — buttons: goal_tracking, last_notification, mode_toggle | Button payloads |
+| `tmp/bugreport7/` | Seventh capture — goal tracking add events + sync | No config 0x17/0x18 sent |
+| `tmp/bugreport8/` | Eighth capture — button presses on goal_tracking + last_notification | No BLE events (firmware-only) |
 
 ## Decompiled Official App
 

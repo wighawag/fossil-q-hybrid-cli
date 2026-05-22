@@ -33,6 +33,7 @@ import java.util.concurrent.Callable;
                 Main.MonitorCmd.class,
                 Main.ButtonsCmd.class,
                 Main.SecondTimezoneCmd.class,
+                Main.GoalConfigCmd.class,
         })
 public class Main implements Runnable {
     private static final Logger LOG = LoggerFactory.getLogger("fossil-q");
@@ -850,13 +851,45 @@ public class Main implements Runnable {
         }
     }
 
+    @Command(name = "goal-config",
+             description = "Set goal tracking target and current value (for GOAL_TRACKING button function)")
+    static class GoalConfigCmd implements Callable<Integer> {
+        @ParentCommand Main parent;
+
+        @Parameters(index = "0", description = "Goal target (e.g. 8 for '8 glasses of water')")
+        int target;
+
+        @Parameters(index = "1", arity = "0..1", description = "Current value (default: 0)", defaultValue = "0")
+        int current;
+
+        @Override
+        public Integer call() {
+            if (target < 1 || target > 99999) {
+                System.err.println("Target must be between 1 and 99999");
+                return 1;
+            }
+            if (current < 0) {
+                System.err.println("Current value must be >= 0");
+                return 1;
+            }
+
+            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+            adapter.setGoalConfig(target, current);
+            System.out.printf("Goal config set: target=%d, current=%d%n", target, current);
+            sleep(1000);
+            adapter.shutdown();
+            return 0;
+        }
+    }
+
     @Command(name = "buttons", mixinStandardHelpOptions = true,
              description = "Set button functions. Available: forward_to_phone, stopwatch, date, music, " +
-                     "volume_up, volume_down, step_goal, last_notification, second_timezone, ring_phone, mode_toggle")
+                     "volume_up, volume_down, step_goal, last_notification, second_timezone, ring_phone, " +
+                     "goal_tracking, alarm_toggle, mode_toggle")
     static class ButtonsCmd implements Callable<Integer> {
         @ParentCommand Main parent;
 
-        @Parameters(index = "0", description = "Top button function")
+        @Parameters(index = "0", description = "Top button function (use + for multi-entry toggle, e.g. second_timezone+date+last_notification)")
         String top;
 
         @Parameters(index = "1", description = "Middle button function")
@@ -867,66 +900,95 @@ public class Main implements Runnable {
 
         @Override
         public Integer call() {
-            boolean hasModeToggle = isModeToggle(top) || isModeToggle(middle) || isModeToggle(bottom);
+            // Parse each button spec — may be single function or multi-entry (with +)
+            ButtonConfigBuilder.ButtonEntry[] topEntries = parseButtonSpec(top, "top");
+            ButtonConfigBuilder.ButtonEntry[] midEntries = parseButtonSpec(middle, "middle");
+            ButtonConfigBuilder.ButtonEntry[] botEntries = parseButtonSpec(bottom, "bottom");
+            if (topEntries == null || midEntries == null || botEntries == null) return 1;
 
-            if (hasModeToggle) {
-                // Mode toggle uses multi-entry button config — bypass ConfigFileBuilder.
-                // Parse non-toggle buttons normally (they must be single-entry).
-                ConfigPayload topPayload = isModeToggle(top) ? null : parsePayload(top, "top");
-                ConfigPayload midPayload = isModeToggle(middle) ? null : parsePayload(middle, "middle");
-                ConfigPayload botPayload = isModeToggle(bottom) ? null : parsePayload(bottom, "bottom");
-                // Check for parse errors on non-toggle buttons
-                if (!isModeToggle(top) && topPayload == null) return 1;
-                if (!isModeToggle(middle) && midPayload == null) return 1;
-                if (!isModeToggle(bottom) && botPayload == null) return 1;
-
-                FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
-                adapter.overwriteButtonsWithModeToggle(
-                        isModeToggle(top), isModeToggle(middle), isModeToggle(bottom),
-                        topPayload, midPayload, botPayload);
-                System.out.printf("Buttons set: TOP=%s, MIDDLE=%s, BOTTOM=%s%n", top, middle, bottom);
-                sleep(2000);
-                adapter.shutdown();
-                return 0;
-            }
-
-            ConfigPayload topPayload = parsePayload(top, "top");
-            ConfigPayload middlePayload = parsePayload(middle, "middle");
-            ConfigPayload bottomPayload = parsePayload(bottom, "bottom");
-            if (topPayload == null || middlePayload == null || bottomPayload == null) return 1;
+            boolean needsMultiEntry = topEntries.length > 1 || midEntries.length > 1 || botEntries.length > 1;
 
             FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
-            adapter.overwriteButtons(new ConfigPayload[]{topPayload, middlePayload, bottomPayload});
+
+            if (needsMultiEntry) {
+                adapter.overwriteButtonsMultiEntry(topEntries, midEntries, botEntries);
+            } else {
+                // All single-entry — can use vendored ConfigFileBuilder via overwriteButtons,
+                // but only if none are STEP_GOAL_PROGRESS (not in ConfigPayload enum).
+                // Simplest: always use our builder when it's available.
+                adapter.overwriteButtonsMultiEntry(topEntries, midEntries, botEntries);
+            }
             System.out.printf("Buttons set: TOP=%s, MIDDLE=%s, BOTTOM=%s%n", top, middle, bottom);
             sleep(2000);
             adapter.shutdown();
             return 0;
         }
 
-        private static boolean isModeToggle(String name) {
-            String n = name.toLowerCase().replace("-", "_");
-            return n.equals("mode_toggle") || n.equals("toggle") || n.equals("toggle_mode");
+        /**
+         * Parse a button spec into ButtonEntry[]. Can be:
+         *   - "mode_toggle" → expands to [second_timezone, date, step_goal_progress]
+         *   - "second_timezone+date+last_notification" → multi-entry toggle
+         *   - "stopwatch" → single entry
+         */
+        private static ButtonConfigBuilder.ButtonEntry[] parseButtonSpec(String spec, String position) {
+            String normalized = spec.toLowerCase().replace("-", "_");
+
+            // mode_toggle shorthand
+            if (normalized.equals("mode_toggle") || normalized.equals("toggle") || normalized.equals("toggle_mode")) {
+                return ButtonConfigBuilder.MODE_TOGGLE_ENTRIES;
+            }
+
+            // Multi-entry with + separator
+            if (spec.contains("+")) {
+                String[] parts = spec.split("\\+");
+                ButtonConfigBuilder.ButtonEntry[] entries = new ButtonConfigBuilder.ButtonEntry[parts.length];
+                for (int i = 0; i < parts.length; i++) {
+                    entries[i] = parseSingleEntry(parts[i].trim(), position + "[" + i + "]");
+                    if (entries[i] == null) return null;
+                }
+                return entries;
+            }
+
+            // Single entry
+            ButtonConfigBuilder.ButtonEntry e = parseSingleEntry(spec, position);
+            if (e == null) return null;
+            return new ButtonConfigBuilder.ButtonEntry[]{e};
         }
 
-        static ConfigPayload parsePayload(String name, String position) {
-            return switch (name.toLowerCase().replace("-", "_")) {
+        static ButtonConfigBuilder.ButtonEntry parseSingleEntry(String name, String position) {
+            ConfigPayload p = switch (name.toLowerCase().replace("-", "_")) {
                 case "forward", "forward_to_phone", "phone" -> ConfigPayload.FORWARD_TO_PHONE;
                 case "stopwatch", "stop_watch" -> ConfigPayload.STOPWATCH;
                 case "date", "show_date" -> ConfigPayload.DATE;
                 case "music", "music_control" -> ConfigPayload.MUSIC_CONTROL;
                 case "volume_up", "vol_up" -> ConfigPayload.VOLUME_UP;
                 case "volume_down", "vol_down" -> ConfigPayload.VOLUME_DOWN;
-                case "step_goal", "steps", "goal" -> ConfigPayload.STEP_GOAL_COMPLETION;
+                case "step_goal", "steps", "goal", "step_goal_completion" -> ConfigPayload.STEP_GOAL_COMPLETION;
                 case "last_notification", "notification", "notif" -> ConfigPayload.LAST_NOTIFICATION;
                 case "second_timezone", "timezone2", "tz2" -> ConfigPayload.SECOND_TIMEZONE;
                 case "ring_phone", "ring" -> ConfigPayload.RING_PHONE;
-                default -> {
-                    System.err.printf("Unknown button function '%s' for %s button.%n", name, position);
-                    System.err.println("Available: forward_to_phone, stopwatch, date, music, volume_up, " +
-                            "volume_down, step_goal, last_notification, second_timezone, ring_phone, mode_toggle");
-                    yield null;
-                }
+                default -> null;
             };
+            if (p != null) return ButtonConfigBuilder.entryFrom(p);
+
+            // Non-enum entries (not in vendored ConfigPayload)
+            String norm = name.toLowerCase().replace("-", "_");
+            if (norm.equals("alarm_toggle") || norm.equals("alarm_sequenced") || norm.equals("alarm_seq")) {
+                return ButtonConfigBuilder.ALARM_SEQUENCED_ENTRY;
+            }
+            // Legacy alias — "step_goal_progress" was a misidentification of ALARM_SEQUENCED
+            if (norm.equals("step_goal_progress") || norm.equals("step_progress")) {
+                return ButtonConfigBuilder.ALARM_SEQUENCED_ENTRY;
+            }
+            if (norm.equals("goal_tracking") || norm.equals("goal_track") || norm.equals("task_tracking") || norm.equals("custom_goal")) {
+                return ButtonConfigBuilder.GOAL_TRACKING_ENTRY;
+            }
+
+            System.err.printf("Unknown button function '%s' for %s button.%n", name, position);
+            System.err.println("Available: forward_to_phone, stopwatch, date, music, volume_up, " +
+                    "volume_down, step_goal, goal_tracking, alarm_toggle, last_notification, " +
+                    "second_timezone, ring_phone, mode_toggle, or combine with + (e.g. second_timezone+date+alarm_toggle)");
+            return null;
         }
     }
 

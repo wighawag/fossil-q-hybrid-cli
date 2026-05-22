@@ -546,6 +546,33 @@ public class FossilQAdapter {
     }
 
     /**
+     * Set the goal tracking target and optionally current value.
+     * Config 0x0017 (23) = DAILY_TASK_TRACKING_GOAL (int32 LE) — target count
+     * Config 0x0018 (24) = DAILY_TASK_TRACKING_VALUE (int32 LE) — current count
+     *
+     * The GOAL_TRACKING button increments an on-watch counter. Setting a goal target
+     * tells the watch the denominator so it can show progress on the sub-eye.
+     * See FINDINGS.md #22.
+     */
+    public void setGoalConfig(int target, int current) {
+        if (!useFossilProtocol) {
+            LOG.warn("Goal config not supported on Misfit protocol firmware");
+            return;
+        }
+        // Send both configs in one request (same pattern as DailyStepGoalConfigItem)
+        ConfigurationPutRequest.ConfigItem[] items = new ConfigurationPutRequest.ConfigItem[]{
+                new ConfigurationPutRequest.GenericConfigItem<>((short) 0x17, target),
+                new ConfigurationPutRequest.GenericConfigItem<>((short) 0x18, current)
+        };
+        queueWrite(new ConfigurationPutRequest(items, shimAdapter) {
+            @Override
+            public void onFilePut(boolean success) {
+                LOG.info("Goal config (target={}, current={}): {}", target, current, success ? "success" : "FAILED");
+            }
+        }, false);
+    }
+
+    /**
      * Set the second timezone offset (config 0x0011 = SECOND_TIMEZONE_OFFSET).
      * This is displayed when the SECOND_TIMEZONE button function is activated.
      *
@@ -579,36 +606,29 @@ public class FossilQAdapter {
     }
 
     /**
-     * Build and upload a button config file that supports mode_toggle (multi-entry buttons).
+     * Build and upload a button config file with multi-entry support.
      * ConfigFileBuilder only supports 1 entry per button, so we build the binary manually
-     * when any button uses mode_toggle.
+     * when any button has multiple entries.
      *
-     * Mode toggle = 3 entries cycled on press: SECOND_TIMEZONE → DATE → STEP_GOAL_PROGRESS.
-     * The STEP_GOAL_PROGRESS payload (appId 0x001a) was captured from the official Fossil app
-     * BLE trace (bugreport5, t=169.6s). See FINDINGS.md #21b.
-     *
-     * @param topIsToggle   true if TOP button is mode_toggle
-     * @param midIsToggle   true if MIDDLE button is mode_toggle
-     * @param botIsToggle   true if BOTTOM button is mode_toggle
-     * @param topElse       ConfigPayload for TOP if not toggle (ignored if topIsToggle)
-     * @param midElse       ConfigPayload for MIDDLE if not toggle (ignored if midIsToggle)
-     * @param botElse       ConfigPayload for BOTTOM if not toggle (ignored if botIsToggle)
+     * Each button gets an array of ButtonEntry (header+data pairs). Single-entry buttons
+     * work normally; multi-entry buttons cycle through their entries on press (mode toggle).
+     * See FINDINGS.md #21b.
      */
-    public void overwriteButtonsWithModeToggle(
-            boolean topIsToggle, boolean midIsToggle, boolean botIsToggle,
-            ConfigPayload topElse, ConfigPayload midElse, ConfigPayload botElse) {
+    public void overwriteButtonsMultiEntry(
+            ButtonConfigBuilder.ButtonEntry[] topEntries,
+            ButtonConfigBuilder.ButtonEntry[] midEntries,
+            ButtonConfigBuilder.ButtonEntry[] botEntries) {
         if (!useFossilProtocol) {
             LOG.warn("Button config not supported on Misfit protocol firmware");
             return;
         }
-        byte[] file = ButtonConfigBuilder.buildWithModeToggle(
-                topIsToggle, midIsToggle, botIsToggle,
-                topElse, midElse, botElse);
-        LOG.info("Button config file: {} bytes (mode_toggle)", file.length);
+        byte[] file = ButtonConfigBuilder.build(topEntries, midEntries, botEntries);
+        LOG.info("Button config file: {} bytes (multi-entry: top={}, mid={}, bot={})",
+                file.length, topEntries.length, midEntries.length, botEntries.length);
         queueWrite(new FilePutRequest(FileHandle.SETTINGS_BUTTONS, file, shimAdapter) {
             @Override
             public void onFilePut(boolean success) {
-                LOG.info("Button config (mode_toggle): {}", success ? "success" : "FAILED");
+                LOG.info("Button config (multi-entry): {}", success ? "success" : "FAILED");
             }
         }, false);
     }

@@ -1,7 +1,17 @@
 # BLE Capture Implementation Plan
 
-Based on BLE capture analysis of the official Fossil app (bugreport5, 2026-05-21).
-See FINDINGS.md #21a-21f for full analysis.
+Based on BLE capture analysis of the official Fossil app (bugreport5-8, 2026-05-21).
+See FINDINGS.md #21a-21f and #22 for full analysis.
+
+## Implementation Status
+
+| Change | Status | Notes |
+|--------|--------|-------|
+| 1. Remove 0x0011 from syncConfiguration | ✅ Done | Also fixed setTimezoneOffset(), generateTimeConfigItem() comment |
+| 2. `second-timezone` CLI command | ✅ Done | setSecondTimezone() + SecondTimezoneCmd |
+| 3. Mode toggle button support | ✅ Done | ButtonConfigBuilder, multi-entry `+` syntax, `mode_toggle` shorthand |
+| 4. Goal tracking button | ✅ Done | Payload captured from bugreport6, `goal_tracking` keyword |
+| 5. Goal config 0x0017/0x0018 | ✅ Done | `goal-config` CLI command sends config 0x17 (target) + 0x18 (current) |
 
 ## Changes Required (ordered by importance)
 

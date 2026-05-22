@@ -1136,3 +1136,223 @@ From decompiled `DeviceConfigKey.java`:
 | 22 | DAILY_SLEEP_GOAL | — | Sleep goal |
 | 23 | DAILY_TASK_TRACKING_GOAL | — | Task goal |
 | 24 | DAILY_TASK_TRACKING_VALUE | — | Task value |
+
+---
+
+## 22. Multi-Entry Button Config (Mode Toggle) — Binary Format & Testing (2026-05-21)
+
+**Date:** 2026-05-21
+
+**Source:** BLE capture analysis (bugreport5, bugreport6) + real-hardware testing on
+Fossil Q Commuter (HW.0.0), firmware HW0.0.2.9r.v3.
+
+### Button config binary format (corrected)
+
+The format documented in #19 had an error: each header entry is followed by a null byte.
+Corrected format:
+
+```
+[01 00 00]          version (3 bytes)
+[buttonCount]       1 byte
+For each button:
+  [buttonIndex]     0x10=TOP, 0x20=MIDDLE, 0x30=BOTTOM
+  [entryCount]      number of function entries
+  For each entry:
+    [header(4)]     [type, variant, appId_lo, appId_hi]
+    [0x00]          null byte PER ENTRY (not just one at the end!)
+[payloadCount]      1 byte (one per button×entry, NOT deduplicated)
+For each payload:
+  [payloadData]     variable length (byte[5] = total payload length)
+[customizationCount] 1 byte (one per button×entry)
+For each customization:
+  [header(4)]       same 4-byte header as the corresponding entry
+  [0a 00 01 02 01 00]  constant 6-byte suffix
+[CRC32]             4 bytes LE (over all preceding bytes)
+```
+
+**Key corrections from #19/#21b:**
+1. **Null byte per entry** — each `header(4)` is followed by `0x00`. ConfigFileBuilder
+   puts 1 entry per button so the difference is invisible there. Multi-entry buttons need
+   a null after each header, not just one at the end.
+2. **Payloads are NOT deduplicated** — the official app sends one payload per button×entry
+   even when two buttons use the same function (e.g. SECOND_TIMEZONE appears twice).
+3. **Customization section is required** — one entry per button×entry, each is the 4-byte
+   header + constant suffix `0a 00 01 02 01 00`. Sending customizationCount=0 causes
+   error -107 (0x95) on file close.
+4. **DATE has two variants** — standalone DATE uses variant=0x01 (header `01 01 14 00`,
+   45-byte payload). Inside mode toggle, DATE uses variant=0x02 (header `01 02 14 00`,
+   52-byte payload, different internal structure).
+
+### Captured payloads (from bugreport5 & bugreport6)
+
+| Function | Header | Payload size | Variant | Source |
+|----------|--------|-------------|---------|--------|
+| SECOND_TIMEZONE | `01 01 16 00` | 47 bytes | STANDARD (0x01) | ConfigPayload enum |
+| DATE (standalone) | `01 01 14 00` | 45 bytes | STANDARD (0x01) | ConfigPayload enum |
+| DATE (in toggle) | `01 02 14 00` | 52 bytes | SEQUENCED (0x02) | bugreport5 t=169.6s |
+| **ALARM (in toggle)** | `01 02 1a 00` | 54 bytes | SEQUENCED (0x02) | bugreport5 t=169.6s |
+| STEP_GOAL_COMPLETION | `01 02 1c 00` | 60 bytes | 0x02 | ConfigPayload enum |
+| LAST_NOTIFICATION | `01 01 18 00` | 47 bytes | STANDARD (0x01) | ConfigPayload enum |
+| FORWARD_TO_PHONE | `01 01 0c 00` | 46 bytes | STANDARD (0x01) | ConfigPayload enum |
+| GOAL_TRACKING | `01 01 04 00` | 33 bytes | STANDARD (0x01) | bugreport6 t=80.9s |
+
+**CORRECTION (2026-05-22):** The entry previously labeled "STEP_GOAL_PROGRESS" (header
+`01 02 1a 00`, appId 0x001a) is actually **ALARM (SEQUENCED)**. The MicroAppId table shows
+appId 0x1a (26) = ALARM, declarationId 6658. AppId 0x1c (28) = PROGRESS. The official
+Fossil app's mode toggle uses TZ + DATE + ALARM, matching DisplayMode enum values
+2004/2003/2005. Sub-eye indicator C = ALARM (confirmed on hardware with alarm set).
+
+### Sub-eye indicator positions (A, B, C)
+
+The watch dial has three labeled positions (A, B, C) for the sub-eye hand.
+Testing reveals these are **hardwired to specific display functions**, not to
+entry position within the toggle list:
+
+| Indicator | Function | Confirmed |
+|-----------|----------|-----------|
+| A | SECOND_TIMEZONE | ✅ Always points to A regardless of entry order |
+| B | DATE | ✅ Always points to B regardless of entry order |
+| C | **ALARM** | ✅ Points to C when alarm is set (home/zero if no alarm) |
+| 0 (home) | STEP_GOAL_COMPLETION, LAST_NOTIFICATION, GOAL_TRACKING | ✅ All point to sub-eye home/zero or are skipped entirely |
+
+### Multi-entry toggle testing results
+
+| Test config (TOP entries) | Result |
+|--------------------------|--------|
+| `mode_toggle` (TZ+DATE_v2+ALARM_SEQ) | ✅ 3 states: A→B→C (with alarm set), cycles correctly |
+| `second_timezone+date+last_notification` | ✅ 3 states: A→B→hands at 4:20 (notification pos) |
+| `last_notification+second_timezone+alarm_seq+date` | 3 states: hands 4:20→A→B (alarm skipped—no alarm set?) |
+| `second_timezone+date+alarm_seq+step_goal` | 3 states: A→B→home (one entry skipped) |
+| `second_timezone+date+alarm_seq+last_notification` | 3 states: A→B→hands 4:20 (alarm skipped—no alarm set?) |
+| `alarm_seq+second_timezone+date` | 2 states: A→B (alarm skipped as first entry—no alarm set?) |
+| `second_timezone+date+goal_tracking` (0x17=8) | 2 states: A→B→normal (goal_tracking skipped, small vibe on return) |
+| `mode_toggle` with step-goal=20 + real steps (no alarm set) | 2 states: A→B→normal (ALARM skipped—no alarm!) |
+| `mode_toggle` with alarm set | ✅ 3 states: A→B→C, cycles correctly |
+
+**Observations:**
+- The firmware accepts up to 4 entries without error, but **only displays 3 at most**
+  before cycling back to normal time.
+- **ALARM (SEQUENCED) gets skipped when no alarm is set.** Earlier tests that showed
+  it being "skipped" were because no alarm was configured on the watch. With an alarm
+  set, it works as the 3rd toggle entry and points sub-eye to indicator C.
+- **Entry order doesn't affect A/B/C mapping** — SECOND_TIMEZONE always→A, DATE always→B,
+  ALARM always→C.
+- **LAST_NOTIFICATION moves the main hands** to the cached notification position (4:20 in
+  our test) but sub-eye goes to home/zero, not C.
+- The official mode_toggle combo (TZ + DATE_v2 + ALARM_SEQ) works reliably as a unit
+  when an alarm is set.
+
+### GOAL_TRACKING button function
+
+**Header:** `01 01 04 00` (appId=0x0004, variant=STANDARD)
+**Payload:** 33 bytes (captured from bugreport6)
+
+```
+01 00 01 01 04 21 00 0a 00 01 00 05 00 01 00 01
+00 01 01 0b 00 8d 00 ff 93 00 01 01 00 9d e0 2b 40
+```
+
+**Behavior (hardware-verified):**
+- Pressing the button **does NOT send a BLE event** — firmware-only, like stopwatch/date.
+- Each press **increments an on-watch counter** visible in activity sync data.
+- The app reads the count during sync and displays it in the goal tracking dashboard.
+- No goal/value configs (0x0017/0x0018) were sent by the official app during the test
+  session — the watch tracks presses autonomously.
+- With no goal config set, pressing the button shows **no visible feedback** on the watch
+  (no hand movement or sub-eye animation).
+
+### Config 0x0017/0x0018: Task tracking goal & value (hardware-tested, 2026-05-22)
+
+From `DeviceConfigKey.java`:
+- **0x0017 (23)** = `DAILY_TASK_TRACKING_GOAL` — int32, target count (e.g. 8 for "8 glasses")
+- **0x0018 (24)** = `DAILY_TASK_TRACKING_VALUE` — int32, current count
+
+**Test results (Q Commuter HW.0.0, firmware HW0.0.2.9r.v3):**
+
+| Test | Config sent | Button setup | Result |
+|------|-------------|-------------|--------|
+| Goal standalone | 0x17=8, 0x18=0 | TOP=goal_tracking | ❌ Small vibration on press, no hand/sub-eye movement |
+| Goal with current | 0x17=8, 0x18=4 | TOP=goal_tracking | ❌ No change in behavior |
+| Goal in toggle | 0x17=8 | TOP=tz+date+goal_tracking | ❌ Only 2 states (A→B→normal), goal_tracking skipped |
+
+**Conclusion:** Config 0x0017/0x0018 does NOT enable visual feedback for GOAL_TRACKING
+on this firmware. The button is a blind counter — it vibrates to confirm the press and
+increments an internal counter, but never moves hands or the sub-eye. The configs are
+likely only read during activity sync (the companion app displays the dashboard).
+
+### BLE captures inventory
+
+| File | Content |
+|------|---------|
+| `tmp/bugreport5/` | Full Fossil app: 2nd TZ, mode toggle, alarms, notif filters |
+| `tmp/bugreport6/` | Button config: TOP=goal_tracking, MID=last_notification, BOT=mode_toggle |
+| `tmp/bugreport7/` | Goal tracking "add" events + sync (no config 0x17/0x18 sent) |
+| `tmp/bugreport8/` | Button presses on goal_tracking + last_notification (no BLE events) |
+
+### ALARM in mode toggle requires alarm to be set (hardware-tested, 2026-05-22)
+
+| Test | Setup | Alarm set? | Result |
+|------|-------|------------|--------|
+| mode_toggle, no alarm | step-goal=20, TOP=mode_toggle | No | 2 states: A→B→normal (ALARM skipped) |
+| mode_toggle, alarm set | alarm 23:59, TOP=mode_toggle | Yes | ✅ 3 states: A→B→C, cycles correctly |
+
+**Conclusion:** The 3rd mode_toggle entry (ALARM SEQUENCED, appId 0x1a) is **skipped
+when no alarm is configured.** With an alarm set, it works correctly and points the
+sub-eye to indicator C. This explains all previous "SGP gets skipped" observations —
+the entry was actually ALARM, and we never had an alarm set during those tests.
+
+**Notable difference:** With `tz+date+goal_tracking` (real goal_tracking, appId 0x04),
+there IS a small vibration on the return step. GOAL_TRACKING is acknowledged by firmware
+(vibration) but has no visual sub-eye component — it's always skipped in toggle.
+
+### Sub-eye behavior (hardware-verified, 2026-05-22)
+
+The sub-eye is a **passive step progress indicator** that always displays
+`current_steps / step_goal` as a fraction of its range. No button assignment needed.
+
+**Test results:**
+
+| Config change | Sub-eye result | Notes |
+|---------------|---------------|-------|
+| `step-goal 10` (had ≥10 steps) | Moved to 100% (max position) | + celebration vibration! |
+| `step-goal 99999` | Returned to zero | ~0% progress |
+| `goal-config 4 4` (100% task progress) | No movement | 0x17/0x18 does NOT drive sub-eye |
+| `goal-config 8 0` | No movement | Confirmed: sub-eye is step-only |
+
+**Celebration vibration:** When step progress reaches 100% (steps ≥ goal), the watch
+produces a short congratulatory vibration (shorter/weaker than alarm). This is automatic
+firmware behavior triggered by config 0x0003 (step goal) being met.
+
+**Button-activated positions (A, B, C) — ALL CONFIRMED:**
+
+| Indicator | Function | Status |
+|-----------|----------|--------|
+| A | SECOND_TIMEZONE | ✅ Confirmed (always, regardless of entry order) |
+| B | DATE | ✅ Confirmed (always, regardless of entry order) |
+| C | **ALARM** | ✅ Confirmed! Requires at least one alarm set. Shows zero/home if no alarm. |
+| (default) | Step progress | ✅ Passive, proportional to steps/goal |
+
+When no button function is active, the sub-eye shows step progress. When a button
+activates SECOND_TIMEZONE, DATE, or ALARM, the sub-eye temporarily moves to A, B,
+or C respectively, then returns to showing step progress.
+
+**Mode toggle (official app default):** SECOND_TIMEZONE → DATE → ALARM = A → B → C.
+All three indicators are exercised by the default mode toggle configuration.
+
+### Resolved experiments (2026-05-22)
+
+1. ✅ **ALARM = indicator C** — confirmed! The 3rd mode_toggle entry (appId 0x1a) is
+   ALARM SEQUENCED, not "step goal progress". Sub-eye points to C when alarm is set.
+2. ✅ **ALARM skipped when no alarm set** — explains all previous "skipped" observations.
+3. ✅ **Config 0x17/0x18 does NOT affect sub-eye** — task tracking is invisible on watch.
+4. ✅ **Sub-eye is passive step progress** — always shows steps/goal, no button needed.
+5. ✅ **Step goal celebration vibration** — watch vibrates when step goal is met.
+
+### Further experiments to try
+
+1. **ALARM STANDARD (appId 0x1a, variant 0x01, header `01 01 1a 00`)** — does it work
+   as a standalone button (like DATE standalone)? Would show next alarm time on press.
+2. **What does indicator C display?** — does sub-eye position encode the alarm time
+   (e.g. proportional to hours until alarm)? Test with alarms at different times.
+3. **4-entry toggle** — `second_timezone+date+alarm_toggle+last_notification` —
+   confirm the 3-entry display limit vs. 4th being skipped.

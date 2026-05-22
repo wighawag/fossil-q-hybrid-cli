@@ -10,41 +10,44 @@ import java.util.List;
 import java.util.zip.CRC32;
 
 /**
- * Builds button config binary files with support for multi-entry buttons (mode_toggle).
+ * Builds button config binary files with support for multi-entry buttons.
  *
  * The vendored ConfigFileBuilder only supports 1 entry per button. This builder
  * handles arbitrary entry counts per button, following the format documented in
  * FINDINGS.md #19 and #21b.
  *
- * File format:
+ * File format (from BLE capture analysis of official Fossil app):
  *   [01 00 00]          version (3 bytes)
  *   [buttonCount]       number of buttons (1 byte)
  *   For each button:
  *     [buttonIndex]     0x10=TOP, 0x20=MIDDLE, 0x30=BOTTOM
  *     [entryCount]      number of function entries for this button
  *     For each entry:
- *       [header bytes]  4 bytes: [type, variant, appId_lo, appId_hi]
+ *       [header(4)]     [type, variant, appId_lo, appId_hi]
  *     [0x00]            null terminator
- *   [payloadCount]      number of distinct payloads
- *   For each distinct payload:
- *     [payload bytes]   variable length
- *   [customizationCount] (1 byte, usually 0x00)
+ *   [payloadCount]      number of payloads (one per button×entry, NOT deduplicated)
+ *   For each payload:
+ *     [payloadData]     variable length (byte[5] = total payload length)
+ *   [customizationCount] number of customization entries
+ *   For each customization:
+ *     [header(4)]       same 4-byte header as the corresponding entry
+ *     [0a 00 01 02 01 00]  6 bytes of customization data (constant)
  *   [CRC32]            4 bytes, little-endian
  *
  * Zero patches to vendored GadgetBridge code.
  */
 public class ButtonConfigBuilder {
 
-    // Mode toggle sub-functions: SECOND_TIMEZONE → DATE → STEP_GOAL_PROGRESS
-    // Headers (4 bytes each):
-    private static final byte[] HEADER_SECOND_TIMEZONE = {0x01, 0x01, 0x16, 0x00};
-    private static final byte[] HEADER_DATE            = {0x01, 0x02, 0x14, 0x00};  // NOTE: variant=0x02 in mode toggle context
-    private static final byte[] HEADER_STEP_GOAL_PROGRESS = {0x01, 0x02, 0x1a, 0x00};
+    // ========== ALARM SEQUENCED (appId 0x001a, variant 0x02) ==========
+    // Captured from official Fossil app BLE trace (bugreport5, t=169.6s).
+    // This is ALARM (SEQUENCED) — used inside mode toggle to show next alarm.
+    // MicroAppId: declarationId 6658 = ALARM SEQUENCED.
+    // Previously misidentified as "STEP_GOAL_PROGRESS" — corrected 2026-05-22.
+    // See FINDINGS.md #22.
 
-    // STEP_GOAL_PROGRESS payload (appId 0x001a) — captured from official Fossil app
-    // BLE trace (bugreport5, t=169.6s). See FINDINGS.md #21b.
-    // This is NOT the same as STEP_GOAL_COMPLETION (appId 0x001c).
-    private static final byte[] STEP_GOAL_PROGRESS_DATA = {
+    static final byte[] ALARM_SEQUENCED_HEADER = {0x01, 0x02, 0x1a, 0x00};
+
+    static final byte[] ALARM_SEQUENCED_DATA = {
             (byte) 0x01, (byte) 0x00, (byte) 0x01, (byte) 0x02,
             (byte) 0x1a, (byte) 0x36, (byte) 0x00, (byte) 0x00,
             (byte) 0x00, (byte) 0x01, (byte) 0x00, (byte) 0x08,
@@ -61,102 +64,135 @@ public class ButtonConfigBuilder {
             (byte) 0x57, (byte) 0xcc
     };
 
-    /** Mode toggle headers (3 entries). */
-    private static final byte[][] MODE_TOGGLE_HEADERS = {
-            HEADER_SECOND_TIMEZONE,
-            HEADER_DATE,
-            HEADER_STEP_GOAL_PROGRESS
+    // DATE variant 0x02 — used inside mode toggle, NOT the same as ConfigPayload.DATE (variant 0x01).
+    // Captured from official Fossil app BLE trace (bugreport5, t=169.6s).
+    // Header: 01 02 14 00 (vs standalone DATE: 01 01 14 00)
+    static final byte[] DATE_TOGGLE_HEADER = {0x01, 0x02, 0x14, 0x00};
+
+    static final byte[] DATE_TOGGLE_DATA = {
+            (byte) 0x01, (byte) 0x00, (byte) 0x01, (byte) 0x02,
+            (byte) 0x14, (byte) 0x34, (byte) 0x00, (byte) 0x00,
+            (byte) 0x00, (byte) 0x01, (byte) 0x00, (byte) 0x06,
+            (byte) 0x00, (byte) 0x02, (byte) 0x00, (byte) 0x00,
+            (byte) 0x07, (byte) 0x00, (byte) 0x01, (byte) 0x01,
+            (byte) 0x1d, (byte) 0x00, (byte) 0x89, (byte) 0x02,
+            (byte) 0x01, (byte) 0x04, (byte) 0xb0, (byte) 0x00,
+            (byte) 0x00, (byte) 0x89, (byte) 0x05, (byte) 0x01,
+            (byte) 0x07, (byte) 0xb0, (byte) 0x00, (byte) 0x00,
+            (byte) 0xb0, (byte) 0x00, (byte) 0x00, (byte) 0xb0,
+            (byte) 0x00, (byte) 0x00, (byte) 0x08, (byte) 0x01,
+            (byte) 0x50, (byte) 0x00, (byte) 0x01, (byte) 0x00,
+            (byte) 0x77, (byte) 0x9c, (byte) 0x0c, (byte) 0x19
     };
 
-    /** Mode toggle payloads (3 entries, matching the headers). */
-    private static final byte[][] MODE_TOGGLE_PAYLOADS = {
-            ConfigPayload.SECOND_TIMEZONE.getData(),
-            ConfigPayload.DATE.getData(),
-            STEP_GOAL_PROGRESS_DATA
+    /** DATE entry for use inside mode toggle (variant 0x02). */
+    public static final ButtonEntry DATE_TOGGLE_ENTRY =
+            new ButtonEntry(DATE_TOGGLE_HEADER, DATE_TOGGLE_DATA);
+
+    // GOAL_TRACKING (appId 0x0004) — captured from official Fossil app (bugreport6).
+    // This is the "Goal Tracking" / custom task tracking button function.
+    static final byte[] GOAL_TRACKING_HEADER = {0x01, 0x01, 0x04, 0x00};
+
+    static final byte[] GOAL_TRACKING_DATA = {
+            (byte) 0x01, (byte) 0x00, (byte) 0x01, (byte) 0x01,
+            (byte) 0x04, (byte) 0x21, (byte) 0x00, (byte) 0x0a,
+            (byte) 0x00, (byte) 0x01, (byte) 0x00, (byte) 0x05,
+            (byte) 0x00, (byte) 0x01, (byte) 0x00, (byte) 0x01,
+            (byte) 0x00, (byte) 0x01, (byte) 0x01, (byte) 0x0b,
+            (byte) 0x00, (byte) 0x8d, (byte) 0x00, (byte) 0xff,
+            (byte) 0x93, (byte) 0x00, (byte) 0x01, (byte) 0x01,
+            (byte) 0x00, (byte) 0x9d, (byte) 0xe0, (byte) 0x2b,
+            (byte) 0x40
     };
 
+    /** GOAL_TRACKING entry (custom task/water tracking). */
+    public static final ButtonEntry GOAL_TRACKING_ENTRY =
+            new ButtonEntry(GOAL_TRACKING_HEADER, GOAL_TRACKING_DATA);
+
+    // LAST_NOTIFICATION payload — already in ConfigPayload, but note the
+    // variant difference: standalone = variant 0x01 (01 01 18 00).
+    // Inside toggle context it may behave differently (see FINDINGS testing).
+
+    // Customization suffix: constant 6 bytes appended after each entry's header
+    // in the customization section. Captured from official app.
+    private static final byte[] CUSTOMIZATION_SUFFIX = {0x0a, 0x00, 0x01, 0x02, 0x01, 0x00};
+
+    // ========== Button entry abstraction ==========
+
     /**
-     * Represents one button's configuration: 1+ (header, payload) entries.
+     * A button function entry: header (4 bytes) + payload data.
      */
-    private static class ButtonEntry {
-        final byte buttonIndex;       // 0x10, 0x20, 0x30
-        final byte[][] headers;       // 4 bytes each
-        final byte[][] payloads;      // variable length each
+    public record ButtonEntry(byte[] header, byte[] data) {}
 
-        ButtonEntry(byte buttonIndex, byte[][] headers, byte[][] payloads) {
-            this.buttonIndex = buttonIndex;
-            this.headers = headers;
-            this.payloads = payloads;
-        }
+    /** Convert a ConfigPayload to a ButtonEntry. */
+    public static ButtonEntry entryFrom(ConfigPayload p) {
+        return new ButtonEntry(p.getHeader(), p.getData());
     }
+
+    /** ALARM (SEQUENCED) entry — used inside mode toggle to show next alarm on sub-eye C. */
+    public static final ButtonEntry ALARM_SEQUENCED_ENTRY =
+            new ButtonEntry(ALARM_SEQUENCED_HEADER, ALARM_SEQUENCED_DATA);
+
+    /** @deprecated Renamed to ALARM_SEQUENCED_ENTRY. This is ALARM, not step goal progress. */
+    public static final ButtonEntry STEP_GOAL_PROGRESS_ENTRY = ALARM_SEQUENCED_ENTRY;
+
+    // ========== Mode toggle default ==========
 
     /**
-     * Build a button config file supporting mode_toggle on any button.
+     * Default mode toggle entries: SECOND_TIMEZONE → DATE (variant 0x02) → ALARM (SEQUENCED).
+     * Cycles sub-eye through: A (timezone) → B (date) → C (alarm) → normal time.
+     * Note: DATE inside mode toggle uses variant 0x02 (52 bytes), not variant 0x01 (45 bytes).
+     * Note: ALARM needs at least one alarm set to display on indicator C.
      */
-    public static byte[] buildWithModeToggle(
-            boolean topIsToggle, boolean midIsToggle, boolean botIsToggle,
-            ConfigPayload topElse, ConfigPayload midElse, ConfigPayload botElse) {
+    public static final ButtonEntry[] MODE_TOGGLE_ENTRIES = {
+            entryFrom(ConfigPayload.SECOND_TIMEZONE),
+            DATE_TOGGLE_ENTRY,
+            ALARM_SEQUENCED_ENTRY
+    };
 
-        ButtonEntry[] buttons = new ButtonEntry[3];
-        buttons[0] = makeEntry((byte) 0x10, topIsToggle, topElse);
-        buttons[1] = makeEntry((byte) 0x20, midIsToggle, midElse);
-        buttons[2] = makeEntry((byte) 0x30, botIsToggle, botElse);
+    // ========== Builder ==========
 
-        return buildFile(buttons);
-    }
+    /**
+     * Build a button config file. Each button gets an array of ButtonEntry.
+     * Payloads are NOT deduplicated (one per button×entry, matching official app).
+     * Customization entries are included (one per button×entry).
+     */
+    public static byte[] build(ButtonEntry[] topEntries, ButtonEntry[] midEntries, ButtonEntry[] botEntries) {
+        ButtonEntry[][] allButtons = {topEntries, midEntries, botEntries};
+        byte[] buttonIndices = {0x10, 0x20, 0x30};
 
-    private static ButtonEntry makeEntry(byte buttonIndex, boolean isToggle, ConfigPayload single) {
-        if (isToggle) {
-            return new ButtonEntry(buttonIndex, MODE_TOGGLE_HEADERS, MODE_TOGGLE_PAYLOADS);
-        } else {
-            return new ButtonEntry(buttonIndex,
-                    new byte[][]{single.getHeader()},
-                    new byte[][]{single.getData()});
-        }
-    }
-
-    private static byte[] buildFile(ButtonEntry[] buttons) {
-        // Collect all distinct payloads (by content)
-        List<byte[]> distinctPayloads = new ArrayList<>();
-        for (ButtonEntry btn : buttons) {
-            for (byte[] payload : btn.payloads) {
-                boolean found = false;
-                for (byte[] existing : distinctPayloads) {
-                    if (Arrays.equals(payload, existing)) {
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found) {
-                    distinctPayloads.add(payload);
-                }
+        // Collect all payloads in order (one per button×entry, NOT deduplicated)
+        List<ButtonEntry> allEntries = new ArrayList<>();
+        for (ButtonEntry[] entries : allButtons) {
+            for (ButtonEntry entry : entries) {
+                allEntries.add(entry);
             }
         }
+        int totalPayloads = allEntries.size();
 
-        // Calculate header section size
+        // Calculate sizes
         int headerSectionSize = 0;
-        for (ButtonEntry btn : buttons) {
-            // buttonIndex(1) + entryCount(1) + (header_bytes * entryCount) + null(1)
-            headerSectionSize += 1 + 1;
-            for (byte[] h : btn.headers) {
-                headerSectionSize += h.length;
-            }
-            headerSectionSize += 1; // null terminator
+        for (ButtonEntry[] entries : allButtons) {
+            // buttonIndex(1) + entryCount(1) + (header(4) + null(1)) per entry
+            headerSectionSize += 2 + (entries.length * 5);
         }
 
-        // Calculate payload section size
         int payloadSectionSize = 0;
-        for (byte[] p : distinctPayloads) {
-            payloadSectionSize += p.length;
+        for (ButtonEntry entry : allEntries) {
+            payloadSectionSize += entry.data().length;
         }
 
-        int totalSize = 3          // version
-                + 1                 // button count
+        // Customization: header(4) + suffix(6) = 10 bytes per entry
+        int customizationSize = totalPayloads * 10;
+
+        int totalSize = 3                    // version
+                + 1                           // button count
                 + headerSectionSize
-                + 1                 // payload count
+                + 1                           // payload count
                 + payloadSectionSize
-                + 1                 // customization count
-                + 4;               // CRC32
+                + 1                           // customization count
+                + customizationSize
+                + 4;                          // CRC32
 
         ByteBuffer buf = ByteBuffer.allocate(totalSize);
         buf.order(ByteOrder.LITTLE_ENDIAN);
@@ -167,28 +203,34 @@ public class ButtonConfigBuilder {
         buf.put((byte) 0x00);
 
         // Button count
-        buf.put((byte) buttons.length);
+        buf.put((byte) allButtons.length);
 
-        // Button headers
-        for (ButtonEntry btn : buttons) {
-            buf.put(btn.buttonIndex);
-            buf.put((byte) btn.headers.length); // entryCount
-            for (byte[] header : btn.headers) {
-                buf.put(header);
+        // Button headers — each entry is header(4) + null(1)
+        for (int b = 0; b < allButtons.length; b++) {
+            buf.put(buttonIndices[b]);
+            buf.put((byte) allButtons[b].length);
+            for (ButtonEntry entry : allButtons[b]) {
+                buf.put(entry.header());
+                buf.put((byte) 0x00);
             }
-            buf.put((byte) 0x00); // null terminator
         }
 
-        // Payload count
-        buf.put((byte) distinctPayloads.size());
+        // Payload count (one per button×entry, NOT deduplicated)
+        buf.put((byte) totalPayloads);
 
-        // Payloads
-        for (byte[] payload : distinctPayloads) {
-            buf.put(payload);
+        // Payloads in order
+        for (ButtonEntry entry : allEntries) {
+            buf.put(entry.data());
         }
 
-        // Customization count (0 = none)
-        buf.put((byte) 0x00);
+        // Customization count
+        buf.put((byte) totalPayloads);
+
+        // Customization entries: header(4) + constant suffix(6)
+        for (ButtonEntry entry : allEntries) {
+            buf.put(entry.header());
+            buf.put(CUSTOMIZATION_SUFFIX);
+        }
 
         // CRC32 over everything before the CRC
         int dataLen = buf.position();
