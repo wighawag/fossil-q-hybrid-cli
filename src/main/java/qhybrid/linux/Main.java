@@ -40,6 +40,7 @@ import org.jline.terminal.TerminalBuilder;
                 Main.SecondTimezoneCmd.class,
                 Main.GoalConfigCmd.class,
                 Main.NotifyConfigCmd.class,
+                Main.ReadConfigCmd.class,
         })
 public class Main implements Runnable {
     private static final Logger LOG = LoggerFactory.getLogger("fossil-q");
@@ -1364,6 +1365,58 @@ public class Main implements Runnable {
             adapter.setGoalConfig(target, current);
             System.out.printf("Goal config set: target=%d, current=%d%n", target, current);
             sleep(1000);
+            adapter.shutdown();
+            return 0;
+        }
+    }
+
+    @Command(name = "read-config", mixinStandardHelpOptions = true,
+             description = "Read the watch's current configuration (step count, goals, battery, timezone, etc.)")
+    static class ReadConfigCmd implements Callable<Integer> {
+        @ParentCommand Main parent;
+
+        @Option(names = {"--raw"}, description = "Show raw hex bytes for each config entry")
+        boolean raw;
+
+        @Override
+        public Integer call() {
+            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+
+            var future = new java.util.concurrent.CompletableFuture<java.util.List<FossilQAdapter.ConfigEntry>>();
+            adapter.readConfig(future);
+
+            java.util.List<FossilQAdapter.ConfigEntry> entries;
+            try {
+                entries = future.get(30, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (java.util.concurrent.TimeoutException e) {
+                System.err.println("Timeout reading config (30s)");
+                adapter.shutdown();
+                return 1;
+            } catch (Exception e) {
+                System.err.println("Error reading config: " + e.getMessage());
+                adapter.shutdown();
+                return 1;
+            }
+
+            if (entries.isEmpty()) {
+                System.out.println("No configuration data returned (or read failed).");
+                adapter.shutdown();
+                return 1;
+            }
+
+            System.out.printf("Watch configuration (%d entries):%n%n", entries.size());
+            System.out.printf("  %-8s %-30s %s%n", "ID", "Name", "Value");
+            System.out.printf("  %-8s %-30s %s%n", "------", "------------------------------", "-----");
+            for (var entry : entries) {
+                System.out.printf("  0x%04X  %-30s %s%n", entry.id, entry.name, entry.formattedValue);
+                if (raw) {
+                    StringBuilder hex = new StringBuilder();
+                    for (byte b : entry.rawData) hex.append(String.format("%02X ", b & 0xFF));
+                    System.out.printf("  %8s %-30s [%s]%n", "", "", hex.toString().trim());
+                }
+            }
+
+            System.out.println();
             adapter.shutdown();
             return 0;
         }

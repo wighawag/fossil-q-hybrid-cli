@@ -286,9 +286,13 @@ Alarm capacity is not affected by other file handles.
 
 ### Alarm file read-back
 
-`AlarmsGetRequest` (FileGetRequest on handle 0x0A00) returns `INVALID_OPERATION_DATA (1)` on
+**UPDATE (2026-05-22):** Alarm read-back WORKS when using `FileLookupAndGetRequest` (type 0x02)
+instead of `FileGetRequest` (type 0x01). The `INVALID_OPERATION_DATA` error was caused by the
+file access method, not a firmware limitation. See FINDINGS.md #25.
+
+~~`AlarmsGetRequest` (FileGetRequest on handle 0x0A00) returns `INVALID_OPERATION_DATA (1)` on
 this firmware — the watch does not support reading back the alarm file. Alarms are write-only.
-The companion app must track alarm state locally.
+The companion app must track alarm state locally.~~
 
 ### Non-repeating weekday alarms (undocumented format, hardware-verified)
 
@@ -1527,3 +1531,102 @@ fossil-q -d <MAC> position-test --positions "60/300,180/0,330/30"  # custom list
 3. **6+ entries** — is there an upper limit? Could add STOPWATCH or other functions.
 4. **ALERT (appId 0x18, declarationId 6145/6146)** — what does this display mode do?
    Construct payload and test in toggle.
+
+---
+
+## 25. Configuration Read-Back & File Access Methods (2026-05-22)
+
+**Date:** 2026-05-22
+
+**Source:** Real-hardware testing on Fossil Q Commuter (HW.0.0), firmware HW0.0.2.9r.v3.
+
+### Direct FileGet (type 0x01) vs FileLookup (type 0x02)
+
+The Fossil protocol has two file access methods:
+
+| Method | Start sequence | How it works |
+|--------|---------------|-------------|
+| FileGetRequest (type 0x01) | `[01] [minor] [major] [offset(4)] [size(4)]` | Direct get by full handle |
+| FileLookupRequest (type 0x02) | `[02 FF] [majorHandle]` | Lookup by major, get resolved handle |
+
+**GadgetBridge uses `FileGetRequest` (type 0x01)** for `ConfigurationGetRequest` and
+`AlarmsGetRequest`. On HW.0.0 firmware, both return `INVALID_OPERATION_DATA (1)`.
+
+**FileLookupAndGetRequest (type 0x02)** works for all file handles tested:
+- Configuration (0x08) ✅
+- Alarms (0x0A) ✅
+- Activity (0x01) ✅ (was already using this method)
+
+**Fix applied:** Switched `readConfig()` and `getAlarms()` from `FileGetRequest` to
+`FileLookupAndGetRequest`. Both now work on real hardware.
+
+### Configuration file contents (hardware-verified)
+
+The config file (handle 0x0800) returns 84 bytes of TLV payload containing 12 entries.
+Format: `[id(2 LE)] [length(1)] [data(length)]...`
+
+| ID | Name | Length | Value (from test) |
+|----|------|--------|-------------------|
+| 0x0001 | BIOMETRIC_PROFILE | 7 | age=42, male, 172cm, 75kg |
+| 0x0002 | DAILY_STEP | 4 | 36 steps |
+| 0x0003 | DAILY_STEP_GOAL | 4 | 10000 steps |
+| 0x0004 | DAILY_CALORIE | 4 | 1 cal |
+| 0x0005 | DAILY_CALORIE_GOAL | 4 | 240 cal |
+| 0x0006 | DAILY_TOTAL_ACTIVE_MIN | 2 | 0 min |
+| 0x0007 | DAILY_ACTIVE_MIN_GOAL | 2 | 30 min |
+| 0x0009 | INACTIVE_NUDGE | 6 | disabled (every 0 min, 00:00-00:00) |
+| 0x000A | VIBE_STRENGTH | 1 | 100% |
+| 0x000C | TIME | 8 | 2026-05-22T15:53:18 (UTC epoch, offset=+60 min) |
+| 0x000D | BATTERY | 4 | 24% (voltage=2574 mV, CHARGING) |
+| 0x0011 | SECOND_TIMEZONE_OFFSET | 2 | UTC+5.5 (330 min) |
+
+**Notable:** Config IDs 0x08 (DAILY_DISTANCE), 0x0B (DO_NOT_DISTURB), 0x0E (HEART_RATE_MODE),
+0x0F (DAILY_SLEEP), 0x10 (DISPLAY_UNIT), 0x14 (AUTO_WORKOUT_DETECTION), 0x17/0x18
+(TASK_TRACKING) are absent — either not supported by this firmware or not configured.
+
+### Biometric profile format (hardware-verified)
+
+Config 0x0001 (BIOMETRIC_PROFILE), 7 bytes:
+```
+[age(1)] [gender(1)] [height_cm(2 LE)] [weight_kg(2 LE)] [unknown(1)]
+```
+- Gender: 1=male, 0=female
+- Height/weight stored as 16-bit LE integers
+- Unknown byte 6: always 0x00 (padding or unused field)
+
+**Verified:** age=42 (`0x2A`), male (`0x01`), 172cm (`0xAC 0x00`), 75kg (`0x4B 0x00`).
+
+### Battery config format correction
+
+Config 0x0D (BATTERY) is **4 bytes** on this firmware, not 3 as in GadgetBridge's
+`BatteryConfigItem`. The 4th byte is the charging state:
+```
+[voltage(2 LE)] [percent(1)] [state(1)]
+```
+State: 0=DISCHARGING, 1=CHARGING, 2=FULL.
+
+GadgetBridge's `BatteryConfigItem` only parses 3 bytes, missing the state field.
+
+### Alarm read-back now works
+
+Previously documented as "not supported" (FINDINGS.md #12). The issue was the file
+access method, not a firmware limitation. With `FileLookupAndGetRequest`, alarm
+read-back works:
+```
+$ fossil-q alarm list
+1 alarm(s):
+  [1] 23:59  not repeating
+```
+
+### CLI usage
+
+```bash
+# Read all config entries
+fossil-q -d <MAC> read-config
+
+# With raw hex bytes
+fossil-q -d <MAC> read-config --raw
+
+# Read alarms (now works!)
+fossil-q -d <MAC> alarm list
+```

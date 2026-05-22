@@ -30,6 +30,9 @@ java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A second-timezone 330   # I
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A second-timezone off   # disable
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A goal-config 8         # set goal target to 8
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A goal-config 8 3       # target=8, current=3
+java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A read-config            # read all config from watch
+java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A read-config --raw      # with hex bytes
+java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A alarm list             # read alarms from watch
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A monitor  # Ctrl+C to stop
 ```
 
@@ -135,7 +138,7 @@ Bond benefits: encrypted link, WakeAllowed, faster reconnect (device stays known
 - **Alarm file version must be 2** - version 0/1/3 return VERIFICATION_FAIL
 - **Weekday bitmask** bit3=Wed, bit4=Thu (hardware-verified). GB Alarm.java has them backwards.
 - **Watch does directed advertising** after pairing - won't appear in general scan, connect by MAC
-- **32 alarms max** - firmware limit, power-of-two. GB limits to 5, official app to 12 - both artificial. 33+ causes silent timeout (no error code). Alarm read-back not supported (INVALID_OPERATION_DATA).
+- **32 alarms max** - firmware limit, power-of-two. GB limits to 5, official app to 12 - both artificial. 33+ causes silent timeout (no error code). Alarm read-back works via `FileLookupAndGetRequest` (type 0x02); direct `FileGetRequest` (type 0x01) returns INVALID_OPERATION_DATA. See FINDINGS.md #25.
 - **Watch only advertises ~30s after button press** - must wake watch before scanning
 - **GATT services fail on first connect** after `bluetoothctl remove` - auto-retry (up to 3 attempts) handles this. BlueZ caches service layout across retries.
 - **Stale "In Progress" connections** - a previous failed connect can block new ones. Disconnect before connecting to clear.

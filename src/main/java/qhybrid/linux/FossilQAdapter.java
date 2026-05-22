@@ -14,7 +14,6 @@ import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fos
 import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.RequestMtuRequest;
 import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.SetDeviceStateRequest;
 import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.alarm.Alarm;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.alarm.AlarmsGetRequest;
 import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.alarm.AlarmsSetRequest;
 import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.configuration.ConfigurationPutRequest;
 import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.device_info.DeviceInfo;
@@ -518,8 +517,10 @@ public class FossilQAdapter {
     }
 
     /**
-     * Read current alarms from the watch via FileGetRequest on handle 0x0A00.
-     * Note: returns empty array if the watch rejects the read (e.g. no alarms file exists).
+     * Read current alarms from the watch.
+     * Uses FileLookupAndGetRequest (type 0x02, file lookup) instead of direct
+     * FileGetRequest (type 0x01) — direct get returns INVALID_OPERATION_DATA
+     * on HW.0.0 firmware. File lookup works (same approach as activity/config).
      */
     public void getAlarms(CompletableFuture<Alarm[]> result) {
         if (!useFossilProtocol) {
@@ -527,19 +528,44 @@ public class FossilQAdapter {
             result.complete(new Alarm[0]);
             return;
         }
-        queueWrite(new AlarmsGetRequest(shimAdapter) {
+        queueWrite(new FileLookupAndGetRequest(FileHandle.ALARMS, shimAdapter) {
             private boolean errorOccurred = false;
 
             @Override
-            public void handleAlarms(Alarm[] alarms) {
+            public void handleFileData(byte[] fileData) {
+                // Raw file data includes 12-byte header + payload + 4-byte CRC
+                LOG.info("Alarm file (raw): {} bytes", fileData.length);
+                if (fileData.length < 16) {
+                    LOG.warn("Alarm file too short: {} bytes", fileData.length);
+                    result.complete(new Alarm[0]);
+                    return;
+                }
+                // Strip 12-byte header and 4-byte trailing CRC
+                int payloadLen = fileData.length - 12 - 4;
+                byte[] alarmData = new byte[payloadLen];
+                System.arraycopy(fileData, 12, alarmData, 0, payloadLen);
+                LOG.info("Alarm payload: {} bytes ({} alarms)", payloadLen, payloadLen / 3);
+
+                // Parse 3-byte alarm entries
+                int count = payloadLen / 3;
+                Alarm[] alarms = new Alarm[count];
+                for (int i = 0; i < count; i++) {
+                    byte[] ab = new byte[]{alarmData[i*3], alarmData[i*3+1], alarmData[i*3+2]};
+                    alarms[i] = Alarm.fromBytes(ab);
+                }
                 LOG.info("Read {} alarm(s) from watch", alarms.length);
                 result.complete(alarms);
             }
 
             @Override
-            public void handleFileData(byte[] fileData) {
-                LOG.info("Alarm file: {} bytes", fileData.length);
-                super.handleFileData(fileData);
+            public void handleFileLookupError(FILE_LOOKUP_ERROR error) {
+                if (error == FILE_LOOKUP_ERROR.FILE_EMPTY) {
+                    LOG.info("No alarms on watch (file empty)");
+                    result.complete(new Alarm[0]);
+                } else {
+                    LOG.warn("Alarm file lookup error: {}", error);
+                    result.complete(new Alarm[0]);
+                }
             }
 
             @Override
@@ -549,7 +575,7 @@ public class FossilQAdapter {
                 } catch (RuntimeException e) {
                     LOG.warn("Alarm read failed: {}", e.getMessage());
                     errorOccurred = true;
-                    result.complete(new Alarm[0]);
+                    if (!result.isDone()) result.complete(new Alarm[0]);
                 }
             }
 
@@ -828,6 +854,315 @@ public class FossilQAdapter {
         } catch (Exception e) {
             LOG.error("Error stopping find-device vibration", e);
         }
+    }
+
+    /**
+     * Read the watch's current configuration (file handle 0x0800).
+     * Returns parsed config items via the CompletableFuture.
+     *
+     * The config file uses a TLV format: [id(2 LE)] [length(1)] [data(length)]...
+     * Known config IDs from official Fossil app (DeviceConfigKey.java):
+     *   0x01=BIOMETRIC_PROFILE, 0x02=DAILY_STEP, 0x03=DAILY_STEP_GOAL,
+     *   0x04=DAILY_CALORIE, 0x05=DAILY_CALORIE_GOAL, 0x06=DAILY_TOTAL_ACTIVE_MIN,
+     *   0x07=DAILY_ACTIVE_MIN_GOAL, 0x08=DAILY_DISTANCE, 0x09=INACTIVE_NUDGE,
+     *   0x0A=VIBE_STRENGTH, 0x0B=DO_NOT_DISTURB, 0x0C=TIME, 0x0D=BATTERY,
+     *   0x0E=HEART_RATE_MODE, 0x0F=DAILY_SLEEP, 0x10=DISPLAY_UNIT,
+     *   0x11=SECOND_TIMEZONE_OFFSET, 0x12=CURRENT_HEART_RATE,
+     *   0x14=AUTO_WORKOUT_DETECTION, 0x15=CYCLING_CADENCE, 0x16=DAILY_SLEEP_GOAL,
+     *   0x17=DAILY_TASK_TRACKING_GOAL, 0x18=DAILY_TASK_TRACKING_VALUE
+     * See FINDINGS.md #21f.
+     */
+    public void readConfig(CompletableFuture<java.util.List<ConfigEntry>> result) {
+        if (!useFossilProtocol) {
+            LOG.warn("Config read not supported on Misfit protocol firmware");
+            result.complete(java.util.Collections.emptyList());
+            return;
+        }
+        LOG.info("Reading configuration from watch...");
+        // Use FileLookupAndGetRequest (type 0x02, file lookup by major handle)
+        // instead of ConfigurationGetRequest (type 0x01, direct file get).
+        // Direct file get returns INVALID_OPERATION_DATA on HW.0.0 firmware.
+        // File lookup works (same approach as activity fetch).
+        queueWrite(new FileLookupAndGetRequest(FileHandle.CONFIGURATION, shimAdapter) {
+            private boolean errorOccurred = false;
+
+            @Override
+            public void handleFileData(byte[] fileData) {
+                // FileLookupAndGetRequest returns raw file data (no header stripping).
+                // The raw data has: [file header (12 bytes)] [config TLV data] [CRC (4 bytes)]
+                // FileGetRawRequest.handleFileRawData -> FileGetRequest.handleFileData strips these.
+                // But FileLookupAndGetRequest gives us the raw bytes, so we must strip manually.
+                LOG.info("Configuration file (raw): {} bytes", fileData.length);
+                if (fileData.length < 16) {
+                    LOG.warn("Config file too short: {} bytes", fileData.length);
+                    result.complete(java.util.Collections.emptyList());
+                    return;
+                }
+                // Strip 12-byte header and 4-byte trailing CRC
+                byte[] configData = new byte[fileData.length - 12 - 4];
+                System.arraycopy(fileData, 12, configData, 0, configData.length);
+                LOG.info("Configuration payload: {} bytes", configData.length);
+                java.util.List<ConfigEntry> entries = parseConfigEntries(configData);
+                result.complete(entries);
+            }
+
+            @Override
+            public void handleFileLookupError(FILE_LOOKUP_ERROR error) {
+                if (error == FILE_LOOKUP_ERROR.FILE_EMPTY) {
+                    LOG.info("Configuration file is empty");
+                    result.complete(java.util.Collections.emptyList());
+                } else {
+                    LOG.warn("Configuration file lookup error: {}", error);
+                    result.complete(java.util.Collections.emptyList());
+                }
+            }
+
+            @Override
+            public void handleResponse(BluetoothGattCharacteristic characteristic, byte[] value) {
+                try {
+                    super.handleResponse(characteristic, value);
+                } catch (RuntimeException e) {
+                    LOG.warn("Config read failed: {}", e.getMessage());
+                    errorOccurred = true;
+                    if (!result.isDone()) result.complete(java.util.Collections.emptyList());
+                }
+            }
+
+            @Override
+            public boolean isFinished() {
+                return errorOccurred || super.isFinished();
+            }
+        }, false);
+    }
+
+    /**
+     * A parsed config entry from the watch.
+     */
+    public static class ConfigEntry {
+        public final int id;
+        public final String name;
+        public final byte[] rawData;
+        public final String formattedValue;
+
+        public ConfigEntry(int id, String name, byte[] rawData, String formattedValue) {
+            this.id = id;
+            this.name = name;
+            this.rawData = rawData;
+            this.formattedValue = formattedValue;
+        }
+
+        @Override
+        public String toString() {
+            return String.format("0x%04X %-30s %s", id, name, formattedValue);
+        }
+    }
+
+    // Config ID → name mapping (from official Fossil app DeviceConfigKey.java)
+    private static final java.util.Map<Integer, String> CONFIG_NAMES = java.util.Map.ofEntries(
+        java.util.Map.entry(0x01, "BIOMETRIC_PROFILE"),
+        java.util.Map.entry(0x02, "DAILY_STEP"),
+        java.util.Map.entry(0x03, "DAILY_STEP_GOAL"),
+        java.util.Map.entry(0x04, "DAILY_CALORIE"),
+        java.util.Map.entry(0x05, "DAILY_CALORIE_GOAL"),
+        java.util.Map.entry(0x06, "DAILY_TOTAL_ACTIVE_MIN"),
+        java.util.Map.entry(0x07, "DAILY_ACTIVE_MIN_GOAL"),
+        java.util.Map.entry(0x08, "DAILY_DISTANCE"),
+        java.util.Map.entry(0x09, "INACTIVE_NUDGE"),
+        java.util.Map.entry(0x0A, "VIBE_STRENGTH"),
+        java.util.Map.entry(0x0B, "DO_NOT_DISTURB"),
+        java.util.Map.entry(0x0C, "TIME"),
+        java.util.Map.entry(0x0D, "BATTERY"),
+        java.util.Map.entry(0x0E, "HEART_RATE_MODE"),
+        java.util.Map.entry(0x0F, "DAILY_SLEEP"),
+        java.util.Map.entry(0x10, "DISPLAY_UNIT"),
+        java.util.Map.entry(0x11, "SECOND_TIMEZONE_OFFSET"),
+        java.util.Map.entry(0x12, "CURRENT_HEART_RATE"),
+        java.util.Map.entry(0x14, "AUTO_WORKOUT_DETECTION"),
+        java.util.Map.entry(0x15, "CYCLING_CADENCE"),
+        java.util.Map.entry(0x16, "DAILY_SLEEP_GOAL"),
+        java.util.Map.entry(0x17, "DAILY_TASK_TRACKING_GOAL"),
+        java.util.Map.entry(0x18, "DAILY_TASK_TRACKING_VALUE")
+    );
+
+    /**
+     * Parse raw config file data into ConfigEntry list.
+     * TLV format: [id(2 LE)] [length(1)] [data(length)]...
+     */
+    private java.util.List<ConfigEntry> parseConfigEntries(byte[] data) {
+        java.util.List<ConfigEntry> entries = new java.util.ArrayList<>();
+        java.nio.ByteBuffer buf = java.nio.ByteBuffer.wrap(data).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+
+        while (buf.remaining() >= 3) {
+            int id = buf.getShort() & 0xFFFF;
+            int length = buf.get() & 0xFF;
+
+            if (buf.remaining() < length) {
+                LOG.warn("Config entry 0x{} claims {} bytes but only {} remain",
+                        String.format("%04X", id), length, buf.remaining());
+                break;
+            }
+
+            byte[] payload = new byte[length];
+            buf.get(payload);
+
+            String name = CONFIG_NAMES.getOrDefault(id, "UNKNOWN_" + String.format("0x%04X", id));
+            String formatted = formatConfigValue(id, length, payload);
+
+            entries.add(new ConfigEntry(id, name, payload, formatted));
+        }
+
+        return entries;
+    }
+
+    /**
+     * Format a config value for human-readable display.
+     */
+    private String formatConfigValue(int id, int length, byte[] data) {
+        java.nio.ByteBuffer buf = java.nio.ByteBuffer.wrap(data).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+
+        try {
+            switch (id) {
+                case 0x01: { // BIOMETRIC_PROFILE (7 bytes)
+                    if (length == 7) {
+                        // Format: age(1) gender(1) height_cm(2 LE) weight_kg(2 LE) unknown(1)
+                        int age = data[0] & 0xFF;
+                        int gender = data[1] & 0xFF;
+                        int heightCm = buf.getShort(2) & 0xFFFF;
+                        int weightKg = buf.getShort(4) & 0xFFFF;
+                        String genderStr = gender == 1 ? "male" : gender == 0 ? "female" : "gender=" + gender;
+                        return String.format("age=%d, %s, %dcm, %dkg", age, genderStr, heightCm, weightKg);
+                    }
+                    break;
+                }
+
+                case 0x02: // DAILY_STEP (current step count)
+                    if (length == 4) return String.format("%d steps", buf.getInt());
+                    break;
+
+                case 0x03: // DAILY_STEP_GOAL
+                    if (length == 4) return String.format("%d steps", buf.getInt());
+                    break;
+
+                case 0x04: // DAILY_CALORIE
+                    if (length == 4) return String.format("%d cal", buf.getInt());
+                    break;
+
+                case 0x05: // DAILY_CALORIE_GOAL
+                    if (length == 4) return String.format("%d cal", buf.getInt());
+                    break;
+
+                case 0x06: // DAILY_TOTAL_ACTIVE_MIN
+                    if (length == 2) return String.format("%d min", buf.getShort());
+                    break;
+
+                case 0x07: // DAILY_ACTIVE_MIN_GOAL
+                    if (length == 2) return String.format("%d min", buf.getShort());
+                    break;
+
+                case 0x09: { // INACTIVE_NUDGE (6 bytes)
+                    if (length == 6) {
+                        int fromH = data[0] & 0xFF, fromM = data[1] & 0xFF;
+                        int toH = data[2] & 0xFF, toM = data[3] & 0xFF;
+                        int mins = data[4] & 0xFF;
+                        boolean enabled = data[5] == 0x01;
+                        return String.format("%s (every %d min, %02d:%02d-%02d:%02d)",
+                                enabled ? "ENABLED" : "disabled", mins, fromH, fromM, toH, toM);
+                    }
+                    break;
+                }
+
+                case 0x0A: // VIBE_STRENGTH
+                    if (length == 1) return String.format("%d%%", data[0] & 0xFF);
+                    break;
+
+                case 0x0C: { // TIME (8 bytes: epoch(4) + millis(2) + offset(2))
+                    if (length == 8) {
+                        long epoch = buf.getInt() & 0xFFFFFFFFL;
+                        int millis = buf.getShort() & 0xFFFF;
+                        short offset = buf.getShort();
+                        java.time.Instant instant = java.time.Instant.ofEpochSecond(epoch);
+                        java.time.ZoneOffset zo = java.time.ZoneOffset.ofTotalSeconds(offset * 60);
+                        java.time.ZonedDateTime zdt = instant.atZone(zo);
+                        return String.format("%s (UTC epoch=%d, offset=%+d min)",
+                                zdt.toLocalDateTime().toString(), epoch, offset);
+                    }
+                    break;
+                }
+
+                case 0x0D: { // BATTERY (3-4 bytes: voltage(2) + percent(1) [+ state(1)])
+                    if (length >= 3) {
+                        int voltage = buf.getShort() & 0xFFFF;
+                        int percent = data[2] & 0xFF;
+                        if (length >= 4) {
+                            int state = data[3] & 0xFF;
+                            String stateStr = switch (state) {
+                                case 0 -> "DISCHARGING";
+                                case 1 -> "CHARGING";
+                                case 2 -> "FULL";
+                                default -> "state=" + state;
+                            };
+                            return String.format("%d%% (voltage=%d mV, %s)", percent, voltage, stateStr);
+                        }
+                        return String.format("%d%% (voltage=%d mV)", percent, voltage);
+                    }
+                    break;
+                }
+
+                case 0x0E: // HEART_RATE_MODE
+                    if (length == 1) {
+                        int mode = data[0] & 0xFF;
+                        return switch (mode) {
+                            case 0 -> "OFF (0)";
+                            case 1 -> "CONTINUOUS (1)";
+                            case 2 -> "INTERVAL (2)";
+                            default -> String.format("mode=%d", mode);
+                        };
+                    }
+                    break;
+
+                case 0x10: // DISPLAY_UNIT
+                    if (length == 4) {
+                        int unit = buf.getInt();
+                        return unit == 0 ? "METRIC (0)" : unit == 1 ? "IMPERIAL (1)" : String.format("unit=%d", unit);
+                    }
+                    break;
+
+                case 0x11: { // SECOND_TIMEZONE_OFFSET
+                    if (length == 2) {
+                        short offset = buf.getShort();
+                        if (offset == 1024) return "DISABLED (1024)";
+                        return String.format("UTC%+.1f (%d min)", offset / 60.0, offset);
+                    }
+                    break;
+                }
+
+                case 0x17: // DAILY_TASK_TRACKING_GOAL
+                    if (length == 4) return String.format("%d", buf.getInt());
+                    break;
+
+                case 0x18: // DAILY_TASK_TRACKING_VALUE
+                    if (length == 4) return String.format("%d", buf.getInt());
+                    break;
+
+                case 0x14: // AUTO_WORKOUT_DETECTION (30 bytes)
+                    if (length >= 24) {
+                        return String.format("%d bytes [fitness config]", length);
+                    }
+                    break;
+            }
+        } catch (Exception e) {
+            LOG.debug("Error formatting config 0x{}: {}", String.format("%04X", id), e.getMessage());
+        }
+
+        // Fallback: hex dump + numeric interpretation
+        StringBuilder sb = new StringBuilder();
+        sb.append(String.format("%d bytes [", length));
+        sb.append(bytesToHex(data));
+        sb.append("]");
+        if (length == 1) sb.append(String.format(" = %d", data[0] & 0xFF));
+        else if (length == 2) sb.append(String.format(" = %d", java.nio.ByteBuffer.wrap(data).order(java.nio.ByteOrder.LITTLE_ENDIAN).getShort()));
+        else if (length == 4) sb.append(String.format(" = %d", java.nio.ByteBuffer.wrap(data).order(java.nio.ByteOrder.LITTLE_ENDIAN).getInt()));
+        return sb.toString();
     }
 
     public void setOnActivityData(java.util.function.Consumer<byte[]> callback) {
