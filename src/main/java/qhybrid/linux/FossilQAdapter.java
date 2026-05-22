@@ -221,20 +221,29 @@ public class FossilQAdapter {
      *   8 = ONE_LONG_VIBE, 9 = NO_VIBE
      */
     public void uploadNotificationFilterWithPattern(byte vibePattern) {
+        uploadNotificationFilterWithPattern(vibePattern, (short) 90, (short) 90);
+    }
+
+    /**
+     * Upload a notification filter with a specific vibration pattern and hand position.
+     * Pattern values: 0=AUTO, 1=CALL, 2=TEXT, 3=EMAIL, 4=DEFAULT, 5-8=strong/long, 9=NO_VIBE
+     * Hand position: hourDeg/minDeg in degrees (0-359). Both hands move to the specified position.
+     * Official Fossil app positions: 30°/30°=1:00, 60°/60°=2:00, 90°/90°=3:00, etc.
+     */
+    public void uploadNotificationFilterWithPattern(byte vibePattern, short hourDeg, short minDeg) {
         if (!useFossilProtocol) {
             LOG.warn("Notification filter not supported on Misfit protocol");
             return;
         }
         String packageName = "qhybrid.linux";
-        short hourDeg = 90;
-        short minDeg = 90;
         byte[] filter = buildNotificationFilterData(packageName, vibePattern, hourDeg, minDeg);
-        LOG.info("Uploading notification filter with vibe pattern {} (0x{})",
-                vibePattern, String.format("%02X", vibePattern));
+        LOG.info("Uploading notification filter: vibe={} (0x{}), hands={}°/{}°",
+                vibePattern, String.format("%02X", vibePattern), hourDeg, minDeg);
         queueWrite(new FilePutRequest(FileHandle.NOTIFICATION_FILTER, filter, shimAdapter) {
             @Override
             public void onFilePut(boolean success) {
-                LOG.info("Notification filter (vibe={}) sync: {}", vibePattern, success ? "success" : "FAILED");
+                LOG.info("Notification filter (vibe={}, hands={}°/{}°) sync: {}",
+                        vibePattern, hourDeg, minDeg, success ? "success" : "FAILED");
             }
         }, false);
     }
@@ -331,13 +340,26 @@ public class FossilQAdapter {
      *   8 = ONE_LONG_VIBE, 9 = NO_VIBE
      */
     public void playNotificationWithPattern(byte vibePattern) {
+        playNotificationWithPattern(vibePattern, (short) 90, (short) 90);
+    }
+
+    /**
+     * Play a notification with a specific vibration pattern and hand position.
+     * First uploads the notification filter with the desired pattern + position,
+     * then sends the play file.
+     *
+     * @param vibePattern vibration pattern byte (0-9)
+     * @param hourDeg hour hand position in degrees (0-359)
+     * @param minDeg minute hand position in degrees (0-359)
+     */
+    public void playNotificationWithPattern(byte vibePattern, short hourDeg, short minDeg) {
         if (!useFossilProtocol) {
             LOG.warn("Vibration pattern selection requires Fossil protocol");
             return;
         }
-        // 1. Upload filter with the specified pattern
-        uploadNotificationFilterWithPattern(vibePattern);
-        // 2. Send the notification play file (the filter determines the vibration pattern)
+        // 1. Upload filter with the specified pattern + hand position
+        uploadNotificationFilterWithPattern(vibePattern, hourDeg, minDeg);
+        // 2. Send the notification play file (the filter determines the vibration pattern + hand position)
         byte[] notifData = buildOfficialNotificationFile(
                 "Notification", "fossil-q", "Notification");
         queueWrite(new FilePutRequest(

@@ -1434,6 +1434,90 @@ fossil-q -d <MAC> notify-test --gap 15                    # 15s gap
 
 ---
 
+## 24. Notification Hand Positions — Hardware Test Results (2026-05-22)
+
+**Date:** 2026-05-22
+
+**Source:** CLI `notify` and `position-test` commands on Fossil Q Commuter (HW.0.0),
+firmware HW0.0.2.9r.v3.
+
+The notification filter's HAND_MOVEMENT field (0xC2) controls where both hands move
+when a notification is triggered. The official Fossil app assigns different positions
+per app (see FINDINGS.md #17 & #21d). We now support configurable hand positions.
+
+### How it works
+
+The notification filter contains a HAND_MOVEMENT field with:
+- `hourDeg` (2 bytes LE): hour hand position in degrees (0-359)
+- `minDeg` (2 bytes LE): minute hand position in degrees (0-359)
+- `subEye` (2 bytes LE): sub-eye position (-1 = no move)
+- `duration` (2 bytes LE): how long to hold position (10000ms default)
+- `subEye2` (2 bytes LE): device default (-2)
+
+Both hands move independently to their specified positions.
+
+### Test results
+
+All positions tested successfully with single vibration (DEFAULT pattern):
+
+| Position | Hour° | Min° | Hands moved to | Notes |
+|----------|-------|------|----------------|-------|
+| 3:00 | 90 | 90 | ✅ Both at 3 o'clock | Default position |
+| 6:00 | 180 | 180 | ✅ Both at 6 o'clock | |
+| 9:00 | 270 | 270 | ✅ Both at 9 o'clock | |
+| 12:00 | 0 | 0 | ✅ Both at 12 o'clock | |
+| 4:00/8:00 | 120 | 240 | ✅ Hour at 4, minute at 8 | Independent hand positioning |
+| 2:00/10:00 | 60 | 300 | ✅ Hour at 2, minute at 10 | |
+| 6:00/12:00 | 180 | 0 | ✅ Hour at 6, minute at 12 | |
+| 11:00/1:00 | 330 | 30 | ✅ Hour at 11, minute at 1 | |
+
+**Key observations:**
+- Both hands move **independently** — you can have hour at one position and minute at another
+- After the duration (10s), hands smoothly return to showing the current time
+- Minimum 12s gap between notifications still applies (hands must return first)
+- Combining with vibration patterns works perfectly (e.g. CALL triple vibe + 9:00 position)
+- 0° = 12 o'clock, 90° = 3 o'clock, 180° = 6 o'clock, 270° = 9 o'clock
+
+### Official Fossil app position mapping (from captures)
+
+| Degrees | Clock position | Official app usage |
+|---------|---------------|--------------------|
+| 30°/30° | 1:00 | Unknown app |
+| 60°/60° | 2:00 | Phone, SMS |
+| 90°/90° | 3:00 | WhatsApp (and our default) |
+| 120°/120° | 4:00 | Unknown app |
+| 240°/240° | 8:00 | Per-contact ("247HomeResc") |
+| 300°/300° | 10:00 | Google Calendar |
+| 330°/330° | 11:00 | Unknown app |
+| 359°/359° | ~12:00 | Catch-all (bundleId.all) |
+
+### CLI usage
+
+```bash
+# Notification with custom hand position (degrees)
+fossil-q -d <MAC> notify SINGLE_SHORT --vibe call --position 6:00
+fossil-q -d <MAC> notify SINGLE_SHORT --vibe text --position 120/240  # hour=4, min=8
+fossil-q -d <MAC> notify SINGLE_SHORT -v long -p 270               # both at 9 o'clock
+
+# Position presets (matching official Fossil app)
+fossil-q -d <MAC> notify SINGLE_SHORT --vibe call --position phone     # 60°/60° (2:00)
+fossil-q -d <MAC> notify SINGLE_SHORT --vibe text --position sms       # 60°/60° (2:00)
+fossil-q -d <MAC> notify SINGLE_SHORT --position whatsapp              # 90°/90° (3:00)
+fossil-q -d <MAC> notify SINGLE_SHORT --position email                 # 120°/120° (4:00)
+fossil-q -d <MAC> notify SINGLE_SHORT --position calendar              # 300°/300° (10:00)
+
+# Position-only notification (DEFAULT vibe, custom position)
+fossil-q -d <MAC> notify SINGLE_SHORT --position 9:00
+
+# Test all clock positions (1:00 through 12:00)
+fossil-q -d <MAC> position-test
+fossil-q -d <MAC> position-test --from 3 --to 6            # subset
+fossil-q -d <MAC> position-test --vibe call                # with triple vibe
+fossil-q -d <MAC> position-test --positions "60/300,180/0,330/30"  # custom list
+```
+
+---
+
 ### Further experiments to try
 
 1. **ALARM STANDARD (appId 0x1a, variant 0x01, header `01 01 1a 00`)** — does it work

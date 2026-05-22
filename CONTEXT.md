@@ -17,7 +17,12 @@ java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A info
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A time
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A notify SINGLE_SHORT
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A notify SINGLE_SHORT --vibe call   # triple vibe
+java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A notify SINGLE_SHORT --vibe call --position phone  # triple vibe + hands at 2:00
+java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A notify SINGLE_SHORT --position 9:00               # hands at 9:00
+java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A notify SINGLE_SHORT -v text -p 120/240            # hour=4, min=8
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A notify-test                       # test all patterns
+java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A position-test                     # test hand positions 1:00-12:00
+java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A position-test --positions "60,180,270"  # custom positions
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A buttons stopwatch music forward_to_phone
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A buttons mode_toggle second_timezone forward_to_phone  # A→B→C (needs alarm set)
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A buttons "second_timezone+date+alarm_toggle+step_goal+last_notification" second_timezone forward_to_phone  # 5-entry toggle
@@ -147,6 +152,7 @@ Bond benefits: encrypted link, WakeAllowed, faster reconnect (device stays known
 - **Sub-eye indicators: A=TZ, B=DATE, C=ALARM** — all three confirmed. Sub-eye default = passive step progress (steps/goal). Celebration vibration when goal met.
 - **Config 0x17/0x18 (task tracking goal/value)** — no visual effect on watch. Blind counter only. See FINDINGS.md #22.
 - **Notification vibe patterns 0-9 all tested** — 0/9=silent, 1=triple, 2=double, 3/4=single, 5=strong single, 6=strong double, 7=strong triple, 8=long. 12s gap required between notifications (hands must return). See FINDINGS.md #23.
+- **Notification hand positions fully configurable** — hour and minute hands move independently to specified degrees (0-359). Both hands return to time after ~10s. Presets: phone/sms=60° (2:00), whatsapp=90° (3:00), email=120° (4:00), calendar=300° (10:00). See FINDINGS.md #24.
 
 ## BLE Captures
 

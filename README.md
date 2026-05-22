@@ -113,6 +113,14 @@ fossil-q -d AA:BB:CC:DD:EE:FF time
 # Send notification with vibration
 fossil-q -d AA:BB:CC:DD:EE:FF notify SINGLE_SHORT
 
+# Notification with custom vibration pattern + hand position
+fossil-q -d AA:BB:CC:DD:EE:FF notify SINGLE_SHORT --vibe call --position phone    # triple vibe, hands at 2:00
+fossil-q -d AA:BB:CC:DD:EE:FF notify SINGLE_SHORT --vibe text --position 9:00     # double vibe, hands at 9:00
+fossil-q -d AA:BB:CC:DD:EE:FF notify SINGLE_SHORT -v long -p 120/240              # hour=4, min=8
+
+# Test all hand positions around the clock
+fossil-q -d AA:BB:CC:DD:EE:FF position-test
+
 # Find my watch (vibrate)
 fossil-q -d AA:BB:CC:DD:EE:FF find
 

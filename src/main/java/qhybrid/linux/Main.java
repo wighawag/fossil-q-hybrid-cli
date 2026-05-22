@@ -25,6 +25,7 @@ import org.jline.terminal.TerminalBuilder;
                 Main.TimeCmd.class,
                 Main.NotifyCmd.class,
                 Main.NotifyTestCmd.class,
+                Main.PositionTestCmd.class,
                 Main.FindCmd.class,
                 Main.HandsCmd.class,
                 Main.CalibrateCmd.class,
@@ -199,6 +200,85 @@ public class Main implements Runnable {
         };
     }
 
+    /**
+     * Parse a hand position string. Accepts:
+     *   - Degrees: "90" or "90/90" (hour/minute)
+     *   - Clock positions: "3:00" or "3:15" (maps to degrees)
+     *   - Named presets: "phone", "sms", "email", "whatsapp", "calendar"
+     * Returns [hourDeg, minDeg] or null if invalid.
+     */
+    static int[] parseHandPosition(String s) {
+        if (s == null || s.isBlank()) return null;
+        String norm = s.trim().toLowerCase().replace("-", "_");
+
+        // Named presets (from official Fossil app positions — FINDINGS.md #17 & #21d)
+        return switch (norm) {
+            case "phone", "call" -> new int[]{60, 60};           // 2:00
+            case "sms", "text", "message" -> new int[]{60, 60};  // 2:00
+            case "whatsapp", "chat" -> new int[]{90, 90};        // 3:00 (default)
+            case "email", "mail" -> new int[]{120, 120};         // 4:00
+            case "calendar", "cal" -> new int[]{300, 300};       // 10:00
+            case "catchall", "all", "default" -> new int[]{359, 359}; // 11:59
+            case "1", "1:00" -> new int[]{30, 30};
+            case "2", "2:00" -> new int[]{60, 60};
+            case "3", "3:00" -> new int[]{90, 90};
+            case "4", "4:00" -> new int[]{120, 120};
+            case "5", "5:00" -> new int[]{150, 150};
+            case "6", "6:00" -> new int[]{180, 180};
+            case "7", "7:00" -> new int[]{210, 210};
+            case "8", "8:00" -> new int[]{240, 240};
+            case "9", "9:00" -> new int[]{270, 270};
+            case "10", "10:00" -> new int[]{300, 300};
+            case "11", "11:00" -> new int[]{330, 330};
+            case "12", "12:00" -> new int[]{0, 0};
+            default -> parseHandPositionRaw(norm);
+        };
+    }
+
+    /**
+     * Parse raw degree specification: "90" (both hands), "90/180" (hour/minute separate),
+     * or clock times like "3:15" → 90°/90°.
+     */
+    private static int[] parseHandPositionRaw(String s) {
+        // Try "hourDeg/minDeg" format
+        if (s.contains("/")) {
+            String[] parts = s.split("/");
+            if (parts.length == 2) {
+                try {
+                    int h = Integer.parseInt(parts[0].trim());
+                    int m = Integer.parseInt(parts[1].trim());
+                    if (h >= 0 && h <= 360 && m >= 0 && m <= 360) return new int[]{h, m};
+                } catch (NumberFormatException ignored) {}
+            }
+            return null;
+        }
+        // Try clock format "H:MM" — map to degrees
+        if (s.contains(":")) {
+            String[] parts = s.split(":");
+            if (parts.length == 2) {
+                try {
+                    int hour = Integer.parseInt(parts[0].trim());
+                    int minute = Integer.parseInt(parts[1].trim());
+                    if (hour >= 0 && hour <= 12 && minute >= 0 && minute <= 59) {
+                        // Convert clock time to degrees:
+                        // Hour hand: each hour = 30°, each minute = 0.5° additional
+                        int hourDeg = (hour % 12) * 30 + minute / 2;
+                        // Minute hand: each minute = 6°
+                        int minDeg = minute * 6;
+                        return new int[]{hourDeg, minDeg};
+                    }
+                } catch (NumberFormatException ignored) {}
+            }
+            return null;
+        }
+        // Try single degree value (applies to both hands)
+        try {
+            int deg = Integer.parseInt(s.trim());
+            if (deg >= 0 && deg <= 360) return new int[]{deg, deg};
+        } catch (NumberFormatException ignored) {}
+        return null;
+    }
+
     @Command(name = "notify", mixinStandardHelpOptions = true,
              description = "Send a notification (vibration + hand movement)")
     static class NotifyCmd implements Callable<Integer> {
@@ -223,6 +303,11 @@ public class Main implements Runnable {
                 "8=ONE_LONG(long), 9=NO_VIBE(silent)")
         String vibePattern;
 
+        @Option(names = {"-p", "--position"}, description = "Hand position for notification. " +
+                "Accepts: degrees (90 or 90/180), clock time (3:00), or presets " +
+                "(phone, sms, email, whatsapp, calendar, 1-12). Default: 90\u00b0/90\u00b0 (3:00).")
+        String position;
+
         @Override
         public Integer call() {
             FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
@@ -240,14 +325,44 @@ public class Main implements Runnable {
                     return 1;
                 }
                 String patternName = VIBE_PATTERN_NAMES[pattern];
-                adapter.playNotificationWithPattern((byte) pattern);
-                System.out.printf("Notification sent with vibe pattern %d (%s)%n", pattern, patternName);
+
+                // Parse hand position (default: 90°/90° = 3:00)
+                short hDeg = 90, mDeg = 90;
+                if (position != null) {
+                    int[] pos = parseHandPosition(position);
+                    if (pos == null) {
+                        System.err.println("Invalid hand position: " + position);
+                        System.err.println("Use: degrees (90 or 90/180), clock (3:00), " +
+                                "or preset (phone, sms, email, whatsapp, calendar, 1-12)");
+                        adapter.shutdown();
+                        return 1;
+                    }
+                    hDeg = (short) pos[0];
+                    mDeg = (short) pos[1];
+                }
+
+                adapter.playNotificationWithPattern((byte) pattern, hDeg, mDeg);
+                System.out.printf("Notification sent: vibe=%d (%s), hands=%d\u00b0/%d\u00b0%n",
+                        pattern, patternName, hDeg, mDeg);
             } else if (direct) {
                 adapter.playMisfitNotification(vibration, hourDeg, minDeg);
                 System.out.println("Direct notification sent: " + vibration);
             } else {
-                adapter.playNotification(vibration, hourDeg, minDeg);
-                System.out.println("Notification sent: " + vibration);
+                // Default Fossil notification with optional position
+                if (position != null) {
+                    int[] pos = parseHandPosition(position);
+                    if (pos == null) {
+                        System.err.println("Invalid hand position: " + position);
+                        adapter.shutdown();
+                        return 1;
+                    }
+                    // Use Fossil filter system with DEFAULT vibe + custom position
+                    adapter.playNotificationWithPattern((byte) 4, (short) pos[0], (short) pos[1]);
+                    System.out.printf("Notification sent: hands=%d\u00b0/%d\u00b0%n", pos[0], pos[1]);
+                } else {
+                    adapter.playNotification(vibration, hourDeg, minDeg);
+                    System.out.println("Notification sent: " + vibration);
+                }
             }
             // Give time for the vibration to happen
             sleep(2000);
@@ -298,6 +413,85 @@ public class Main implements Runnable {
             }
 
             System.out.println("\nAll patterns tested.");
+            adapter.shutdown();
+            return 0;
+        }
+    }
+
+    @Command(name = "position-test", mixinStandardHelpOptions = true,
+             description = "Test notification hand positions by cycling through clock positions (1:00 through 12:00)")
+    static class PositionTestCmd implements Callable<Integer> {
+        @ParentCommand Main parent;
+
+        @Option(names = {"--from"}, description = "Start clock hour (1-12)", defaultValue = "1")
+        int from;
+
+        @Option(names = {"--to"}, description = "End clock hour (1-12, inclusive)", defaultValue = "12")
+        int to;
+
+        @Option(names = {"--gap"}, description = "Seconds between positions (min 12 — hands must return)", defaultValue = "12")
+        int gapSeconds;
+
+        @Option(names = {"--vibe", "-v"}, description = "Vibration pattern to use for all positions (0-9 or name, default: 4=DEFAULT)", defaultValue = "4")
+        String vibePattern;
+
+        @Option(names = {"--positions"}, description = "Custom position list (comma-separated degrees or clock times), e.g. '30,60,90,180,270'")
+        String positions;
+
+        @Override
+        public Integer call() {
+            int pattern = parseVibePattern(vibePattern);
+            if (pattern < 0) {
+                System.err.println("Invalid vibration pattern: " + vibePattern);
+                return 1;
+            }
+
+            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+            sleep(5000);
+
+            if (positions != null) {
+                // Custom position list
+                String[] parts = positions.split(",");
+                System.out.printf("Testing %d custom positions with %ds gap (vibe=%s)...%n",
+                        parts.length, gapSeconds, VIBE_PATTERN_NAMES[pattern]);
+                System.out.println("Watch the hands move to each position.\n");
+
+                for (int i = 0; i < parts.length; i++) {
+                    int[] pos = parseHandPosition(parts[i].trim());
+                    if (pos == null) {
+                        System.err.printf("  [%d] Invalid position: %s — skipping%n", i + 1, parts[i].trim());
+                        continue;
+                    }
+                    System.out.printf("  [%d] %d\u00b0/%d\u00b0 ...", i + 1, pos[0], pos[1]);
+                    System.out.flush();
+                    adapter.playNotificationWithPattern((byte) pattern, (short) pos[0], (short) pos[1]);
+                    sleep(gapSeconds * 1000L);
+                    System.out.println(" done");
+                }
+            } else {
+                // Clock hour positions (1:00 through 12:00)
+                if (from < 1 || from > 12 || to < 1 || to > 12 || from > to) {
+                    System.err.println("Hour range must be 1-12 with --from <= --to");
+                    adapter.shutdown();
+                    return 1;
+                }
+
+                System.out.printf("Testing hand positions %d:00-%d:00 with %ds gap (vibe=%s)...%n",
+                        from, to, gapSeconds, VIBE_PATTERN_NAMES[pattern]);
+                System.out.println("Watch the hands move to each clock position.\n");
+
+                for (int hour = from; hour <= to; hour++) {
+                    int deg = (hour % 12) * 30; // 1:00=30°, 2:00=60°, ..., 12:00=0°
+                    String clockStr = hour + ":00";
+                    System.out.printf("  [%2d:00] %3d\u00b0/%3d\u00b0 ...", hour, deg, deg);
+                    System.out.flush();
+                    adapter.playNotificationWithPattern((byte) pattern, (short) deg, (short) deg);
+                    sleep(gapSeconds * 1000L);
+                    System.out.println(" done");
+                }
+            }
+
+            System.out.println("\nAll positions tested.");
             adapter.shutdown();
             return 0;
         }
