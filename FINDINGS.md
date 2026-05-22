@@ -1875,3 +1875,486 @@ in BLE captures), but the Fossil app never reads or processes HID data.
 | Does FORWARD_TO_PHONE produce HID output? | **No.** Only MICRO_APP_EVENT on 3dda0006. |
 | Are there Feature Reports to configure HID behavior? | **No.** Only Input reports (read+notify). No Output or Feature reports. |
 | Could the HID profile make the watch a standard BLE media controller? | **Not directly.** The firmware never sends HID reports. A proxy translating Fossil events → synthetic HID input would work. |
+
+---
+
+## 27. Toggle Entry Limit — Maximum 6 Entries (Hardware-Verified) (2026-05-22)
+
+**Date:** 2026-05-22
+
+**Source:** Real-hardware testing on Fossil Q Commuter (HW.0.0), firmware HW0.0.2.9r.v3.
+
+### Summary
+
+The maximum number of toggle entries per button is **6**. This is not a firmware-enforced
+limit — it's the number of distinct display-only micro apps available. With 7+ entries
+containing duplicates, the firmware enters an infinite loop.
+
+### Test results
+
+| Entries | Config | Result |
+|---------|--------|--------|
+| 5 | TZ+DATE+ALARM+STEP_GOAL+LAST_NOTIF | ✅ 6 presses to return (confirmed #22) |
+| 6 | TZ+DATE+ALARM+STEP_GOAL+LAST_NOTIF+24HR | ✅ 7 presses to return |
+| 7 | TZ+DATE+ALARM+STEP_GOAL+LAST_NOTIF+24HR+TZ | ❌ Infinite loop |
+| 7 | TZ+DATE+ALARM+STEP_GOAL+LAST_NOTIF+24HR+DATE | ❌ Infinite loop |
+
+### Infinite loop mechanism
+
+With 7 entries containing a duplicate function:
+- Ending with duplicate TZ: after the 7th entry (TZ→sub-eye A), the cycle
+  restarts from entry 1 (TZ again) — loops from the beginning.
+- Ending with duplicate DATE: after the 7th entry (DATE→sub-eye B), the cycle
+  skips forward to entry 3 (ALARM→sub-eye C) — skips past TZ and DATE since
+  they were just shown.
+
+The firmware appears to track which display modes were recently shown and skips
+forward to the next *different* one. When duplicates create a cycle where the
+firmware never finds a "done" state, it loops indefinitely.
+
+### Why 6 is the practical maximum
+
+There are exactly 6 distinct display-only micro apps suitable for toggle entries:
+
+| # | Function | AppId | Display mode | Sub-eye position |
+|---|----------|-------|-------------|------------------|
+| 1 | SECOND_TIMEZONE | 0x16 | B0 01 00 | A |
+| 2 | DATE | 0x14 | B0 00 00 | B |
+| 3 | ALARM (SEQUENCED) | 0x1A | B0 03 00 | C |
+| 4 | STEP_GOAL_COMPLETION | 0x1C | B0 08 00 | step % |
+| 5 | LAST_NOTIFICATION | 0x18 | B0 02 00 | hands to notif pos |
+| 6 | TWENTY_FOUR_HOUR | 0x1E | B0 04 00 | no visible effect |
+
+Other micro apps are either interactive (STOPWATCH, MUSIC_CONTROL, FORWARD_TO_PHONE)
+or break the toggle chain (GOAL_TRACKING). None can serve as additional toggle entries.
+
+To test 7+ distinct entries would require a 7th display-only micro app, which doesn't
+exist in the firmware's repertoire.
+
+### File size scaling
+
+| Entries | Button config file size |
+|---------|------------------------|
+| 3 (mode_toggle) | ~280 bytes |
+| 5 | ~470 bytes |
+| 6 | 531 bytes |
+| 7 | 593 bytes |
+
+The firmware accepted all file sizes without error. The infinite loop is a runtime
+behavior issue with duplicate display modes, not a file size or entry count rejection.
+
+---
+
+## 28. TWENTY_FOUR_HOUR Function (appId 0x1E) — Accepted but Invisible (2026-05-22)
+
+**Date:** 2026-05-22
+
+**Source:** Real-hardware testing on Fossil Q Commuter (HW.0.0), firmware HW0.0.2.9r.v3.
+
+### Summary
+
+The TWENTY_FOUR_HOUR function (appId 0x1E, MicroAppId 9) is recognized by the firmware
+but produces no visible output on the Q Commuter's 3-position dial.
+
+### Payload construction
+
+Constructed by analogy with SECOND_TIMEZONE (47-byte STANDARD pattern):
+
+```
+Header: 01 01 1E 00 (appId=0x1E, variant=STANDARD)
+Payload: 47 bytes — identical structure to SECOND_TIMEZONE with:
+  - declarationFileId = 0x1E01 (7681 = TWENTY_FOUR_HOUR STANDARD)
+  - Display mode B0 04 00 (next sequential after ALARM B0 03 00)
+  - Data source byte = 0x02 (same as SECOND_TIMEZONE)
+```
+
+Also constructed SEQUENCED variant (54 bytes, header `01 02 1E 00`) by analogy
+with ALARM_SEQUENCED.
+
+### Test results
+
+| Test | Result |
+|------|--------|
+| Standalone button (TOP=24hr) | ❌ No vibration, no hand movement, no sub-eye movement |
+| In 6-entry toggle | ✅ Accepted — adds 1 press to cycle but no visible change on its turn |
+| Does not break toggle chain | ✅ Subsequent entries display normally |
+| Error vibration? | No — silent, unlike GOAL_TRACKING which produces error vibe |
+
+### Analysis
+
+The firmware processes the TWENTY_FOUR_HOUR entry (it counts as a toggle step and
+doesn't break the chain), but has nothing to display. This is likely because:
+
+1. **The Q Commuter (HW.0.0) has a 3-position sub-eye dial** (A, B, C) with no
+   labeled "24HR" position. The 5-position dial watches (e.g. Q Activist) have
+   positions for Time2, Date, Alarm, Alert, and 24HR.
+
+2. **Display mode B0 04 00 may be correct** but the firmware has no rendering
+   logic for it on 3-position hardware — it would need a 4th or 5th sub-eye
+   position that doesn't physically exist.
+
+3. **The data source byte (0x02 = timezone) might be wrong** — 24HR might need
+   a different data source, but without a 5-position dial watch to test on,
+   we can't determine the correct value.
+
+### Conclusion
+
+TWENTY_FOUR_HOUR is a Q Activist (5-position dial) feature. On Q Commuter
+(3-position dial), the firmware accepts it but has no way to display it.
+The function likely shows the current hour in 24h format on the sub-eye's
+"24HR" labeled position — but only on watches that have that position.
+
+### CLI support
+
+Added `24hr` and `24hr_seq` as button function names:
+```bash
+fossil-q buttons 24hr second_timezone forward_to_phone      # standalone
+fossil-q buttons "tz+date+alarm_seq+step_goal+last_notification+24hr" ...  # in toggle
+```
+
+---
+
+## 29. PlayCrazyShitRequest & Hand Action Choreography — Dead Code (2026-05-22)
+
+**Date:** 2026-05-22
+
+**Source:** GadgetBridge vendored source analysis + real-hardware testing on
+Fossil Q Commuter (HW.0.0), firmware HW0.0.2.9r.v3.
+
+### What PlayCrazyShitRequest is
+
+`PlayCrazyShitRequest` is an experimental class in GadgetBridge (by Daniel Dakhno)
+that uploads a hand animation choreography to the watch. It extends `FilePutRequest`
+and writes to `FileHandle.HAND_ACTIONS` (0x0600).
+
+**Critical discovery:** `HAND_ACTIONS` and `SETTINGS_BUTTONS` share the **same file
+handle** (0x06, 0x00) = 0x0600. Uploading a hand action **overwrites the button
+configuration**.
+
+### Hand action file format
+
+```
+[01 00 08]              magic bytes (vs button config: 01 00 00)
+[buttonHeader(8)]       copied from button config appData[3:11]
+[FF]                    separator
+[payloadLength(2 LE)]   command bytes + 3
+[commands...]           MicroAppCommand sequence
+[CRC32(4)]              over all preceding bytes
+```
+
+### MicroAppCommand system
+
+The `MicroAppCommand` interface defines a choreography instruction set:
+
+| Command | Bytes | Description |
+|---------|-------|-------------|
+| StartCritical | `03 00` | Begin critical section (prevent interruption) |
+| Close | `01 00` | End choreography |
+| Vibrate(type) | `93 00 XX` | Vibrate (XX=04 for NORMAL) |
+| Delay(seconds) | `08 01 XX XX` | Delay in 0.1s units (LE short) |
+| Animation(h,m) | `09 04 01 03 [ctrl h h] [ctrl m m]` | Move hands to absolute position |
+| RepeatStart(n) | `86 00 XX` | Begin loop, repeat XX times |
+| RepeatStop | `07 00` | End loop |
+| Stream(mask) | `8B 00 XX` | Streaming mode (purpose unclear) |
+
+Animation control byte: `(direction << 6) | (absolute << 5) | speed`
+- Direction: 0=CLOCKWISE, 1=COUNTER_CLOCKWISE, 2=SHORTEST
+- Absolute: 0=relative, 1=absolute position
+- Speed: 0=MAX, 1=HALF, 2=QUARTER, 3=EIGHTH, 4=SIXTEENTH
+
+### Hardware test results
+
+| Test | Payload | Result |
+|------|---------|--------|
+| `vibrate` preset | StartCritical→Vibrate→Delay(1s)→Close (11 cmd bytes) | ❌ No effect |
+| `dance` preset | StartCritical→Vibrate→Anim(3:00)→Delay→Anim(9:00)→Vibrate→Close (41 cmd bytes) | ❌ No effect |
+
+Both uploads returned `success` from the firmware (file accepted, CRC valid),
+but produced zero visible or haptic output.
+
+### Why it doesn't work
+
+1. **Dead code in GadgetBridge:** `PlayCrazyShitRequest` is never instantiated or
+   called anywhere in the GadgetBridge codebase. No adapter, service, or activity
+   references it. It was a developer experiment that was never completed or tested.
+
+2. **Wrong magic bytes for coin-cell firmware:** The `01 00 08` magic may only be
+   recognized by HR (screen) model firmware. The coin-cell Q Commuter firmware
+   likely only recognizes `01 00 00` (standard button config format) for handle
+   0x0600. The hand action format may have been designed for a different firmware
+   branch.
+
+3. **Shared file handle is destructive:** Since HAND_ACTIONS and SETTINGS_BUTTONS
+   share handle 0x0600, uploading a hand action replaces the button config. The
+   firmware may interpret the `01 00 08` magic as an invalid button config and
+   silently ignore it.
+
+4. **No trigger mechanism:** Even if the format were recognized, hand actions may
+   need to be triggered by a button press event (the `appData` parameter copies
+   button header context). Our standalone upload had no button press context.
+
+### The Misfit AnimationRequest (separate system)
+
+The vendored `AnimationRequest` (Misfit protocol, not Fossil) is a simple 3-byte
+command (`02 F1 05`) written directly to the command characteristic (3dda0002).
+This is the animation sent during Fossil protocol init — it's a low-level hand
+calibration/test command, not a choreography system.
+
+### Notification play as the real "hand animation" system
+
+The working hand animation system on this firmware is **notification play files**
+(handle 0x0900 = `NOTIFICATION_PLAY`). These move hands to specified degree
+positions with configurable vibration patterns and duration. See FINDINGS.md
+#23 and #24. This is the mechanism the official Fossil app uses for all hand
+animations — there is no separate choreography system on coin-cell watches.
+
+### Conclusion
+
+`PlayCrazyShitRequest` is dead experimental code that targets a firmware feature
+not present on the Q Commuter (HW.0.0). The MicroAppCommand choreography system
+(with its elegant animation/repeat/vibrate instruction set) either:
+- Only works on Fossil Hybrid HR (screen) models with different firmware
+- Was never implemented in any shipping firmware
+- Requires a trigger mechanism we haven't discovered
+
+For practical hand animations on coin-cell watches, use the notification play
+system (`notify` command with `--position` and `--vibe` flags).
+
+---
+
+## 27. Toggle Entry Limit — Maximum 6 (Confirmed) (2026-05-22)
+
+**Date:** 2026-05-22
+
+**Source:** Real-hardware testing on Fossil Q Commuter (HW.0.0), firmware HW0.0.2.9r.v3.
+
+### Summary
+
+The maximum number of entries in a button toggle is **6**. This is not a firmware-imposed
+hard limit but a **practical ceiling**: there are exactly 6 distinct display-only micro
+apps available, and duplicate entries cause infinite cycling.
+
+### Test results
+
+| Entries | Config | Result |
+|---------|--------|--------|
+| 5 | TZ+DATE+ALARM+STEP_GOAL+LAST_NOTIF | ✅ 6 presses to return to normal (confirmed #22) |
+| 6 | TZ+DATE+ALARM+STEP_GOAL+LAST_NOTIF+24HR | ✅ **7 presses to return to normal** |
+| 7 | TZ+DATE+ALARM+STEP_GOAL+LAST_NOTIF+24HR+TZ | ❌ **Infinite loop** — wraps to entry 1 |
+| 7 | TZ+DATE+ALARM+STEP_GOAL+LAST_NOTIF+24HR+DATE | ❌ **Infinite loop** — wraps to entry 3 (alarm) |
+
+### Infinite loop mechanism
+
+With 7 entries containing a duplicate, the firmware never reaches a termination state.
+The cycle behavior depends on which function is duplicated:
+
+- Duplicate SECOND_TIMEZONE at position 7: after showing it, firmware continues to
+  DATE (position 2's display mode), then ALARM, then loops from there.
+- Duplicate DATE at position 7: after showing it, firmware skips to ALARM (position 3),
+  then continues through the remaining entries and loops.
+
+The firmware appears to track which display modes have been shown and skips forward
+past recently-shown ones. With all 6 distinct modes exhausted and a duplicate starting
+a new cycle, it never finds a "done" condition.
+
+### Why 6 is the maximum
+
+There are exactly 6 distinct display-only micro apps that work in toggle mode:
+
+| # | Function | AppId | Display mode | Sub-eye | Works in toggle |
+|---|----------|-------|-------------|---------|----------------|
+| 1 | SECOND_TIMEZONE | 0x16 | B0 01 00 | A | ✅ |
+| 2 | DATE | 0x14 | B0 00 00 | B | ✅ |
+| 3 | ALARM (SEQUENCED) | 0x1A | B0 03 00 | C | ✅ (needs alarm set) |
+| 4 | STEP_GOAL_COMPLETION | 0x1C | B0 08 00 | step % | ✅ (needs steps > 0) |
+| 5 | LAST_NOTIFICATION | 0x18 | B0 02 00 | hands move | ✅ (needs cached notif) |
+| 6 | TWENTY_FOUR_HOUR | 0x1E | B0 04 00 | (none) | ✅ (no visible effect) |
+
+Other micro apps are either interactive (STOPWATCH, MUSIC_CONTROL, FORWARD_TO_PHONE)
+or break the toggle chain (GOAL_TRACKING). None can serve as a 7th display-only entry.
+
+### TWENTY_FOUR_HOUR behavior
+
+The 6th entry (TWENTY_FOUR_HOUR, appId 0x1E) is **accepted by the firmware** — it counts
+as a toggle step (7 presses total with 6 entries), does not produce an error vibration,
+and does not break the chain. However, it produces **no visible output** on the
+Q Commuter (no hand movement, no sub-eye movement, no vibration).
+
+This is likely because the Q Commuter has a 3-position sub-eye dial (A/B/C) with no
+labeled "24HR" position. On 5-position dial watches (e.g. Q Activist), TWENTY_FOUR_HOUR
+has a dedicated "24HR" label and would presumably show the current hour in 24h format.
+
+The firmware silently processes the entry and moves to the next one (or returns to
+normal if it's the last entry).
+
+---
+
+## 28. TWENTY_FOUR_HOUR Function — Firmware Accepted, No Visual on Q Commuter (2026-05-22)
+
+**Date:** 2026-05-22
+
+**Source:** Real-hardware testing on Fossil Q Commuter (HW.0.0), firmware HW0.0.2.9r.v3.
+
+### What it is
+
+TWENTY_FOUR_HOUR (MicroAppId 9) is a display function with:
+- AppId: 0x1E (30)
+- DeclarationId: 7681 (STANDARD), 7682 (SEQUENCED)
+- Sub-eye label: "24HR" on 5-position dial watches (Q Activist)
+
+### Payload construction
+
+Constructed by analogy with SECOND_TIMEZONE (same 47-byte STANDARD pattern):
+
+```
+Header: 01 01 1E 00
+Payload (47 bytes):
+  01 00 01 01 1E 2F 00 00 00 01 00 08 00 04 00 00
+  07 02 02 00 01 01 1E 00 89 05 01 07 B0 04 00 B0
+  04 00 B0 04 00 08 01 50 00 01 00 8B 95 15 80
+```
+
+Display mode byte `B0 04 00` chosen as next sequential after ALARM (`B0 03 00`).
+
+### Test results
+
+| Test | Result |
+|------|--------|
+| Standalone button (TOP=24hr) | ❌ No visible effect — no vibration, no hands, no sub-eye |
+| Inside 6-entry toggle | ✅ Accepted as entry, counts as toggle step, no visible output |
+| Does it break toggle chain? | No — subsequent entries still display correctly |
+| Does it cause error vibration? | No — silent (unlike GOAL_TRACKING which errors) |
+
+### Conclusion
+
+The Q Commuter firmware **recognizes** appId 0x1E but has **nothing to display** for it.
+The 3-position sub-eye dial has no 24HR position, and the firmware doesn't fall back to
+any alternative visualization (unlike LAST_NOTIFICATION which moves the main hands).
+
+On a 5-position dial watch (Q Activist HL.0.0), TWENTY_FOUR_HOUR would likely show the
+current hour in 24-hour format on the sub-eye's "24HR" labeled position. Testing on
+such hardware would confirm this.
+
+### CLI support added
+
+```bash
+# Standalone (no visible effect on Q Commuter)
+fossil-q -d <MAC> buttons 24hr second_timezone forward_to_phone
+
+# In toggle (counts as a step, no visible output)
+fossil-q -d <MAC> buttons "second_timezone+date+alarm_seq+step_goal+last_notification+24hr" ...
+```
+
+Aliases: `24hr`, `24h`, `24_hour`, `twenty_four_hour`.
+Sequenced variant: `24hr_seq`, `24h_seq`.
+
+---
+
+## 29. PlayCrazyShitRequest & Hand Action Files — Dead Code, No Effect on Coin-Cell (2026-05-22)
+
+**Date:** 2026-05-22
+
+**Source:** GadgetBridge source code analysis + real-hardware testing on Fossil Q Commuter
+(HW.0.0), firmware HW0.0.2.9r.v3.
+
+### What it is
+
+`PlayCrazyShitRequest` is a class in GadgetBridge's vendored source that uploads a
+choreographed hand animation sequence to the watch via file handle `HAND_ACTIONS` (0x0600).
+Despite its memorable name, it is **dead code** — never called from anywhere in
+GadgetBridge.
+
+### File handle collision
+
+`HAND_ACTIONS` and `SETTINGS_BUTTONS` share the **same file handle** `(0x06, 0x00)` = `0x0600`
+in `FileHandle.java`. The firmware distinguishes them by the first 3 bytes:
+
+| Format | Magic bytes | Purpose |
+|--------|------------|----------|
+| Button config | `01 00 00` | Standard button assignments |
+| Hand actions | `01 00 08` | Choreographed animation sequence |
+
+Uploading a hand action file **overwrites** the current button config.
+
+### MicroAppCommand system
+
+The hand action format supports a command language:
+
+| Command | Bytes | Description |
+|---------|-------|-------------|
+| StartCritical | `03 00` | Begin critical section |
+| Close | `01 00` | End sequence |
+| Vibrate(type) | `93 00 type` | Vibrate (type 0x04 = NORMAL) |
+| Delay(seconds) | `08 01 LE16` | Delay in 0.1s units |
+| Animation(h,m) | `09 04 01 03 ctrl h16 ctrl m16` | Move hands to position |
+| RepeatStart(n) | `86 00 count` | Start loop |
+| RepeatStop | `07 00` | End loop |
+| Stream(mask) | `8B 00 mask` | Streaming mode |
+
+Animation control byte: `(direction << 6) | (absolute << 5) | speed`
+- Direction: 0=CLOCKWISE, 1=COUNTER_CLOCKWISE, 2=SHORTEST
+- Absolute: 0=relative, 1=absolute position
+- Speed: 0=MAX, 1=HALF, 2=QUARTER, 3=EIGHTH, 4=SIXTEENTH
+
+### Payload format
+
+```
+[01 00 08]                    magic (hand action type)
+[buttonHeaderContext(8)]      8 bytes copied from button config payload[3:11]
+[FF]                          separator
+[payloadLength(2 LE)]         length of commands + 3
+[commands...]                 concatenated MicroAppCommand bytes
+[CRC32(4)]                    over all preceding bytes
+```
+
+### Test results on Q Commuter
+
+| Test | Upload | Effect |
+|------|--------|--------|
+| `vibrate` (StartCritical + Vibrate + Delay + Close) | ✅ Success | ❌ No vibration |
+| `dance` (Vibrate + Animation 3:00 + Animation 9:00) | ✅ Success | ❌ No movement |
+
+Both uploads were accepted by the firmware (file-put succeeded), but **no observable
+effect** on the watch — no vibration, no hand movement, nothing.
+
+### Why it doesn't work
+
+1. **Dead code in GadgetBridge** — `PlayCrazyShitRequest` is never instantiated.
+   The developer (Daniel Dakhno) was experimenting but never completed integration.
+
+2. **Coin-cell firmware may not support hand action format** — The `01 00 08` magic
+   might only be recognized by HR (screen) model firmware. The coin-cell Q Commuter
+   firmware accepts the file write (no error) but ignores the contents.
+
+3. **Missing trigger mechanism** — The hand action file might need to be associated
+   with a specific button press event. `PlayCrazyShitRequest` takes `appData` from
+   a micro app event (button press), suggesting the choreography is a **response**
+   the phone sends after receiving a button event. Without the correct button context
+   and event trigger, the firmware has no reason to execute the stored choreography.
+
+4. **File handle collision** — Writing to `0x0600` overwrites the button config.
+   The firmware may only parse this handle as button config format (`01 00 00`)
+   and discard anything with a different magic.
+
+### Conclusion
+
+The MicroAppCommand choreography system is an interesting protocol feature with a rich
+command language (absolute/relative hand positioning, speed control, loops, vibration
+patterns). However, it appears to be **non-functional on coin-cell Fossil Q Hybrid
+watches**. It may work on Fossil Hybrid HR models (which have displays and more
+sophisticated firmware), but that's untestable with our hardware.
+
+The `hand-anim` CLI command remains available for experimentation but should be
+considered non-functional on Q Commuter:
+
+```bash
+# Available presets (all produce no visible effect on Q Commuter)
+fossil-q -d <MAC> hand-anim vibrate
+fossil-q -d <MAC> hand-anim dance
+fossil-q -d <MAC> hand-anim sweep
+fossil-q -d <MAC> hand-anim spin
+fossil-q -d <MAC> hand-anim all
+
+# WARNING: Overwrites button config! Restore with:
+fossil-q -d <MAC> buttons stopwatch second_timezone forward_to_phone
+```

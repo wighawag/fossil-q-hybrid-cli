@@ -43,6 +43,7 @@ import org.jline.terminal.TerminalBuilder;
                 Main.NotifyConfigCmd.class,
                 Main.ReadConfigCmd.class,
                 Main.InactivityNudgeCmd.class,
+                Main.HandAnimCmd.class,
         })
 public class Main implements Runnable {
     private static final Logger LOG = LoggerFactory.getLogger("fossil-q");
@@ -1792,10 +1793,130 @@ public class Main implements Runnable {
         }
     }
 
+    @Command(name = "hand-anim", mixinStandardHelpOptions = true,
+             description = "Play hand animation choreography (MicroAppCommand sequence). " +
+                     "WARNING: Writes to HAND_ACTIONS handle (0x0600 = same as SETTINGS_BUTTONS). " +
+                     "Will overwrite button config! Use 'buttons' command afterward to restore.")
+    static class HandAnimCmd implements Callable<Integer> {
+        @ParentCommand Main parent;
+
+        @Parameters(index = "0", defaultValue = "vibrate",
+                description = "Animation preset: vibrate, dance, sweep, spin, all")
+        String preset;
+
+        @Override
+        public Integer call() {
+            java.io.ByteArrayOutputStream cmdBuf = new java.io.ByteArrayOutputStream();
+
+            switch (preset.toLowerCase()) {
+                case "vibrate" -> {
+                    // Default from PlayCrazyShitRequest: vibrate + 1s delay
+                    System.out.println("Playing 'vibrate': StartCritical → Vibrate → Delay(1s) → Close");
+                    cmdBuf.write(new byte[]{0x03, 0x00}, 0, 2);  // StartCritical
+                    cmdBuf.write(new byte[]{(byte) 0x93, 0x00, 0x04}, 0, 3);  // Vibrate NORMAL
+                    cmdBuf.write(new byte[]{0x08, 0x01, 0x0A, 0x00}, 0, 4);  // Delay 1s
+                    cmdBuf.write(new byte[]{0x01, 0x00}, 0, 2);  // Close
+                }
+                case "dance" -> {
+                    // Hands dance: animate to several positions with vibrations
+                    System.out.println("Playing 'dance': Vibrate → Hands to 3:00 → Delay → Hands to 9:00 → Vibrate → Close");
+                    cmdBuf.write(new byte[]{0x03, 0x00}, 0, 2);  // StartCritical
+                    cmdBuf.write(new byte[]{(byte) 0x93, 0x00, 0x04}, 0, 3);  // Vibrate
+                    // AnimationCommand(90, 90) = hands to 3:00
+                    // Format: 09 04 01 03 [hourCtrl hourLo hourHi] [minCtrl minLo minHi]
+                    // ctrl = (direction<<6) | (absolute<<5) | speed = (2<<6)|(1<<5)|0 = 0xA0
+                    // Wait, from the code: (direction.getValue() << 6) | (absoluteMovementFlag << 5) | speed.getValue()
+                    // SHORTEST=2, absolute=1, MAX=0 → (2<<6)|(1<<5)|0 = 0x80|0x20 = 0xA0
+                    // Actually wait: (2<<6) = 128 = 0x80. 0x80|0x20 = 0xA0. But code uses:
+                    // 0x09, 0x04, 0x01, 0x03, ctrl, hourLE, ctrl, minLE
+                    // AnimationCommand uses putShort for hour and minute degrees
+                    byte ctrl = (byte) ((2 << 6) | (1 << 5) | 0);  // SHORTEST, absolute, MAX speed = 0xA0
+                    // hands to 90° (3:00)
+                    cmdBuf.write(new byte[]{0x09, 0x04, 0x01, 0x03,
+                            ctrl, 90, 0,    // hour hand: 90°
+                            ctrl, 90, 0     // minute hand: 90°
+                    }, 0, 10);
+                    cmdBuf.write(new byte[]{0x08, 0x01, 0x14, 0x00}, 0, 4);  // Delay 2s
+                    cmdBuf.write(new byte[]{(byte) 0x93, 0x00, 0x04}, 0, 3);  // Vibrate
+                    // hands to 270° (9:00)
+                    cmdBuf.write(new byte[]{0x09, 0x04, 0x01, 0x03,
+                            ctrl, (byte) (270 & 0xFF), (byte) (270 >> 8),   // hour: 270°
+                            ctrl, (byte) (270 & 0xFF), (byte) (270 >> 8)    // minute: 270°
+                    }, 0, 10);
+                    cmdBuf.write(new byte[]{0x08, 0x01, 0x14, 0x00}, 0, 4);  // Delay 2s
+                    cmdBuf.write(new byte[]{(byte) 0x93, 0x00, 0x04}, 0, 3);  // Vibrate
+                    cmdBuf.write(new byte[]{0x01, 0x00}, 0, 2);  // Close
+                }
+                case "sweep" -> {
+                    // Sweep: hour and minute hands do a full rotation
+                    System.out.println("Playing 'sweep': Hands sweep 12→3→6→9→12");
+                    byte ctrl = (byte) ((0 << 6) | (1 << 5) | 0);  // CLOCKWISE, absolute, MAX speed
+                    cmdBuf.write(new byte[]{0x03, 0x00}, 0, 2);  // StartCritical
+                    for (int deg : new int[]{90, 180, 270, 0}) {
+                        cmdBuf.write(new byte[]{0x09, 0x04, 0x01, 0x03,
+                                ctrl, (byte)(deg & 0xFF), (byte)(deg >> 8),
+                                ctrl, (byte)(deg & 0xFF), (byte)(deg >> 8)
+                        }, 0, 10);
+                        cmdBuf.write(new byte[]{0x08, 0x01, 0x0A, 0x00}, 0, 4);  // Delay 1s
+                    }
+                    cmdBuf.write(new byte[]{0x01, 0x00}, 0, 2);  // Close
+                }
+                case "spin" -> {
+                    // Spin: repeat animation 5 times
+                    System.out.println("Playing 'spin': Repeat 5x (hands to 6:00 → 12:00)");
+                    byte ctrlCw = (byte) ((0 << 6) | (1 << 5) | 2);  // CLOCKWISE, absolute, QUARTER speed
+                    cmdBuf.write(new byte[]{0x03, 0x00}, 0, 2);  // StartCritical
+                    cmdBuf.write(new byte[]{(byte) 0x86, 0x00, 0x05}, 0, 3);  // RepeatStart(5)
+                    cmdBuf.write(new byte[]{0x09, 0x04, 0x01, 0x03,
+                            ctrlCw, (byte) 180, 0,   // hour: 180° (6:00)
+                            ctrlCw, (byte) 180, 0    // minute: 180° (6:00)
+                    }, 0, 10);
+                    cmdBuf.write(new byte[]{0x08, 0x01, 0x05, 0x00}, 0, 4);  // Delay 0.5s
+                    cmdBuf.write(new byte[]{0x09, 0x04, 0x01, 0x03,
+                            ctrlCw, 0, 0,             // hour: 0° (12:00)
+                            ctrlCw, 0, 0              // minute: 0° (12:00)
+                    }, 0, 10);
+                    cmdBuf.write(new byte[]{0x08, 0x01, 0x05, 0x00}, 0, 4);  // Delay 0.5s
+                    cmdBuf.write(new byte[]{0x07, 0x00}, 0, 2);  // RepeatStop
+                    cmdBuf.write(new byte[]{0x01, 0x00}, 0, 2);  // Close
+                }
+                case "all" -> {
+                    // Full demo: vibrate + stream + animation + repeat
+                    System.out.println("Playing 'all': Full demo — vibrate + animation + repeat");
+                    byte ctrl = (byte) ((2 << 6) | (1 << 5) | 1);  // SHORTEST, absolute, HALF speed
+                    cmdBuf.write(new byte[]{0x03, 0x00}, 0, 2);  // StartCritical
+                    cmdBuf.write(new byte[]{(byte) 0x93, 0x00, 0x04}, 0, 3);  // Vibrate
+                    cmdBuf.write(new byte[]{(byte) 0x8B, 0x00, (byte) 0xFF}, 0, 3);  // Stream(0xFF)
+                    cmdBuf.write(new byte[]{0x09, 0x04, 0x01, 0x03,
+                            ctrl, 90, 0,    // hour: 3:00
+                            ctrl, (byte) 270, 0  // minute: 9:00
+                    }, 0, 10);
+                    cmdBuf.write(new byte[]{0x08, 0x01, 0x14, 0x00}, 0, 4);  // Delay 2s
+                    cmdBuf.write(new byte[]{0x01, 0x00}, 0, 2);  // Close
+                }
+                default -> {
+                    System.err.println("Unknown preset: " + preset);
+                    System.err.println("Available: vibrate, dance, sweep, spin, all");
+                    return 1;
+                }
+            }
+
+            byte[] commands = cmdBuf.toByteArray();
+            System.out.printf("Command payload: %d bytes%n", commands.length);
+            System.out.println("WARNING: This overwrites button config! Use 'buttons' command to restore.");
+
+            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+            adapter.playHandAnimation(commands);
+            sleep(2000);
+            adapter.shutdown();
+            return 0;
+        }
+    }
+
     @Command(name = "buttons", mixinStandardHelpOptions = true,
              description = "Set button functions. Available: forward_to_phone, stopwatch, date, music, " +
                      "volume_up, volume_down, step_goal, last_notification, second_timezone, ring_phone, " +
-                     "goal_tracking, alarm_toggle, mode_toggle")
+                     "goal_tracking, alarm_toggle, 24hr, 24hr_seq, mode_toggle")
     static class ButtonsCmd implements Callable<Integer> {
         @ParentCommand Main parent;
 
@@ -1893,12 +2014,17 @@ public class Main implements Runnable {
             if (norm.equals("goal_tracking") || norm.equals("goal_track") || norm.equals("task_tracking") || norm.equals("custom_goal")) {
                 return ButtonConfigBuilder.GOAL_TRACKING_ENTRY;
             }
-
+            if (norm.equals("twenty_four_hour") || norm.equals("24hr") || norm.equals("24h") || norm.equals("24_hour")) {
+                return ButtonConfigBuilder.TWENTY_FOUR_HOUR_ENTRY;
+            }
+            if (norm.equals("twenty_four_hour_seq") || norm.equals("24hr_seq") || norm.equals("24h_seq") || norm.equals("24_hour_seq")) {
+                return ButtonConfigBuilder.TWENTY_FOUR_HOUR_SEQ_ENTRY;
+            }
 
             System.err.printf("Unknown button function '%s' for %s button.%n", name, position);
             System.err.println("Available: forward_to_phone, stopwatch, date, music, volume_up, " +
                     "volume_down, step_goal, goal_tracking, alarm_toggle, last_notification, " +
-                    "second_timezone, ring_phone, mode_toggle, or combine with + (e.g. second_timezone+date+alarm_toggle)");
+                    "second_timezone, ring_phone, 24hr, 24hr_seq, mode_toggle, or combine with + (e.g. second_timezone+date+alarm_toggle)");
             return null;
         }
     }

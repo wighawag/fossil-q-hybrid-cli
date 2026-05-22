@@ -886,6 +886,64 @@ public class FossilQAdapter {
         }, false);
     }
 
+    /**
+     * Upload a hand animation choreography to the watch (file handle HAND_ACTIONS = 0x0600).
+     * WARNING: This writes to the same file handle as SETTINGS_BUTTONS!
+     * The payload format is different from button config (magic 01 00 08 instead of 01 00 00).
+     *
+     * Based on GadgetBridge's PlayCrazyShitRequest + MicroAppCommand system.
+     * Available commands:
+     *   StartCritical (03 00) — begin critical section
+     *   Close (01 00) — end
+     *   Vibrate (93 00 type) — type=04 normal
+     *   Delay (08 01 LE_short) — delay in 0.1s units
+     *   Animation (09 04 ...) — move hands to absolute position
+     *   RepeatStart (86 00 count) — loop start
+     *   RepeatStop (07 00) — loop end
+     *   Stream (8B 00 mask) — streaming mode
+     *
+     * @param commands raw concatenated MicroAppCommand bytes
+     */
+    public void playHandAnimation(byte[] commands) {
+        if (!useFossilProtocol) {
+            LOG.warn("Hand animations not supported on Misfit protocol firmware");
+            return;
+        }
+        // Build the HAND_ACTIONS file payload
+        // Format: [01 00 08] [buttonHeaderContext(8)] [FF] [payloadLen(2 LE)] [commands...] [CRC32]
+        //
+        // The 8-byte button header context tells firmware which button/app context.
+        // We use a minimal context from FORWARD_TO_PHONE (appData[3:11]).
+        byte[] headerContext = {
+            0x01, 0x0C, 0x2E, 0x00, 0x00, 0x00, 0x01, 0x00
+        };
+
+        int totalLen = 3 + 8 + 1 + 2 + commands.length + 4;
+        java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(totalLen);
+        buf.order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        buf.put((byte) 0x01);
+        buf.put((byte) 0x00);
+        buf.put((byte) 0x08);
+        buf.put(headerContext);
+        buf.put((byte) 0xFF);
+        buf.putShort((short)(commands.length + 3));
+        buf.put(commands);
+
+        java.util.zip.CRC32 crc = new java.util.zip.CRC32();
+        crc.update(buf.array(), 0, buf.position());
+        buf.putInt((int) crc.getValue());
+
+        byte[] payload = buf.array();
+        LOG.info("Hand animation payload: {} bytes, {} command bytes", payload.length, commands.length);
+
+        queueWrite(new FilePutRequest(FileHandle.HAND_ACTIONS, payload, shimAdapter) {
+            @Override
+            public void onFilePut(boolean success) {
+                LOG.info("Hand animation: {}", success ? "success" : "FAILED");
+            }
+        }, false);
+    }
+
     public void setHands(int hourDeg, int minDeg, int subDeg) {
         MoveHandsRequest.MovementConfiguration movement =
                 new MoveHandsRequest.MovementConfiguration(false);

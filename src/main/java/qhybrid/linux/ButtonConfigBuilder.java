@@ -109,7 +109,62 @@ public class ButtonConfigBuilder {
     public static final ButtonEntry GOAL_TRACKING_ENTRY =
             new ButtonEntry(GOAL_TRACKING_HEADER, GOAL_TRACKING_DATA);
 
+    // ========== TWENTY_FOUR_HOUR STANDARD (appId 0x001E, variant 0x01) ==========
+    // Constructed by analogy with SECOND_TIMEZONE (same 47-byte STANDARD pattern).
+    // MicroAppId: declarationId 7681 = TWENTY_FOUR_HOUR STANDARD.
+    // On 5-position dial watches (Q Activist), the sub-eye has a labeled "24HR" position.
+    // On Q Commuter (3-position dial: A/B/C), there's no labeled 24HR position;
+    // behavior depends on whether the firmware maps display mode 4 to a sub-eye position.
+    // Display mode byte B0 04 00 chosen as next sequential after ALARM (B0 03 00).
 
+    static final byte[] TWENTY_FOUR_HOUR_HEADER = {0x01, 0x01, 0x1E, 0x00};
+
+    static final byte[] TWENTY_FOUR_HOUR_DATA = {
+            (byte) 0x01, (byte) 0x00, (byte) 0x01, (byte) 0x01,
+            (byte) 0x1E, (byte) 0x2F, (byte) 0x00, (byte) 0x00,
+            (byte) 0x00, (byte) 0x01, (byte) 0x00, (byte) 0x08,
+            (byte) 0x00, (byte) 0x04, (byte) 0x00, (byte) 0x00,
+            (byte) 0x07, (byte) 0x02, (byte) 0x02, (byte) 0x00,
+            (byte) 0x01, (byte) 0x01, (byte) 0x1E, (byte) 0x00,
+            (byte) 0x89, (byte) 0x05, (byte) 0x01, (byte) 0x07,
+            (byte) 0xB0, (byte) 0x04, (byte) 0x00, (byte) 0xB0,
+            (byte) 0x04, (byte) 0x00, (byte) 0xB0, (byte) 0x04,
+            (byte) 0x00, (byte) 0x08, (byte) 0x01, (byte) 0x50,
+            (byte) 0x00, (byte) 0x01, (byte) 0x00, (byte) 0x8B,
+            (byte) 0x95, (byte) 0x15, (byte) 0x80
+    };
+
+    /** TWENTY_FOUR_HOUR STANDARD entry — shows 24h time on sub-eye. */
+    public static final ButtonEntry TWENTY_FOUR_HOUR_ENTRY =
+            new ButtonEntry(TWENTY_FOUR_HOUR_HEADER, TWENTY_FOUR_HOUR_DATA);
+
+    // ========== TWENTY_FOUR_HOUR SEQUENCED (appId 0x001E, variant 0x02) ==========
+    // Constructed by analogy with ALARM_SEQUENCED (same 54-byte SEQUENCED pattern).
+    // MicroAppId: declarationId 7682 = TWENTY_FOUR_HOUR SEQUENCED.
+    // For use inside multi-entry toggle.
+
+    static final byte[] TWENTY_FOUR_HOUR_SEQ_HEADER = {0x01, 0x02, 0x1E, 0x00};
+
+    static final byte[] TWENTY_FOUR_HOUR_SEQ_DATA = {
+            (byte) 0x01, (byte) 0x00, (byte) 0x01, (byte) 0x02,
+            (byte) 0x1E, (byte) 0x36, (byte) 0x00, (byte) 0x00,
+            (byte) 0x00, (byte) 0x01, (byte) 0x00, (byte) 0x08,
+            (byte) 0x00, (byte) 0x04, (byte) 0x00, (byte) 0x00,
+            (byte) 0x07, (byte) 0x02, (byte) 0x00, (byte) 0x00,
+            (byte) 0x01, (byte) 0x01, (byte) 0x1D, (byte) 0x00,
+            (byte) 0x89, (byte) 0x02, (byte) 0x01, (byte) 0x04,
+            (byte) 0xB0, (byte) 0x04, (byte) 0x00, (byte) 0x89,
+            (byte) 0x05, (byte) 0x01, (byte) 0x07, (byte) 0xB0,
+            (byte) 0x04, (byte) 0x00, (byte) 0xB0, (byte) 0x04,
+            (byte) 0x00, (byte) 0xB0, (byte) 0x04, (byte) 0x00,
+            (byte) 0x08, (byte) 0x01, (byte) 0x50, (byte) 0x00,
+            (byte) 0x01, (byte) 0x00, (byte) 0xA9, (byte) 0x21,
+            (byte) 0xD4, (byte) 0xC7
+    };
+
+    /** TWENTY_FOUR_HOUR SEQUENCED entry — for use in toggle. */
+    public static final ButtonEntry TWENTY_FOUR_HOUR_SEQ_ENTRY =
+            new ButtonEntry(TWENTY_FOUR_HOUR_SEQ_HEADER, TWENTY_FOUR_HOUR_SEQ_DATA);
 
     // LAST_NOTIFICATION payload — already in ConfigPayload, but note the
     // variant difference: standalone = variant 0x01 (01 01 18 00).

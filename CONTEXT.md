@@ -69,7 +69,7 @@ gadgetbridge/              # Vendored GB code (124 files, zero patches, copied b
 
 | Field | Value |
 |-------|-------|
-| Watch | Fossil Q Commuter |
+| Watch | Fossil Fenmore (BQT1107) / Q Commuter HW.0.0 |
 | Model | HW.0.0 |
 | Firmware | HW0.0.2.9r.v3 |
 | Protocol | Fossil (2.x) |
@@ -91,7 +91,7 @@ GATT retry is a BlueZ/firmware issue (not transport-specific) - adds ~6.5s when 
 |------|---------|
 | DBUS-JAVA-MIGRATION.md | Plan for dbus-java transport (implemented, kept for reference) |
 | AUTHENTICATION-PLAN.md | Full auth protocol decode + plan to crack notification system |
-| FINDINGS.md | 22+ technical discoveries from real-hardware testing |
+| FINDINGS.md | 29 technical discoveries from real-hardware testing |
 | TODO.md | Feature checklist with priorities |
 | CALIBRATION-PLAN.md | Interactive calibration UX design |
 | ROADMAP.md | CLI → shared library → Android app |
@@ -150,9 +150,12 @@ Bond benefits: encrypted link, WakeAllowed, faster reconnect (device stays known
 - **dbus-java Properties.Get() unwraps Variant** - returns `UInt16` directly, not `Variant<UInt16>`. Must handle both forms when reading MTU.
 - **StartNotify throws NotPermitted on Fossil chars** - expected without BLE bonding. Notifications still delivered via PropertiesChanged signal handler.
 - **Toggle entries skip when no data** - ALARM (no alarm set), LAST_NOTIFICATION (no cached notif), STEP_GOAL_COMPLETION (0% steps) are silently skipped in multi-entry toggles. Not an entry count limit. 5-entry toggle confirmed working.
+- **Toggle max 6 entries** - 6 entries confirmed (TZ+DATE+ALARM+STEP_GOAL+LAST_NOTIF+24HR). 7 entries with any duplicate causes infinite loop (firmware wraps instead of terminating). Practical ceiling = 6 distinct display-only micro apps. See FINDINGS.md #27.
 - **GOAL_TRACKING breaks toggle** - appId 0x04 produces error vibration and aborts remaining toggle entries. Incompatible payload structure (no `B0 XX 00` display-mode blocks). Works only as standalone button (blind counter).
 - **"STEP_GOAL_PROGRESS" was ALARM** - appId 0x1a is ALARM (MicroAppId 6657/6658), not step goal progress. PROGRESS is appId 0x1c. See FINDINGS.md #22.
-- **Sub-eye indicators: A=TZ, B=DATE, C=ALARM** — all three confirmed on Q Commuter (3-position dial). Other models (e.g. Q Activist) have 5-position dials: Time 2, Date, Alarm, Alert, 24HR. ALERT = LAST_NOTIFICATION (same appId 0x18). TWENTY_FOUR_HOUR (appId 0x1E) untested. Sub-eye default = passive step progress (steps/goal). Celebration vibration when goal met.
+- **Sub-eye indicators: A=TZ, B=DATE, C=ALARM** — all three confirmed on Q Commuter (3-position dial). Other models (e.g. Q Activist) have 5-position dials: Time 2, Date, Alarm, Alert, 24HR. ALERT = LAST_NOTIFICATION (same appId 0x18). Sub-eye default = passive step progress (steps/goal). Celebration vibration when goal met.
+- **TWENTY_FOUR_HOUR (appId 0x1E)** — firmware accepts it (no error), counts as toggle step, but produces no visible output on Q Commuter (no 24HR sub-eye label). Likely functional on 5-position dial watches. See FINDINGS.md #28.
+- **PlayCrazyShitRequest / hand action files** — dead code in GadgetBridge (never called). Uploads to handle 0x0600 succeed but produce no effect on Q Commuter. The MicroAppCommand choreography system (vibrate, animate hands, loops) is non-functional on coin-cell watches. See FINDINGS.md #29.
 - **Config 0x17/0x18 (task tracking goal/value)** — no visual effect on watch. Blind counter only. See FINDINGS.md #22.
 - **Notification vibe patterns 0-9 all tested** — 0/9=silent, 1=triple, 2=double, 3/4=single, 5=strong single, 6=strong double, 7=strong triple, 8=long. 12s gap required between notifications (hands must return). See FINDINGS.md #23.
 - **Notification hand positions fully configurable** — hour and minute hands move independently to specified degrees (0-359). Both hands return to time after ~10s. Presets: phone/sms=60° (2:00), whatsapp=90° (3:00), email=120° (4:00), calendar=300° (10:00). See FINDINGS.md #24.
