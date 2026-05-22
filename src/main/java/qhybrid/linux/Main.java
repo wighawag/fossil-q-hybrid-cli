@@ -30,6 +30,7 @@ import org.jline.terminal.TerminalBuilder;
                 Main.HandsCmd.class,
                 Main.CalibrateCmd.class,
                 Main.StepGoalCmd.class,
+                Main.StepCountCmd.class,
                 Main.VibrationCmd.class,
                 Main.TimezoneCmd.class,
                 Main.AlarmCmd.class,
@@ -759,6 +760,70 @@ public class Main implements Runnable {
             FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
             adapter.setStepGoal(steps);
             System.out.println("Step goal set to " + steps);
+            sleep(1000);
+            adapter.shutdown();
+            return 0;
+        }
+    }
+
+    @Command(name = "step-count", description = "Read or set/reset current step count",
+             mixinStandardHelpOptions = true,
+             subcommands = {
+                     Main.StepCountSetCmd.class
+             })
+    static class StepCountCmd implements Callable<Integer> {
+        @ParentCommand Main parent;
+
+        @Override
+        public Integer call() {
+            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+
+            var future = new java.util.concurrent.CompletableFuture<Integer>();
+            adapter.getStepCount(future);
+
+            Integer steps;
+            try {
+                steps = future.get(30, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (java.util.concurrent.TimeoutException e) {
+                System.err.println("Timeout reading step count (30s)");
+                adapter.shutdown();
+                return 1;
+            } catch (Exception e) {
+                System.err.println("Error reading step count: " + e.getMessage());
+                adapter.shutdown();
+                return 1;
+            }
+
+            if (steps == null) {
+                System.err.println("Failed to read step count from watch.");
+                adapter.shutdown();
+                return 1;
+            }
+
+            System.out.println("Current step count: " + steps);
+
+            adapter.shutdown();
+            return 0;
+        }
+    }
+
+    @Command(name = "set", description = "Set/reset the current step count")
+    static class StepCountSetCmd implements Callable<Integer> {
+        @ParentCommand StepCountCmd stepCountParent;
+
+        @Parameters(index = "0", description = "New step count value (e.g. 500)")
+        int steps;
+
+        @Override
+        public Integer call() {
+            if (steps < 0) {
+                System.err.println("Step count must be non-negative");
+                return 1;
+            }
+
+            FossilQAdapter adapter = connectAndInit(stepCountParent.parent.macAddress, stepCountParent.parent.useSubprocess);
+            adapter.setStepCount(steps);
+            System.out.println("Step count set to " + steps);
             sleep(1000);
             adapter.shutdown();
             return 0;

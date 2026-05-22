@@ -693,6 +693,47 @@ public class FossilQAdapter {
         }
     }
 
+    public void getStepCount(CompletableFuture<Integer> result) {
+        if (!useFossilProtocol) {
+            LOG.warn("Step count read not supported on Misfit protocol firmware");
+            result.complete(null);
+            return;
+        }
+        CompletableFuture<java.util.List<ConfigEntry>> configFuture = new CompletableFuture<>();
+        readConfig(configFuture);
+        configFuture.thenAccept(entries -> {
+            for (ConfigEntry entry : entries) {
+                if (entry.id == 0x0002) {
+                    try {
+                        java.nio.ByteBuffer buf = java.nio.ByteBuffer.wrap(entry.rawData).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+                        result.complete(buf.getInt());
+                        return;
+                    } catch (Exception e) {
+                        LOG.warn("Failed to parse DAILY_STEP config item: {}", e.getMessage());
+                    }
+                }
+            }
+            result.complete(null);
+        }).exceptionally(ex -> {
+            result.completeExceptionally(ex);
+            return null;
+        });
+    }
+
+    public void setStepCount(int steps) {
+        if (useFossilProtocol) {
+            queueWrite(new ConfigurationPutRequest(
+                    new ConfigurationPutRequest.CurrentStepCountConfigItem(steps), shimAdapter) {
+                @Override
+                public void onFilePut(boolean success) {
+                    LOG.info("Step count set to {}: {}", steps, success ? "success" : "FAILED");
+                }
+            }, false);
+        } else {
+            sendMisfitRequest(new SetCurrentStepCountRequest(steps));
+        }
+    }
+
     public void setVibrationStrength(short strength) {
         if (useFossilProtocol) {
             queueWrite(new ConfigurationPutRequest(

@@ -50,8 +50,8 @@ Watch: Fossil Q Commuter (HW.0.0), Firmware HW0.0.2.9r.v3, Fossil protocol (2.x)
 - [x] Delete activity data after fetch (FileDeleteRequest, default; `--keep` to preserve)
 - [x] NDJSON output (`--raw` for records with steps, `--raw --all` for everything)
 - [x] Save raw binary (`-o activity.bin`)
-- [ ] Read current step count (ConfigurationGetRequest item 0x0002)
-- [ ] Set current step count (for activity hand position)
+- [x] Read current step count (ConfigurationGetRequest item 0x0002)
+- [x] Set current step count (for activity hand position)
 - [ ] Activity hand as notification counter mode
 
 ### Alarms
