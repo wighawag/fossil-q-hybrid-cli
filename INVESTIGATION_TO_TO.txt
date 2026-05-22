@@ -1,7 +1,0 @@
- 
- 11. Hand action files (0x0900) — Complex choreographed hand animations. The format uses RLE encoding. Could create custom "dances" for notifications.
- 12. HID service (0x1812) — The watch has an HID profile. What reports does it send? Could it act as a keyboard/media controller at the HID level?
- 13. PlayCrazyShitRequest — Yes, that's the actual class name in GadgetBridge. What does it do?
- 15. TWENTY_FOUR_HOUR function (appId 0x1e) — Has a labeled "24HR" sub-eye position on 5-position dial watches. Likely shows current hour in 24h format on sub-eye. Still untested on our hardware.
- 16. What's the max toggle entry count? — We confirmed 5. Could there be 6, 7, 8?
-
