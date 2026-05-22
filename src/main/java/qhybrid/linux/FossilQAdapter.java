@@ -214,6 +214,32 @@ public class FossilQAdapter {
     }
 
     /**
+     * Upload a notification filter with a specific vibration pattern byte.
+     * Pattern values (from official Fossil app NotificationVibePattern.java):
+     *   0 = AUTO, 1 = CALL, 2 = TEXT, 3 = EMAIL, 4 = DEFAULT_OTHER_APPS,
+     *   5 = ONE_SHORT_VIBE, 6 = TWO_SHORT_VIBES, 7 = THREE_SHORT_VIBES,
+     *   8 = ONE_LONG_VIBE, 9 = NO_VIBE
+     */
+    public void uploadNotificationFilterWithPattern(byte vibePattern) {
+        if (!useFossilProtocol) {
+            LOG.warn("Notification filter not supported on Misfit protocol");
+            return;
+        }
+        String packageName = "qhybrid.linux";
+        short hourDeg = 90;
+        short minDeg = 90;
+        byte[] filter = buildNotificationFilterData(packageName, vibePattern, hourDeg, minDeg);
+        LOG.info("Uploading notification filter with vibe pattern {} (0x{})",
+                vibePattern, String.format("%02X", vibePattern));
+        queueWrite(new FilePutRequest(FileHandle.NOTIFICATION_FILTER, filter, shimAdapter) {
+            @Override
+            public void onFilePut(boolean success) {
+                LOG.info("Notification filter (vibe={}) sync: {}", vibePattern, success ? "success" : "FAILED");
+            }
+        }, false);
+    }
+
+    /**
      * Build notification file data matching the official Fossil app format.
      * Key difference from GB: lengthBufferLength=12 (not 10), with 2 extra fields
      * (0xFFFFFFFF sentinel + Unix timestamp). The HW.0.0 firmware requires this
@@ -293,6 +319,29 @@ public class FossilQAdapter {
         } else {
             sendMisfitRequest(new PlayNotificationRequest(vibration, hourDeg, minDeg));
         }
+    }
+
+    /**
+     * Play a notification with a specific vibration pattern.
+     * First uploads the notification filter with the desired pattern, then sends the play file.
+     *
+     * Pattern values (from official Fossil app NotificationVibePattern.java):
+     *   0 = AUTO, 1 = CALL, 2 = TEXT, 3 = EMAIL, 4 = DEFAULT_OTHER_APPS,
+     *   5 = ONE_SHORT_VIBE, 6 = TWO_SHORT_VIBES, 7 = THREE_SHORT_VIBES,
+     *   8 = ONE_LONG_VIBE, 9 = NO_VIBE
+     */
+    public void playNotificationWithPattern(byte vibePattern) {
+        if (!useFossilProtocol) {
+            LOG.warn("Vibration pattern selection requires Fossil protocol");
+            return;
+        }
+        // 1. Upload filter with the specified pattern
+        uploadNotificationFilterWithPattern(vibePattern);
+        // 2. Send the notification play file (the filter determines the vibration pattern)
+        byte[] notifData = buildOfficialNotificationFile(
+                "Notification", "fossil-q", "Notification");
+        queueWrite(new FilePutRequest(
+                FileHandle.NOTIFICATION_PLAY, notifData, shimAdapter), false);
     }
 
     private long getVibrationDuration(PlayNotificationRequest.VibrationType vibration) {

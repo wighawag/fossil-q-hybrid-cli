@@ -16,6 +16,8 @@ A Linux CLI tool that talks to Fossil Q Hybrid coin-cell watches (Q Commuter HW.
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A info
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A time
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A notify SINGLE_SHORT
+java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A notify SINGLE_SHORT --vibe call   # triple vibe
+java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A notify-test                       # test all patterns
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A buttons stopwatch music forward_to_phone
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A buttons mode_toggle second_timezone forward_to_phone  # A→B→C (needs alarm set)
 java -jar build/libs/fossil-q.jar -d D9:20:71:11:74:2A buttons "second_timezone+date+alarm_toggle+step_goal+last_notification" second_timezone forward_to_phone  # 5-entry toggle
@@ -142,8 +144,9 @@ Bond benefits: encrypted link, WakeAllowed, faster reconnect (device stays known
 - **Toggle entries skip when no data** - ALARM (no alarm set), LAST_NOTIFICATION (no cached notif), STEP_GOAL_COMPLETION (0% steps) are silently skipped in multi-entry toggles. Not an entry count limit. 5-entry toggle confirmed working.
 - **GOAL_TRACKING breaks toggle** - appId 0x04 produces error vibration and aborts remaining toggle entries. Incompatible payload structure (no `B0 XX 00` display-mode blocks). Works only as standalone button (blind counter).
 - **"STEP_GOAL_PROGRESS" was ALARM** - appId 0x1a is ALARM (MicroAppId 6657/6658), not step goal progress. PROGRESS is appId 0x1c. See FINDINGS.md #22.
-- **Sub-eye indicators: A=TZ, B=DATE, C=ALARM** - all three confirmed. Sub-eye default = passive step progress (steps/goal). Celebration vibration when goal met.
-- **Config 0x17/0x18 (task tracking goal/value)** - no visual effect on watch. Blind counter only. See FINDINGS.md #22.
+- **Sub-eye indicators: A=TZ, B=DATE, C=ALARM** — all three confirmed. Sub-eye default = passive step progress (steps/goal). Celebration vibration when goal met.
+- **Config 0x17/0x18 (task tracking goal/value)** — no visual effect on watch. Blind counter only. See FINDINGS.md #22.
+- **Notification vibe patterns 0-9 all tested** — 0/9=silent, 1=triple, 2=double, 3/4=single, 5=strong single, 6=strong double, 7=strong triple, 8=long. 12s gap required between notifications (hands must return). See FINDINGS.md #23.
 
 ## BLE Captures
 
@@ -152,10 +155,10 @@ Bond benefits: encrypted link, WakeAllowed, faster reconnect (device stays known
 | `tmp/bugreport/` | First capture - reconnect, auth `01 07` | Full ATT data |
 | `tmp/bugreport3/` | Third capture - reconnect, auth `02 06`, full init + notification | Full ATT data, 571 packets |
 | `tmp/bugreport2/` | Second capture | Truncated (btsnooz circular buffer) |
-| `tmp/bugreport5/` | Fifth capture — full Fossil app session: 2nd TZ, mode toggle, alarms, notif filters | 496 Fossil ATT ops, 780s |
-| `tmp/bugreport6/` | Sixth capture — buttons: goal_tracking, last_notification, mode_toggle | Button payloads |
-| `tmp/bugreport7/` | Seventh capture — goal tracking add events + sync | No config 0x17/0x18 sent |
-| `tmp/bugreport8/` | Eighth capture — button presses on goal_tracking + last_notification | No BLE events (firmware-only) |
+| `tmp/bugreport5/` | Fifth capture - full Fossil app session: 2nd TZ, mode toggle, alarms, notif filters | 496 Fossil ATT ops, 780s |
+| `tmp/bugreport6/` | Sixth capture - buttons: goal_tracking, last_notification, mode_toggle | Button payloads |
+| `tmp/bugreport7/` | Seventh capture - goal tracking add events + sync | No config 0x17/0x18 sent |
+| `tmp/bugreport8/` | Eighth capture - button presses on goal_tracking + last_notification | No BLE events (firmware-only) |
 
 ## Decompiled Official App
 

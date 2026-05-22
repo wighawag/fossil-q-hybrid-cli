@@ -21,6 +21,7 @@ import java.util.concurrent.Callable;
                 Main.InfoCmd.class,
                 Main.TimeCmd.class,
                 Main.NotifyCmd.class,
+                Main.NotifyTestCmd.class,
                 Main.FindCmd.class,
                 Main.HandsCmd.class,
                 Main.CalibrateCmd.class,
@@ -148,7 +149,55 @@ public class Main implements Runnable {
         }
     }
 
-    @Command(name = "notify", description = "Send a notification (vibration + hand movement)")
+    // Vibration pattern names (from official Fossil app NotificationVibePattern.java)
+    // Hardware-tested on Q Commuter HW.0.0 (2026-05-22):
+    //   0 = AUTO           → no vibration (silent)
+    //   1 = CALL           → triple vibration
+    //   2 = TEXT           → double vibration
+    //   3 = EMAIL          → single vibration
+    //   4 = DEFAULT        → single vibration (same as EMAIL/3)
+    //   5 = ONE_SHORT_VIBE → strong single vibration
+    //   6 = TWO_SHORT_VIBES → strong double vibration
+    //   7 = THREE_SHORT_VIBES → strong triple vibration
+    //   8 = ONE_LONG_VIBE  → long vibration
+    //   9 = NO_VIBE        → no vibration (silent)
+    static final String[] VIBE_PATTERN_NAMES = {
+            "AUTO", "CALL", "TEXT", "EMAIL", "DEFAULT_OTHER_APPS",
+            "ONE_SHORT_VIBE", "TWO_SHORT_VIBES", "THREE_SHORT_VIBES",
+            "ONE_LONG_VIBE", "NO_VIBE"
+    };
+
+    /**
+     * Parse a vibration pattern from name or number (0-9).
+     * Returns -1 if invalid.
+     */
+    static int parseVibePattern(String s) {
+        // Try as number first
+        try {
+            int n = Integer.parseInt(s);
+            if (n >= 0 && n <= 9) return n;
+            return -1;
+        } catch (NumberFormatException ignored) {}
+
+        // Try as name (case-insensitive)
+        String upper = s.toUpperCase().replace("-", "_");
+        for (int i = 0; i < VIBE_PATTERN_NAMES.length; i++) {
+            if (VIBE_PATTERN_NAMES[i].equals(upper)) return i;
+        }
+        // Short aliases
+        return switch (upper) {
+            case "DEFAULT" -> 4;
+            case "SHORT", "ONE_SHORT", "1SHORT" -> 5;
+            case "TWO_SHORT", "2SHORT", "DOUBLE_SHORT" -> 6;
+            case "THREE_SHORT", "3SHORT", "TRIPLE_SHORT" -> 7;
+            case "LONG", "ONE_LONG", "1LONG" -> 8;
+            case "NONE", "SILENT", "OFF" -> 9;
+            default -> -1;
+        };
+    }
+
+    @Command(name = "notify", mixinStandardHelpOptions = true,
+             description = "Send a notification (vibration + hand movement)")
     static class NotifyCmd implements Callable<Integer> {
         @ParentCommand Main parent;
 
@@ -165,12 +214,32 @@ public class Main implements Runnable {
         @Option(names = {"-M", "--minute"}, description = "Minute hand degrees (0-360, only with --direct)", defaultValue = "-1")
         int minDeg;
 
+        @Option(names = {"--vibe", "-v"}, description = "Notification vibration pattern (0-9 or name). " +
+                "0=AUTO(silent), 1=CALL(triple), 2=TEXT(double), 3=EMAIL(single), 4=DEFAULT(single), " +
+                "5=ONE_SHORT(strong single), 6=TWO_SHORT(strong double), 7=THREE_SHORT(strong triple), " +
+                "8=ONE_LONG(long), 9=NO_VIBE(silent)")
+        String vibePattern;
+
         @Override
         public Integer call() {
             FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
             // Wait for init animation and notification filter upload to complete
             sleep(5000);
-            if (direct) {
+
+            if (vibePattern != null && !direct) {
+                // Use Fossil notification vibe pattern (filter-based)
+                int pattern = parseVibePattern(vibePattern);
+                if (pattern < 0) {
+                    System.err.println("Invalid vibration pattern: " + vibePattern);
+                    System.err.println("Use 0-9 or name: AUTO, CALL, TEXT, EMAIL, DEFAULT, " +
+                            "ONE_SHORT, TWO_SHORT, THREE_SHORT, ONE_LONG, NO_VIBE");
+                    adapter.shutdown();
+                    return 1;
+                }
+                String patternName = VIBE_PATTERN_NAMES[pattern];
+                adapter.playNotificationWithPattern((byte) pattern);
+                System.out.printf("Notification sent with vibe pattern %d (%s)%n", pattern, patternName);
+            } else if (direct) {
                 adapter.playMisfitNotification(vibration, hourDeg, minDeg);
                 System.out.println("Direct notification sent: " + vibration);
             } else {
@@ -179,6 +248,53 @@ public class Main implements Runnable {
             }
             // Give time for the vibration to happen
             sleep(2000);
+            adapter.shutdown();
+            return 0;
+        }
+    }
+
+    @Command(name = "notify-test", mixinStandardHelpOptions = true,
+             description = "Play all vibration patterns sequentially (2s gap between each)")
+    static class NotifyTestCmd implements Callable<Integer> {
+        @ParentCommand Main parent;
+
+        @Option(names = {"--from"}, description = "Start pattern number (0-9)", defaultValue = "0")
+        int from;
+
+        @Option(names = {"--to"}, description = "End pattern number (0-9, inclusive)", defaultValue = "9")
+        int to;
+
+        @Option(names = {"--gap"}, description = "Seconds between patterns (min 12 — hands must return before next notif)", defaultValue = "12")
+        int gapSeconds;
+
+        @Override
+        public Integer call() {
+            if (from < 0 || from > 9 || to < 0 || to > 9 || from > to) {
+                System.err.println("Pattern range must be 0-9 with --from <= --to");
+                return 1;
+            }
+
+            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+            // Wait for init to fully complete
+            sleep(5000);
+
+            System.out.printf("Testing vibration patterns %d-%d with %ds gap...%n", from, to, gapSeconds);
+            System.out.println("Feel the watch for each pattern.\n");
+
+            for (int i = from; i <= to; i++) {
+                String name = VIBE_PATTERN_NAMES[i];
+                System.out.printf("  [%d] %s ...", i, name);
+                System.out.flush();
+
+                // Upload filter with this pattern, then send notification
+                adapter.playNotificationWithPattern((byte) i);
+
+                // Wait for the vibration to complete + gap
+                sleep(gapSeconds * 1000L);
+                System.out.println(" done");
+            }
+
+            System.out.println("\nAll patterns tested.");
             adapter.shutdown();
             return 0;
         }

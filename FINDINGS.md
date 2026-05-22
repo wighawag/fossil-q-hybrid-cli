@@ -1372,6 +1372,68 @@ All three indicators are exercised by the default mode toggle configuration.
 7. ✅ **GOAL_TRACKING breaks toggle chain** — error vibration, aborts remaining entries.
 8. ✅ **STEP_GOAL_COMPLETION works in toggle** — sub-eye shows step %, hands stay.
 
+---
+
+## 23. Notification Vibration Patterns — Hardware Test Results (2026-05-22)
+
+**Date:** 2026-05-22
+
+**Source:** CLI `notify-test` command on Fossil Q Commuter (HW.0.0), firmware HW0.0.2.9r.v3.
+
+The notification filter's vibration field (0xC3) accepts byte values 0-9, corresponding
+to `NotificationVibePattern` in the official Fossil app. All 10 patterns tested.
+
+### Results
+
+| Pattern | Byte | Name              | Actual vibration                        |
+|---------|------|-------------------|-----------------------------------------|
+| 0       | 0x00 | AUTO              | No vibration (silent, hands move only)  |
+| 1       | 0x01 | CALL              | Triple vibration                        |
+| 2       | 0x02 | TEXT              | Double vibration                        |
+| 3       | 0x03 | EMAIL             | Single vibration                        |
+| 4       | 0x04 | DEFAULT_OTHER_APPS| Single vibration (same as EMAIL/3)      |
+| 5       | 0x05 | ONE_SHORT_VIBE    | Strong single vibration                 |
+| 6       | 0x06 | TWO_SHORT_VIBES   | Strong double vibration                 |
+| 7       | 0x07 | THREE_SHORT_VIBES | Strong triple vibration                 |
+| 8       | 0x08 | ONE_LONG_VIBE     | Long vibration                          |
+| 9       | 0x09 | NO_VIBE           | No vibration (silent, hands move only)  |
+
+### Observations
+
+- **Patterns 3 and 4 are identical** — EMAIL and DEFAULT produce the same single vibration.
+- **Patterns 5-7 are "strong" versions** of 3/2/1 (single/double/triple). The difference
+  is noticeable — the strong variants have more motor intensity.
+- **Pattern 8 (ONE_LONG) is distinct** — a sustained single vibration, noticeably longer
+  than the short patterns.
+- **Patterns 0 (AUTO) and 9 (NO_VIBE) are both silent** — hands animate to the filter
+  position but no motor vibration occurs.
+- The official Fossil app only uses patterns 1 (CALL), 2 (TEXT), and 4 (DEFAULT).
+  Patterns 5-8 (strong/long variants) are fully functional on HW.0.0 firmware.
+
+### Timing constraint
+
+A notification play file is **ignored if the hands haven't returned** from the previous
+notification. The hand animation (move to filter position → hold → return) takes
+approximately 10 seconds. A minimum **12-second gap** between notifications is required
+for reliable delivery. The `notify-test` command uses 12s gap by default.
+
+### CLI usage
+
+```bash
+# Send notification with specific vibe pattern
+fossil-q -d <MAC> notify SINGLE_SHORT --vibe call        # triple vibe
+fossil-q -d <MAC> notify SINGLE_SHORT --vibe 5            # strong single
+fossil-q -d <MAC> notify SINGLE_SHORT -v one_long         # long vibe
+fossil-q -d <MAC> notify SINGLE_SHORT -v no_vibe          # silent (hands only)
+
+# Test all patterns sequentially (12s gap)
+fossil-q -d <MAC> notify-test
+fossil-q -d <MAC> notify-test --from 5 --to 8             # only strong/long
+fossil-q -d <MAC> notify-test --gap 15                    # 15s gap
+```
+
+---
+
 ### Further experiments to try
 
 1. **ALARM STANDARD (appId 0x1a, variant 0x01, header `01 01 1a 00`)** — does it work
