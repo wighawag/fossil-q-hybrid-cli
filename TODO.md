@@ -73,7 +73,7 @@ Watch: Fossil Q Commuter (HW.0.0), Firmware HW0.0.2.9r.v3, Fossil protocol (2.x)
 - [x] Set button actions — `buttons` command with 10 functions: stopwatch, date, music, etc.
 - [x] Listen for button press events on 3dda0006 (micro_app events decoded)
 - [ ] Map button presses to custom actions (run command, send notification, etc.)
-- [ ] Multi-button press detection (SINGLE, DOUBLE, LONG) — firmware handles for MUSIC_CONTROL; software timing needed for FORWARD_TO_PHONE
+- [x] Multi-button press detection (SINGLE, DOUBLE) — firmware handles for MUSIC_CONTROL; software timing added for FORWARD_TO_PHONE (ButtonGestureDetector in FossilQAdapter). Uses 400ms double-press window (configurable via `--gesture-window`). RING_PHONE events delayed until gesture resolved; all other events unchanged.
 - [x] Mode toggle support — multi-entry button config via ButtonConfigBuilder. `mode_toggle` keyword + `+` syntax for custom combos. Up to 5+ entries confirmed working (TZ+DATE+ALARM+STEP_GOAL+LAST_NOTIFICATION). Entries without data (no alarm, no notification, 0% steps) are silently skipped. GOAL_TRACKING incompatible with toggle (error vibration). See FINDINGS.md #22.
 - [ ] Take a photo support — needs phone-side camera trigger implementation
 

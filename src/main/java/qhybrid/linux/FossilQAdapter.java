@@ -97,6 +97,9 @@ public class FossilQAdapter {
     // Authentication handshake
     private CompletableFuture<byte[]> pendingAuthResponse;
 
+    // Button gesture detection for FORWARD_TO_PHONE buttons
+    private final ButtonGestureDetector gestureDetector = new ButtonGestureDetector();
+
     // Callbacks for CLI
     private Runnable onInitialized;
     private java.util.function.Consumer<byte[]> onActivityData;
@@ -2059,13 +2062,25 @@ public class FossilQAdapter {
 
         LOG.info("Button press: {} → {} ({}) seq={}", button, appName, appVariant, sequence);
 
-        emitEvent("{\"type\":\"button\",\"button\":\"" + button
-                + "\",\"app\":\"" + appName
-                + "\",\"variant\":\"" + appVariant
-                + "\",\"declarationId\":" + declarationId
-                + ",\"eventId\":" + eventId
-                + ",\"sequence\":" + (sequence & 0xFF)
-                + ",\"timestamp\":\"" + nowIso8601() + "\"}");
+        // RING_PHONE (declarationId 3073) uses software gesture detection;
+        // all other micro apps emit immediately without gesture classification
+        if (declarationId == 3073) {
+            String jsonTemplate = "{\"type\":\"button\",\"button\":\"" + button
+                    + "\",\"app\":\"" + appName
+                    + "\",\"variant\":\"" + appVariant
+                    + "\",\"declarationId\":" + declarationId
+                    + ",\"eventId\":" + eventId
+                    + ",\"sequence\":" + (sequence & 0xFF);
+            gestureDetector.onPress(button, jsonTemplate);
+        } else {
+            emitEvent("{\"type\":\"button\",\"button\":\"" + button
+                    + "\",\"app\":\"" + appName
+                    + "\",\"variant\":\"" + appVariant
+                    + "\",\"declarationId\":" + declarationId
+                    + ",\"eventId\":" + eventId
+                    + ",\"sequence\":" + (sequence & 0xFF)
+                    + ",\"timestamp\":\"" + nowIso8601() + "\"}");
+        }
     }
 
     private void handleBatteryEvent(byte sequence, byte[] eventData) {
@@ -2130,7 +2145,104 @@ public class FossilQAdapter {
         }
     }
 
+    /**
+     * Set the double-press detection window in milliseconds.
+     * If a second press of the same button arrives within this window, it's classified as DOUBLE.
+     * Otherwise, after the window expires, a SINGLE gesture is emitted.
+     * Only affects RING_PHONE (FORWARD_TO_PHONE) buttons.
+     * Default: 400ms.
+     */
+    public void setGestureWindowMs(long ms) {
+        gestureDetector.setDoubleWindowMs(ms);
+    }
+
+    // ========== Button Gesture Detection ==========
+
+    /**
+     * Software-level multi-press detector for FORWARD_TO_PHONE buttons.
+     *
+     * The watch firmware only sends identical micro_app events for FORWARD_TO_PHONE buttons
+     * (no firmware-level gesture detection, unlike MUSIC_CONTROL). This class adds
+     * software timing to classify presses as SINGLE or DOUBLE:
+     *
+     * - First press starts a timer (doubleWindowMs). If no second press arrives
+     *   before it fires, emit SINGLE.
+     * - Second press within the window cancels the timer and immediately emits DOUBLE.
+     *
+     * Each physical button (TOP/MIDDLE/BOTTOM) is tracked independently.
+     */
+    private class ButtonGestureDetector {
+        private long doubleWindowMs = 400;
+
+        private final ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "gesture-detector");
+            t.setDaemon(true);
+            return t;
+        });
+
+        // Per-button pending state: button name → scheduled single-press emission
+        private final Map<String, PendingPress> pending = new ConcurrentHashMap<>();
+
+        private static class PendingPress {
+            final String jsonTemplate; // JSON without gesture/timestamp — to be completed on emission
+            final ScheduledFuture<?> timer;
+
+            PendingPress(String jsonTemplate, ScheduledFuture<?> timer) {
+                this.jsonTemplate = jsonTemplate;
+                this.timer = timer;
+            }
+        }
+
+        void setDoubleWindowMs(long ms) {
+            if (ms < 50 || ms > 5000) {
+                LOG.warn("Gesture window {}ms out of reasonable range [50-5000], ignoring", ms);
+                return;
+            }
+            this.doubleWindowMs = ms;
+            LOG.info("Gesture double-press window set to {}ms", ms);
+        }
+
+        /**
+         * Called on each RING_PHONE button press. The jsonTemplate contains all fields
+         * except "gesture" and "timestamp" — those are added at emission time.
+         */
+        void onPress(String button, String jsonTemplate) {
+            PendingPress prev = pending.remove(button);
+            if (prev != null) {
+                // Second press within window → DOUBLE
+                prev.timer.cancel(false);
+                LOG.info("Gesture: {} DOUBLE press", button);
+                emitGesture(jsonTemplate, "DOUBLE");
+            } else {
+                // First press → schedule single-press emission after window
+                ScheduledFuture<?> timer = executor.schedule(() -> {
+                    pending.remove(button);
+                    LOG.info("Gesture: {} SINGLE press", button);
+                    emitGesture(jsonTemplate, "SINGLE");
+                }, doubleWindowMs, TimeUnit.MILLISECONDS);
+                pending.put(button, new PendingPress(jsonTemplate, timer));
+            }
+        }
+
+        private void emitGesture(String jsonTemplate, String gesture) {
+            emitEvent(jsonTemplate
+                    + ",\"gesture\":\"" + gesture
+                    + "\",\"timestamp\":\"" + nowIso8601() + "\"}");
+        }
+
+        void shutdown() {
+            executor.shutdownNow();
+            // Emit any pending presses immediately as SINGLE before shutdown
+            for (Map.Entry<String, PendingPress> entry : pending.entrySet()) {
+                entry.getValue().timer.cancel(false);
+                emitGesture(entry.getValue().jsonTemplate, "SINGLE");
+            }
+            pending.clear();
+        }
+    }
+
     public void shutdown() {
+        gestureDetector.shutdown();
         timeoutExecutor.shutdownNow();
         if (transport instanceof AutoCloseable) {
             try {

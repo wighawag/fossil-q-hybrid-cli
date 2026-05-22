@@ -1908,9 +1908,18 @@ public class Main implements Runnable {
     static class MonitorCmd implements Callable<Integer> {
         @ParentCommand Main parent;
 
+        @Option(names = "--gesture-window", paramLabel = "<ms>",
+                description = "Double-press detection window in ms for FORWARD_TO_PHONE buttons (default: 400)")
+        Integer gestureWindowMs;
+
         @Override
         public Integer call() {
             FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+
+            // Configure gesture detection window if specified
+            if (gestureWindowMs != null) {
+                adapter.setGestureWindowMs(gestureWindowMs);
+            }
 
             // Set up NDJSON event output to stdout
             adapter.setOnEventJson(json -> System.out.println(json));
