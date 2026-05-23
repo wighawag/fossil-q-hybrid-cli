@@ -19,7 +19,7 @@ import org.jline.terminal.TerminalBuilder;
 @Command(name = "fossil-q",
         description = "Fossil Q Hybrid CLI for Linux (coin-cell watches: Q Commuter, Q Activist)",
         mixinStandardHelpOptions = true,
-        version = "0.1.0",
+        version = "0.2.0",
         subcommands = {
                 Main.InfoCmd.class,
                 Main.TimeCmd.class,
@@ -44,19 +44,71 @@ import org.jline.terminal.TerminalBuilder;
                 Main.ReadConfigCmd.class,
                 Main.InactivityNudgeCmd.class,
                 Main.HandAnimCmd.class,
+                Main.ConfigCmd.class,
         })
 public class Main implements Runnable {
-    private static final Logger LOG = LoggerFactory.getLogger("fossil-q");
+    private static final Logger LOG;
 
-    @Option(names = {"-d", "--device"}, description = "Watch MAC address (e.g. AA:BB:CC:DD:EE:FF)", scope = ScopeType.INHERIT)
+    // Set log level BEFORE any LoggerFactory.getLogger() call.
+    // slf4j-simple reads the system property once at first logger creation.
+    // We must scan for --verbose in the process args before creating any logger.
+    static {
+        if (System.getProperty("org.slf4j.simpleLogger.defaultLogLevel") == null) {
+            // Check /proc/self/cmdline or ProcessHandle for --verbose
+            boolean verbose = false;
+            try {
+                String cmdline = java.nio.file.Files.readString(java.nio.file.Path.of("/proc/self/cmdline"));
+                verbose = cmdline.contains("--verbose");
+            } catch (Exception ignored) {
+                // Fallback: check sun.java.command property
+                String cmd = System.getProperty("sun.java.command", "");
+                verbose = cmd.contains("--verbose");
+            }
+            System.setProperty("org.slf4j.simpleLogger.defaultLogLevel", verbose ? "info" : "warn");
+        }
+        LOG = LoggerFactory.getLogger("fossil-q");
+    }
+
+    @Option(names = {"-d", "--device"}, description = "Watch MAC address (e.g. AA:BB:CC:DD:EE:FF). " +
+            "Defaults to active device from ~/.config/fossil-q/config.json", scope = ScopeType.INHERIT)
     String macAddress;
 
     @Option(names = {"--subprocess"}, description = "Use subprocess-based BLE transport (bluetoothctl/busctl/gdbus) instead of dbus-java", scope = ScopeType.INHERIT)
     boolean useSubprocess;
 
+    @Option(names = {"--verbose"}, description = "Show verbose log output (connection progress, BLE details)", scope = ScopeType.INHERIT)
+    boolean verbose;
+
+    @Option(names = {"--json"}, description = "Machine-readable JSON output", scope = ScopeType.INHERIT)
+    boolean jsonOutput;
+
     @Override
     public void run() {
         CommandLine.usage(this, System.out);
+    }
+
+    /**
+     * Resolve the MAC address: explicit -d flag > global config activeDevice.
+     * Returns null if neither is set.
+     */
+    String resolvedMac() {
+        if (macAddress != null && !macAddress.isBlank()) {
+            return macAddress;
+        }
+        GlobalConfig global = GlobalConfig.load();
+        return global.getActiveDevice();
+    }
+
+    /**
+     * Resolve MAC, printing an error and exiting if not available.
+     */
+    String requireMac() {
+        String mac = resolvedMac();
+        if (mac == null || mac.isBlank()) {
+            System.err.println("Error: No device specified. Use -d <MAC> or set active device with: fossil-q config set-device <MAC>");
+            System.exit(1);
+        }
+        return mac;
     }
 
     public static void main(String[] args) {
@@ -81,7 +133,7 @@ public class Main implements Runnable {
      */
     static FossilQAdapter connectAndInit(String mac, boolean useSubprocess, boolean fullInit) {
         if (mac == null || mac.isBlank()) {
-            System.err.println("Error: --device <MAC> is required");
+            System.err.println("Error: No device specified. Use -d <MAC> or set active device with: fossil-q config set-device <MAC>");
             System.exit(1);
         }
 
@@ -120,10 +172,7 @@ public class Main implements Runnable {
 
         @Override
         public Integer call() {
-            if (parent.macAddress == null || parent.macAddress.isBlank()) {
-                System.err.println("Error: --device <MAC> is required");
-                return 1;
-            }
+            String mac = parent.requireMac();
 
             BleTransport transport;
             if (parent.useSubprocess) {
@@ -131,7 +180,7 @@ public class Main implements Runnable {
             } else {
                 transport = new DbusTransport();
             }
-            if (!transport.connect(parent.macAddress)) {
+            if (!transport.connect(mac)) {
                 System.err.println("Failed to connect");
                 return 1;
             }
@@ -146,10 +195,17 @@ public class Main implements Runnable {
             // Extra delay for any in-flight file operations to complete
             sleep(3000);
 
-            System.out.println("Model:    " + adapter.getModelNumber());
-            System.out.println("Firmware: " + adapter.getFirmwareVersion());
-            System.out.println("Battery:  " + adapter.getBatteryLevel() + "%");
-            System.out.println("Protocol: " + (adapter.isFossilProtocol() ? "Fossil (2.x)" : "Misfit (0.x/1.x)"));
+            if (parent.jsonOutput) {
+                System.out.printf("{\"model\":\"%s\",\"firmware\":\"%s\",\"battery\":%d,\"protocol\":\"%s\"}%n",
+                        adapter.getModelNumber(), adapter.getFirmwareVersion(),
+                        adapter.getBatteryLevel(),
+                        adapter.isFossilProtocol() ? "fossil" : "misfit");
+            } else {
+                System.out.println("Model:    " + adapter.getModelNumber());
+                System.out.println("Firmware: " + adapter.getFirmwareVersion());
+                System.out.println("Battery:  " + adapter.getBatteryLevel() + "%");
+                System.out.println("Protocol: " + (adapter.isFossilProtocol() ? "Fossil (2.x)" : "Misfit (0.x/1.x)"));
+            }
 
             adapter.shutdown();
             try { ((AutoCloseable) transport).close(); } catch (Exception e) { /* ignore */ }
@@ -163,7 +219,8 @@ public class Main implements Runnable {
 
         @Override
         public Integer call() {
-            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+            String mac = parent.requireMac();
+            FossilQAdapter adapter = connectAndInit(mac, parent.useSubprocess);
             adapter.syncTime();
             System.out.println("Time synced");
             adapter.shutdown();
@@ -331,7 +388,8 @@ public class Main implements Runnable {
         public Integer call() {
             // --- Mode 1: Trigger a configured notification type by name/index ---
             if (typeOrVibration != null && vibePattern == null && position == null && !direct) {
-                NotificationConfig config = NotificationConfig.load();
+                String mac = parent.resolvedMac();
+                NotificationConfig config = (mac != null) ? NotificationConfig.load(mac) : NotificationConfig.load();
                 NotificationConfig.NotifType type = config.resolve(typeOrVibration);
                 if (type != null) {
                     return triggerConfigured(type, config);
@@ -363,7 +421,7 @@ public class Main implements Runnable {
                     hDeg = (short) pos[0];
                     mDeg = (short) pos[1];
                 }
-                FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+                FossilQAdapter adapter = connectAndInit(parent.requireMac(), parent.useSubprocess);
                 sleep(500);
                 String patternName = VIBE_PATTERN_NAMES[pattern];
                 adapter.playNotificationWithPattern((byte) pattern, hDeg, mDeg);
@@ -377,7 +435,7 @@ public class Main implements Runnable {
             // --- Mode 3: Direct misfit-style ---
             if (direct) {
                 VibrationType vt = parseVibrationType(typeOrVibration);
-                FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+                FossilQAdapter adapter = connectAndInit(parent.requireMac(), parent.useSubprocess);
                 sleep(500);
                 adapter.playMisfitNotification(vt, hourDeg, minDeg);
                 System.out.println("Direct notification sent: " + vt);
@@ -388,7 +446,7 @@ public class Main implements Runnable {
 
             // --- Mode 4: Legacy (bare VibrationType name, no --vibe/--position) ---
             VibrationType vt = parseVibrationType(typeOrVibration);
-            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+            FossilQAdapter adapter = connectAndInit(parent.requireMac(), parent.useSubprocess);
             sleep(500);
             adapter.playNotification(vt, -1, -1);
             System.out.println("Notification sent: " + vt);
@@ -399,7 +457,7 @@ public class Main implements Runnable {
 
         /** Trigger a configured notification type. Uploads all filters, then plays the specific one. */
         private int triggerConfigured(NotificationConfig.NotifType type, NotificationConfig config) {
-            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+            FossilQAdapter adapter = connectAndInit(parent.requireMac(), parent.useSubprocess);
             sleep(500);
 
             // Upload all configured filters (so the watch knows about all types)
@@ -448,7 +506,7 @@ public class Main implements Runnable {
                 return 1;
             }
 
-            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+            FossilQAdapter adapter = connectAndInit(parent.requireMac(), parent.useSubprocess);
             // Wait for init to fully complete
             sleep(5000);
 
@@ -502,7 +560,7 @@ public class Main implements Runnable {
                 return 1;
             }
 
-            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+            FossilQAdapter adapter = connectAndInit(parent.requireMac(), parent.useSubprocess);
             sleep(5000);
 
             if (positions != null) {
@@ -565,7 +623,7 @@ public class Main implements Runnable {
 
         @Override
         public Integer call() {
-            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+            FossilQAdapter adapter = connectAndInit(parent.requireMac(), parent.useSubprocess);
             if (stop) {
                 adapter.stopFindDevice();
                 System.out.println("Stopped vibration");
@@ -598,7 +656,7 @@ public class Main implements Runnable {
 
         @Override
         public Integer call() {
-            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+            FossilQAdapter adapter = connectAndInit(parent.requireMac(), parent.useSubprocess);
             adapter.requestHandsControl();
             sleep(200);
             adapter.setHands(hourDeg, minDeg, subDeg);
@@ -619,7 +677,7 @@ public class Main implements Runnable {
 
         @Override
         public Integer call() {
-            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+            FossilQAdapter adapter = connectAndInit(parent.requireMac(), parent.useSubprocess);
 
             // Track hand positions (degrees, 0-359)
             int hourDeg = 0, minDeg = 0, subDeg = 0;
@@ -758,7 +816,7 @@ public class Main implements Runnable {
 
         @Override
         public Integer call() {
-            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+            FossilQAdapter adapter = connectAndInit(parent.requireMac(), parent.useSubprocess);
             adapter.setStepGoal(steps);
             System.out.println("Step goal set to " + steps);
             sleep(1000);
@@ -777,7 +835,7 @@ public class Main implements Runnable {
 
         @Override
         public Integer call() {
-            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+            FossilQAdapter adapter = connectAndInit(parent.requireMac(), parent.useSubprocess);
 
             var future = new java.util.concurrent.CompletableFuture<Integer>();
             adapter.getStepCount(future);
@@ -822,7 +880,7 @@ public class Main implements Runnable {
                 return 1;
             }
 
-            FossilQAdapter adapter = connectAndInit(stepCountParent.parent.macAddress, stepCountParent.parent.useSubprocess);
+            FossilQAdapter adapter = connectAndInit(stepCountParent.parent.requireMac(), stepCountParent.parent.useSubprocess);
             adapter.setStepCount(steps);
             System.out.println("Step count set to " + steps);
             sleep(1000);
@@ -840,7 +898,7 @@ public class Main implements Runnable {
 
         @Override
         public Integer call() {
-            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+            FossilQAdapter adapter = connectAndInit(parent.requireMac(), parent.useSubprocess);
             adapter.setVibrationStrength((short) Math.min(100, Math.max(0, strength)));
             System.out.println("Vibration strength set to " + strength);
             sleep(1000);
@@ -858,7 +916,7 @@ public class Main implements Runnable {
 
         @Override
         public Integer call() {
-            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+            FossilQAdapter adapter = connectAndInit(parent.requireMac(), parent.useSubprocess);
             adapter.setTimezoneOffset(offsetMinutes);
             System.out.printf("Timezone offset set to %d minutes (%+.1f hours)%n",
                     offsetMinutes, offsetMinutes / 60.0);
@@ -928,7 +986,7 @@ public class Main implements Runnable {
                 }
             }
 
-            FossilQAdapter adapter = connectAndInit(alarmParent.parent.macAddress, alarmParent.parent.useSubprocess);
+            FossilQAdapter adapter = connectAndInit(alarmParent.parent.requireMac(), alarmParent.parent.useSubprocess);
 
             var result = new java.util.concurrent.CompletableFuture<Boolean>();
             adapter.setAlarmsWithResult(alarms, result);
@@ -1028,7 +1086,7 @@ public class Main implements Runnable {
                     (byte) hour
             };
 
-            FossilQAdapter adapter = connectAndInit(alarmParent.parent.macAddress, alarmParent.parent.useSubprocess);
+            FossilQAdapter adapter = connectAndInit(alarmParent.parent.requireMac(), alarmParent.parent.useSubprocess);
 
             var result = new java.util.concurrent.CompletableFuture<Boolean>();
             adapter.setAlarmsRaw(rawAlarm, result);
@@ -1155,7 +1213,7 @@ public class Main implements Runnable {
 
         @Override
         public Integer call() {
-            FossilQAdapter adapter = connectAndInit(alarmParent.parent.macAddress, alarmParent.parent.useSubprocess);
+            FossilQAdapter adapter = connectAndInit(alarmParent.parent.requireMac(), alarmParent.parent.useSubprocess);
 
             var future = new java.util.concurrent.CompletableFuture<Alarm[]>();
             adapter.getAlarms(future);
@@ -1193,7 +1251,7 @@ public class Main implements Runnable {
 
         @Override
         public Integer call() {
-            FossilQAdapter adapter = connectAndInit(alarmParent.parent.macAddress, alarmParent.parent.useSubprocess);
+            FossilQAdapter adapter = connectAndInit(alarmParent.parent.requireMac(), alarmParent.parent.useSubprocess);
 
             var result = new java.util.concurrent.CompletableFuture<Boolean>();
             adapter.clearAlarms(result);
@@ -1265,7 +1323,7 @@ public class Main implements Runnable {
                     count, startHour, startMinute);
             System.out.printf("File size: %d bytes (%d alarms × 3 bytes)%n", count * 3, count);
 
-            FossilQAdapter adapter = connectAndInit(alarmParent.parent.macAddress, alarmParent.parent.useSubprocess);
+            FossilQAdapter adapter = connectAndInit(alarmParent.parent.requireMac(), alarmParent.parent.useSubprocess);
 
             var result = new java.util.concurrent.CompletableFuture<Boolean>();
             adapter.setAlarmsWithResult(alarms, result);
@@ -1324,7 +1382,7 @@ public class Main implements Runnable {
                         i / 3, b0 & 0xFF, b1 & 0xFF, b2 & 0xFF, hour, minute, days, dayMarker ? 1 : 0, repeat);
             }
 
-            FossilQAdapter adapter = connectAndInit(alarmParent.parent.macAddress, alarmParent.parent.useSubprocess);
+            FossilQAdapter adapter = connectAndInit(alarmParent.parent.requireMac(), alarmParent.parent.useSubprocess);
 
             var result = new java.util.concurrent.CompletableFuture<Boolean>();
             adapter.setAlarmsRaw(data, result);
@@ -1351,12 +1409,13 @@ public class Main implements Runnable {
 
         @Override
         public Integer call() {
-            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+            String mac = parent.requireMac();
+            FossilQAdapter adapter = connectAndInit(mac, parent.useSubprocess);
             System.out.println("Initiating BLE pairing...");
             boolean ok = adapter.getTransport().pair();
             if (ok) {
                 System.out.println("Pairing successful — auth state is now tied to BLE bond");
-                System.out.println("To clear auth: bluetoothctl remove " + parent.macAddress);
+                System.out.println("To clear auth: bluetoothctl remove " + mac);
             } else {
                 System.out.println("Pairing failed or already paired");
             }
@@ -1393,7 +1452,7 @@ public class Main implements Runnable {
                 }
             }
 
-            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+            FossilQAdapter adapter = connectAndInit(parent.requireMac(), parent.useSubprocess);
             adapter.setSecondTimezone(minutes);
             if (minutes == 1024) {
                 System.out.println("Second timezone disabled");
@@ -1428,7 +1487,7 @@ public class Main implements Runnable {
                 return 1;
             }
 
-            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+            FossilQAdapter adapter = connectAndInit(parent.requireMac(), parent.useSubprocess);
             adapter.setGoalConfig(target, current);
             System.out.printf("Goal config set: target=%d, current=%d%n", target, current);
             sleep(1000);
@@ -1447,7 +1506,7 @@ public class Main implements Runnable {
 
         @Override
         public Integer call() {
-            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+            FossilQAdapter adapter = connectAndInit(parent.requireMac(), parent.useSubprocess);
 
             var future = new java.util.concurrent.CompletableFuture<java.util.List<FossilQAdapter.ConfigEntry>>();
             adapter.readConfig(future);
@@ -1548,7 +1607,7 @@ public class Main implements Runnable {
                 toH = toParsed[0]; toM = toParsed[1];
             }
 
-            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+            FossilQAdapter adapter = connectAndInit(parent.requireMac(), parent.useSubprocess);
             adapter.setInactivityNudge(fromH, fromM, toH, toM, nudgeMinutes, enabled);
 
             if (enabled) {
@@ -1580,7 +1639,7 @@ public class Main implements Runnable {
 
     @Command(name = "notify-config", mixinStandardHelpOptions = true,
              description = "Configure notification types (name → hand position + vibration pattern). " +
-                     "Stored in ~/.config/fossil-q/notifications.json")
+                     "Stored per-device in ~/.config/fossil-q/devices/<MAC>/notifications.json")
     static class NotifyConfigCmd implements Callable<Integer> {
         @ParentCommand Main parent;
 
@@ -1607,12 +1666,15 @@ public class Main implements Runnable {
 
         @Override
         public Integer call() {
-            NotificationConfig config = NotificationConfig.load();
+            String mac = parent.resolvedMac();
+            NotificationConfig config = (mac != null) ? NotificationConfig.load(mac) : NotificationConfig.load();
 
             if (removeName != null) {
                 if (config.remove(removeName)) {
                     System.out.println("Removed: " + removeName);
-                    try { config.save(); } catch (Exception e) {
+                    try {
+                        if (mac != null) config.save(mac); else config.save();
+                    } catch (Exception e) {
                         System.err.println("Error saving config: " + e.getMessage());
                         return 1;
                     }
@@ -1644,7 +1706,9 @@ public class Main implements Runnable {
                 var type = new NotificationConfig.NotifType(addName, pos[0], pos[1], vibeNum);
                 config.addOrUpdate(type);
                 System.out.println("Added/updated: " + type);
-                try { config.save(); } catch (Exception e) {
+                try {
+                    if (mac != null) config.save(mac); else config.save();
+                } catch (Exception e) {
                     System.err.println("Error saving config: " + e.getMessage());
                     return 1;
                 }
@@ -1653,7 +1717,7 @@ public class Main implements Runnable {
             }
 
             if (interactive) {
-                return runInteractive(config);
+                return runInteractive(config, mac);
             }
 
             if (sync) {
@@ -1661,7 +1725,7 @@ public class Main implements Runnable {
                     System.err.println("No notification types configured. Use --add or --interactive first.");
                     return 1;
                 }
-                FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+                FossilQAdapter adapter = connectAndInit(parent.requireMac(), parent.useSubprocess);
                 sleep(3000);
                 adapter.uploadNotificationFilter(config);
                 System.out.printf("Uploaded %d notification type(s) to watch.%n", config.getTypes().size());
@@ -1672,7 +1736,11 @@ public class Main implements Runnable {
 
             // Default: list
             printTypes(config);
-            System.out.println("\nConfig file: " + NotificationConfig.configPath());
+            if (mac != null) {
+                System.out.println("\nConfig file: " + NotificationConfig.configPath(mac));
+            } else {
+                System.out.println("\nConfig file: " + NotificationConfig.legacyConfigPath() + " (no active device set)");
+            }
             System.out.println("\nUsage:");
             System.out.println("  notify-config --add phone --position 2:00 --vibe call");
             System.out.println("  notify-config --add email --position 4:00 --vibe email");
@@ -1695,7 +1763,7 @@ public class Main implements Runnable {
             }
         }
 
-        private int runInteractive(NotificationConfig config) {
+        private int runInteractive(NotificationConfig config, String mac) {
             Terminal terminal = null;
             try {
                 terminal = TerminalBuilder.builder()
@@ -1772,8 +1840,8 @@ public class Main implements Runnable {
                 }
 
                 try {
-                    config.save();
-                    System.out.println("Saved to " + NotificationConfig.configPath());
+                    if (mac != null) config.save(mac); else config.save();
+                    System.out.println("Saved to " + (mac != null ? NotificationConfig.configPath(mac) : NotificationConfig.legacyConfigPath()));
                 } catch (Exception e) {
                     System.err.println("Error saving: " + e.getMessage());
                     return 1;
@@ -1905,7 +1973,7 @@ public class Main implements Runnable {
             System.out.printf("Command payload: %d bytes%n", commands.length);
             System.out.println("WARNING: This overwrites button config! Use 'buttons' command to restore.");
 
-            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+            FossilQAdapter adapter = connectAndInit(parent.requireMac(), parent.useSubprocess);
             adapter.playHandAnimation(commands);
             sleep(2000);
             adapter.shutdown();
@@ -1939,7 +2007,7 @@ public class Main implements Runnable {
 
             boolean needsMultiEntry = topEntries.length > 1 || midEntries.length > 1 || botEntries.length > 1;
 
-            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+            FossilQAdapter adapter = connectAndInit(parent.requireMac(), parent.useSubprocess);
 
             if (needsMultiEntry) {
                 adapter.overwriteButtonsMultiEntry(topEntries, midEntries, botEntries);
@@ -2038,38 +2106,93 @@ public class Main implements Runnable {
                 description = "Double-press detection window in ms for FORWARD_TO_PHONE buttons (default: 400)")
         Integer gestureWindowMs;
 
+        @Option(names = "--no-reconnect",
+                description = "Exit on disconnect instead of auto-reconnecting")
+        boolean noReconnect;
+
+        @Option(names = "--max-reconnect-delay", paramLabel = "<seconds>",
+                description = "Maximum reconnect backoff delay in seconds (default: 60)",
+                defaultValue = "60")
+        int maxReconnectDelay;
+
+        private volatile boolean shuttingDown = false;
+
         @Override
         public Integer call() {
-            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
-
-            // Configure gesture detection window if specified
-            if (gestureWindowMs != null) {
-                adapter.setGestureWindowMs(gestureWindowMs);
-            }
-
-            // Set up NDJSON event output to stdout
-            adapter.setOnEventJson(json -> System.out.println(json));
-
-            System.err.println("Monitoring watch events... (Ctrl+C to stop)");
-            System.err.println("Events will be printed as JSON lines to stdout.");
+            String mac = parent.requireMac();
 
             // Install shutdown hook for graceful cleanup
             Thread mainThread = Thread.currentThread();
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 System.err.println("\nShutting down...");
-                adapter.shutdown();
+                shuttingDown = true;
                 mainThread.interrupt();
             }, "monitor-shutdown"));
 
-            // Block until interrupted (Ctrl+C triggers shutdown hook)
-            try {
-                while (adapter.getTransport().isConnected()) {
-                    Thread.sleep(1000);
+            int reconnectAttempts = 0;
+
+            while (!shuttingDown) {
+                FossilQAdapter adapter = null;
+                try {
+                    if (reconnectAttempts > 0) {
+                        int delaySec = Math.min((int) Math.pow(2, Math.min(reconnectAttempts, 6)), maxReconnectDelay);
+                        System.err.printf("Reconnecting in %ds (attempt %d)...%n", delaySec, reconnectAttempts);
+                        Thread.sleep(delaySec * 1000L);
+                        if (shuttingDown) break;
+                    }
+
+                    adapter = connectAndInit(mac, parent.useSubprocess);
+                    reconnectAttempts = 0; // reset on successful connect
+
+                    // Configure gesture detection window if specified
+                    if (gestureWindowMs != null) {
+                        adapter.setGestureWindowMs(gestureWindowMs);
+                    }
+
+                    // Set up NDJSON event output to stdout
+                    adapter.setOnEventJson(json -> System.out.println(json));
+
+                    if (reconnectAttempts == 0) {
+                        System.err.println("Monitoring watch events... (Ctrl+C to stop)");
+                        System.err.println("Events will be printed as JSON lines to stdout.");
+                    } else {
+                        System.err.println("Reconnected. Resuming event stream.");
+                    }
+
+                    // Block until disconnected or interrupted
+                    while (adapter.getTransport().isConnected() && !shuttingDown) {
+                        Thread.sleep(1000);
+                    }
+
+                    if (shuttingDown) {
+                        adapter.shutdown();
+                        break;
+                    }
+
+                    System.err.println("Watch disconnected.");
+                    adapter.shutdown();
+
+                    if (noReconnect) {
+                        return 0;
+                    }
+
+                    reconnectAttempts++;
+
+                } catch (InterruptedException e) {
+                    // Expected from shutdown hook
+                    Thread.currentThread().interrupt();
+                    if (adapter != null) adapter.shutdown();
+                    break;
+                } catch (Exception e) {
+                    System.err.println("Connection error: " + e.getMessage());
+                    if (adapter != null) {
+                        try { adapter.shutdown(); } catch (Exception ignored) {}
+                    }
+                    if (noReconnect || shuttingDown) {
+                        return 1;
+                    }
+                    reconnectAttempts++;
                 }
-                System.err.println("Watch disconnected.");
-            } catch (InterruptedException e) {
-                // Expected from shutdown hook
-                Thread.currentThread().interrupt();
             }
 
             return 0;
@@ -2097,7 +2220,7 @@ public class Main implements Runnable {
 
         @Override
         public Integer call() {
-            FossilQAdapter adapter = connectAndInit(parent.macAddress, parent.useSubprocess);
+            FossilQAdapter adapter = connectAndInit(parent.requireMac(), parent.useSubprocess);
 
             var future = new java.util.concurrent.CompletableFuture<byte[]>();
             adapter.setOnActivityData(future::complete);
@@ -2168,6 +2291,244 @@ public class Main implements Runnable {
 
             sleep(1000); // let delete complete if queued
             adapter.shutdown();
+            return 0;
+        }
+    }
+
+    // ========== Config command ==========
+
+    @Command(name = "config", mixinStandardHelpOptions = true,
+             description = "Manage CLI configuration (active device, per-watch settings)",
+             subcommands = {
+                     Main.ConfigShowCmd.class,
+                     Main.ConfigSetCmd.class,
+                     Main.ConfigSetDeviceCmd.class,
+                     Main.ConfigListDevicesCmd.class,
+             })
+    static class ConfigCmd implements Runnable {
+        @ParentCommand Main parent;
+
+        @Override
+        public void run() {
+            // Default: show
+            new ConfigShowCmd().parent = this;
+            try {
+                new ConfigShowCmd() {{ parent = ConfigCmd.this; }}.call();
+            } catch (Exception e) {
+                CommandLine.usage(this, System.out);
+            }
+        }
+    }
+
+    @Command(name = "show", description = "Show current configuration")
+    static class ConfigShowCmd implements Callable<Integer> {
+        @ParentCommand ConfigCmd parent;
+
+        @Override
+        public Integer call() {
+            GlobalConfig global = GlobalConfig.load();
+            String activeMac = global.getActiveDevice();
+
+            // If --json flag is set on parent
+            Main main = parent.parent;
+            if (main != null && main.jsonOutput) {
+                StringBuilder json = new StringBuilder();
+                json.append("{\"activeDevice\":");
+                json.append(activeMac != null ? "\"" + activeMac + "\"" : "null");
+                if (activeMac != null) {
+                    DeviceConfig dc = DeviceConfig.load(activeMac);
+                    json.append(",\"device\":{");
+                    json.append("\"mac\":\"").append(activeMac).append("\"");
+                    if (dc.getName() != null) json.append(",\"name\":\"").append(dc.getName()).append("\"");
+                    json.append(",\"stepGoal\":").append(dc.getStepGoal());
+                    json.append(",\"vibrationStrength\":").append(dc.getVibrationStrength());
+                    json.append(",\"secondTimezone\":").append(dc.getSecondTimezone() != null ? dc.getSecondTimezone() : "null");
+                    json.append("}");
+                }
+                json.append("}");
+                System.out.println(json);
+                return 0;
+            }
+
+            System.out.println("Global config: " + GlobalConfig.configPath());
+            System.out.println("Active device: " + (activeMac != null ? activeMac : "(not set)"));
+
+            if (activeMac != null) {
+                DeviceConfig dc = DeviceConfig.load(activeMac);
+                System.out.println();
+                System.out.println(dc);
+                System.out.println("  Config dir:          " + dc.deviceDir());
+
+                NotificationConfig nc = NotificationConfig.load(activeMac);
+                var types = nc.getTypes();
+                System.out.println("  Notification types:  " + types.size());
+                for (int i = 0; i < types.size(); i++) {
+                    System.out.printf("    [%d] %s%n", i + 1, types.get(i));
+                }
+            }
+
+            return 0;
+        }
+    }
+
+    @Command(name = "set", description = "Set a configuration value for the active device")
+    static class ConfigSetCmd implements Callable<Integer> {
+        @ParentCommand ConfigCmd parent;
+
+        @Parameters(index = "0", description = "Setting name: name, step-goal, vibration-strength, second-timezone")
+        String key;
+
+        @Parameters(index = "1", description = "Setting value")
+        String value;
+
+        @Override
+        public Integer call() {
+            String mac = parent.parent.resolvedMac();
+            if (mac == null || mac.isBlank()) {
+                System.err.println("Error: No active device. Use -d <MAC> or: fossil-q config set-device <MAC>");
+                return 1;
+            }
+
+            DeviceConfig dc = DeviceConfig.load(mac);
+            String normalized = key.toLowerCase().replace("-", "_").replace(" ", "_");
+
+            try {
+                switch (normalized) {
+                    case "name" -> {
+                        dc.setName(value);
+                        System.out.println("Name set to: " + value);
+                    }
+                    case "step_goal", "stepgoal", "steps" -> {
+                        int goal = Integer.parseInt(value);
+                        if (goal < 1 || goal > 999999) {
+                            System.err.println("Step goal must be between 1 and 999999");
+                            return 1;
+                        }
+                        dc.setStepGoal(goal);
+                        System.out.println("Step goal set to: " + goal);
+                    }
+                    case "vibration_strength", "vibration", "vibe" -> {
+                        int strength = Integer.parseInt(value);
+                        if (strength < 0 || strength > 100) {
+                            System.err.println("Vibration strength must be 0-100");
+                            return 1;
+                        }
+                        dc.setVibrationStrength(strength);
+                        System.out.println("Vibration strength set to: " + strength + "%");
+                    }
+                    case "second_timezone", "timezone2", "tz2" -> {
+                        if (value.equalsIgnoreCase("off") || value.equalsIgnoreCase("disable") || value.equalsIgnoreCase("null")) {
+                            dc.setSecondTimezone(null);
+                            System.out.println("Second timezone disabled");
+                        } else {
+                            int offset = Integer.parseInt(value);
+                            if (offset < -720 || offset > 840) {
+                                System.err.println("Offset must be -720 to 840 minutes (or 'off')");
+                                return 1;
+                            }
+                            dc.setSecondTimezone(offset);
+                            System.out.printf("Second timezone set to UTC%+.1f (%d min)%n", offset / 60.0, offset);
+                        }
+                    }
+                    default -> {
+                        System.err.println("Unknown setting: " + key);
+                        System.err.println("Available: name, step-goal, vibration-strength, second-timezone");
+                        return 1;
+                    }
+                }
+
+                dc.save();
+            } catch (NumberFormatException e) {
+                System.err.println("Invalid value: " + value);
+                return 1;
+            } catch (java.io.IOException e) {
+                System.err.println("Error saving config: " + e.getMessage());
+                return 1;
+            }
+
+            return 0;
+        }
+    }
+
+    @Command(name = "set-device", description = "Set the active (default) watch MAC address")
+    static class ConfigSetDeviceCmd implements Callable<Integer> {
+        @ParentCommand ConfigCmd parent;
+
+        @Parameters(index = "0", description = "Watch MAC address (e.g. D9:20:71:11:74:2A)")
+        String mac;
+
+        @Override
+        public Integer call() {
+            // Basic MAC validation
+            if (!mac.matches("[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}")) {
+                System.err.println("Invalid MAC address: " + mac);
+                System.err.println("Expected format: AA:BB:CC:DD:EE:FF");
+                return 1;
+            }
+
+            String normalized = mac.toUpperCase();
+            GlobalConfig global = GlobalConfig.load();
+            global.setActiveDevice(normalized);
+            try {
+                global.save();
+            } catch (java.io.IOException e) {
+                System.err.println("Error saving config: " + e.getMessage());
+                return 1;
+            }
+
+            // Ensure device directory exists
+            try {
+                java.nio.file.Files.createDirectories(GlobalConfig.deviceDir(normalized));
+            } catch (java.io.IOException e) {
+                System.err.println("Warning: could not create device directory: " + e.getMessage());
+            }
+
+            System.out.println("Active device set to: " + normalized);
+            System.out.println("Config dir: " + GlobalConfig.deviceDir(normalized));
+            System.out.println("\nThe -d flag is now optional for this watch.");
+            return 0;
+        }
+    }
+
+    @Command(name = "list-devices", description = "List all known device configurations")
+    static class ConfigListDevicesCmd implements Callable<Integer> {
+        @ParentCommand ConfigCmd parent;
+
+        @Override
+        public Integer call() {
+            GlobalConfig global = GlobalConfig.load();
+            String activeMac = global.getActiveDevice();
+
+            java.nio.file.Path devicesDir = GlobalConfig.configDir().resolve("devices");
+            if (!java.nio.file.Files.exists(devicesDir)) {
+                System.out.println("No devices configured.");
+                return 0;
+            }
+
+            try (var dirs = java.nio.file.Files.list(devicesDir)) {
+                var deviceDirs = dirs.filter(java.nio.file.Files::isDirectory).sorted().toList();
+                if (deviceDirs.isEmpty()) {
+                    System.out.println("No devices configured.");
+                    return 0;
+                }
+
+                System.out.println("Known devices:");
+                for (var dir : deviceDirs) {
+                    String folderName = dir.getFileName().toString();
+                    String mac = folderName.replace("_", ":");
+                    boolean isActive = mac.equalsIgnoreCase(activeMac);
+                    DeviceConfig dc = DeviceConfig.load(mac);
+                    String label = dc.getName() != null ? dc.getName() : "";
+                    System.out.printf("  %s %s%s%n",
+                            isActive ? "*" : " ",
+                            mac,
+                            label.isEmpty() ? "" : " (" + label + ")");
+                }
+            } catch (java.io.IOException e) {
+                System.err.println("Error listing devices: " + e.getMessage());
+                return 1;
+            }
+
             return 0;
         }
     }

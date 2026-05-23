@@ -1535,18 +1535,29 @@ public class FossilQAdapter {
     }
 
     private void syncConfiguration() {
-        int stepGoal = 10000; // default
-        byte vibrationStrength = 100;
+        // Load per-device config (step goal, vibration strength, second timezone)
+        String mac = transport.getConnectedMac();
+        DeviceConfig deviceConfig = (mac != null) ? DeviceConfig.load(mac) : new DeviceConfig("");
+        int stepGoal = deviceConfig.getStepGoal();
+        byte vibrationStrength = (byte) deviceConfig.getVibrationStrength();
 
         // Do NOT send TimezoneOffsetConfigItem (0x0011) here — that's the SECOND
         // timezone, not primary. The watch gets primary TZ from TimeConfigItem
         // (0x000C) offset field. Sending 0x0011 overwrites the user's second
         // timezone setting. See FINDINGS.md #21a.
-        queueWrite(new ConfigurationPutRequest(new ConfigurationPutRequest.ConfigItem[]{
-                new ConfigurationPutRequest.DailyStepGoalConfigItem(stepGoal),
-                new ConfigurationPutRequest.VibrationStrengthConfigItem(vibrationStrength),
-                generateTimeConfigItem()
-        }, shimAdapter), false);
+        java.util.List<ConfigurationPutRequest.ConfigItem> items = new java.util.ArrayList<>();
+        items.add(new ConfigurationPutRequest.DailyStepGoalConfigItem(stepGoal));
+        items.add(new ConfigurationPutRequest.VibrationStrengthConfigItem(vibrationStrength));
+        items.add(generateTimeConfigItem());
+
+        // Sync second timezone if configured
+        Integer secondTz = deviceConfig.getSecondTimezone();
+        if (secondTz != null) {
+            items.add(new ConfigurationPutRequest.TimezoneOffsetConfigItem(secondTz.shortValue()));
+        }
+
+        queueWrite(new ConfigurationPutRequest(
+                items.toArray(new ConfigurationPutRequest.ConfigItem[0]), shimAdapter), false);
 
         // NOTE: Do NOT overwrite button settings during init.
         // The watch persists button config across connections. Overwriting
@@ -1628,8 +1639,9 @@ public class FossilQAdapter {
 
     private void syncNotificationSettings() {
         LOG.info("Syncing notification filter...");
-        // Load notification config from disk (or defaults)
-        NotificationConfig config = NotificationConfig.load();
+        // Load notification config from disk (device-specific or defaults)
+        String mac = transport.getConnectedMac();
+        NotificationConfig config = (mac != null) ? NotificationConfig.load(mac) : NotificationConfig.load();
         uploadNotificationFilter(config);
     }
 

@@ -690,6 +690,11 @@ public class DbusTransport implements BleTransport, AutoCloseable {
     }
 
     @Override
+    public String getConnectedMac() {
+        return macAddress;
+    }
+
+    @Override
     public void writeCharacteristic(UUID uuid, byte[] data) {
         BluetoothGattCharacteristic ch = characteristics.get(uuid);
         if (ch == null) {

@@ -6,6 +6,7 @@ import org.slf4j.LoggerFactory;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
+import java.nio.file.StandardCopyOption;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -28,7 +29,6 @@ import java.util.stream.Collectors;
  */
 public class NotificationConfig {
     private static final Logger LOG = LoggerFactory.getLogger(NotificationConfig.class);
-    private static final String CONFIG_DIR = ".config/fossil-q";
     private static final String CONFIG_FILE = "notifications.json";
 
     private final List<NotifType> types = new ArrayList<>();
@@ -102,44 +102,115 @@ public class NotificationConfig {
 
     // ========== Persistence ==========
 
-    public static Path configPath() {
-        String home = System.getProperty("user.home");
-        return Path.of(home, CONFIG_DIR, CONFIG_FILE);
+    /** Legacy global config path (pre-multi-watch). */
+    public static Path legacyConfigPath() {
+        return GlobalConfig.configDir().resolve(CONFIG_FILE);
+    }
+
+    /** Per-device config path. */
+    public static Path configPath(String mac) {
+        return GlobalConfig.deviceDir(mac).resolve(CONFIG_FILE);
     }
 
     /**
-     * Load config from disk. Returns a config with defaults if file doesn't exist.
+     * Load config from disk for a specific device.
+     * Migration: if the per-device file doesn't exist but the legacy global file does,
+     * copy it into the device folder and rename the old file.
+     * Falls back to defaults if neither exists.
      */
-    public static NotificationConfig load() {
-        Path path = configPath();
+    public static NotificationConfig load(String mac) {
+        Path devicePath = configPath(mac);
+        Path legacyPath = legacyConfigPath();
         NotificationConfig config = new NotificationConfig();
 
-        if (!Files.exists(path)) {
-            LOG.debug("No notification config at {} — using defaults", path);
-            config.addDefaults();
-            return config;
+        // Try device-specific file first
+        if (Files.exists(devicePath)) {
+            try {
+                String json = Files.readString(devicePath, StandardCharsets.UTF_8);
+                config.parseJson(json);
+                LOG.debug("Loaded {} notification type(s) from {}", config.types.size(), devicePath);
+                return config;
+            } catch (Exception e) {
+                LOG.warn("Failed to load notification config from {}: {} — trying legacy", devicePath, e.getMessage());
+                config.types.clear();
+            }
         }
 
-        try {
-            String json = Files.readString(path, StandardCharsets.UTF_8);
-            config.parseJson(json);
-            LOG.info("Loaded {} notification type(s) from {}", config.types.size(), path);
-        } catch (Exception e) {
-            LOG.warn("Failed to load notification config from {}: {} — using defaults", path, e.getMessage());
-            config.types.clear();
-            config.addDefaults();
+        // Try legacy global file and migrate
+        if (Files.exists(legacyPath)) {
+            try {
+                String json = Files.readString(legacyPath, StandardCharsets.UTF_8);
+                config.parseJson(json);
+                LOG.info("Migrating legacy notification config to device folder for {}", mac);
+                // Save to device folder
+                config.save(mac);
+                // Rename legacy file so we don't migrate again
+                Path backupPath = legacyPath.resolveSibling(CONFIG_FILE + ".migrated");
+                Files.move(legacyPath, backupPath, StandardCopyOption.REPLACE_EXISTING);
+                LOG.info("Legacy config migrated to {} (old file renamed to {})",
+                        devicePath, backupPath.getFileName());
+                return config;
+            } catch (Exception e) {
+                LOG.warn("Failed to migrate legacy notification config: {}", e.getMessage());
+                config.types.clear();
+            }
         }
+
+        // No config found — use defaults
+        LOG.debug("No notification config found for {} — using defaults", mac);
+        config.addDefaults();
         return config;
     }
 
     /**
-     * Save config to disk.
+     * Load config without a device context (legacy behavior, used for notify-config list).
+     * Tries active device from global config, then legacy path, then defaults.
      */
-    public void save() throws IOException {
-        Path path = configPath();
+    public static NotificationConfig load() {
+        GlobalConfig global = GlobalConfig.load();
+        if (global.getActiveDevice() != null) {
+            return load(global.getActiveDevice());
+        }
+        // No active device — try legacy path
+        Path legacyPath = legacyConfigPath();
+        NotificationConfig config = new NotificationConfig();
+        if (Files.exists(legacyPath)) {
+            try {
+                String json = Files.readString(legacyPath, StandardCharsets.UTF_8);
+                config.parseJson(json);
+                return config;
+            } catch (Exception e) {
+                LOG.warn("Failed to load legacy notification config: {}", e.getMessage());
+            }
+        }
+        config.addDefaults();
+        return config;
+    }
+
+    /**
+     * Save config to device-specific path.
+     */
+    public void save(String mac) throws IOException {
+        Path path = configPath(mac);
         Files.createDirectories(path.getParent());
         Files.writeString(path, toJson(), StandardCharsets.UTF_8);
-        LOG.info("Saved {} notification type(s) to {}", types.size(), path);
+        LOG.debug("Saved {} notification type(s) to {}", types.size(), path);
+    }
+
+    /**
+     * Save config (legacy — uses active device from global config).
+     */
+    public void save() throws IOException {
+        GlobalConfig global = GlobalConfig.load();
+        if (global.getActiveDevice() != null) {
+            save(global.getActiveDevice());
+        } else {
+            // Fallback: save to legacy location
+            Path path = legacyConfigPath();
+            Files.createDirectories(path.getParent());
+            Files.writeString(path, toJson(), StandardCharsets.UTF_8);
+            LOG.debug("Saved {} notification type(s) to {} (legacy)", types.size(), path);
+        }
     }
 
     private void addDefaults() {

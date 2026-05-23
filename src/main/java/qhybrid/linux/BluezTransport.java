@@ -167,6 +167,11 @@ public class BluezTransport implements BleTransport, AutoCloseable {
     }
 
     @Override
+    public String getConnectedMac() {
+        return macAddress;
+    }
+
+    @Override
     public void writeCharacteristic(UUID uuid, byte[] data) {
         String path = charPaths.get(uuid);
         if (path == null) {

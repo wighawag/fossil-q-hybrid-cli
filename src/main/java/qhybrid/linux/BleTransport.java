@@ -12,6 +12,9 @@ public interface BleTransport {
     void disconnect();
     boolean isConnected();
 
+    /** Return the MAC address of the currently connected device, or null. */
+    String getConnectedMac();
+
     void writeCharacteristic(UUID uuid, byte[] data);
 
     /**
