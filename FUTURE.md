@@ -24,4 +24,14 @@ But it also need to have the following:
    this would read all the calendar events in the next 7 days and set them as alarms (the next 16 available) using specific weekday they will happen (but non-repeating using the undocumented trick)
    This should be synced regularly, so that teh user need to be in touch with the phone at least once a week
 
-6. other features ...
+6. nudge setting
+
+7. buttons mapping
+
+8. setting step goal on the watch, reading step to check progress
+
+9. setting custom goal on the app, reading from watch to check progress
+
+10. other goal ? sleeping, calories, moves ?
+
+11. more...

@@ -721,10 +721,24 @@ public class DbusTransport implements BleTransport, AutoCloseable {
                     LOG.error("Write failed (both types) for UUID {}: {}", uuid, e2.getMessage());
                 }
             } else {
-                LOG.error("Write failed for UUID {}: {}", uuid, e.getMessage());
+                LOG.warn("Write failed for UUID {}: {}", uuid, e.getMessage());
             }
         } catch (Exception e) {
-            LOG.error("Write failed for UUID {}: {}", uuid, e.getMessage());
+            // "Operation is not supported" on indicate chars is common on Fossil watches
+            // (firmware rejects write-with-response on some chars). Often harmless.
+            if (e.getMessage() != null && e.getMessage().contains("not supported") && "request".equals(writeType)) {
+                LOG.debug("Write-not-supported for {}, retrying as command", uuid);
+                options.put("type", "command");
+                try {
+                    ch.writeValue(data, options);
+                    LOG.trace("Write {} bytes to {} (fallback command)", data.length, uuid.toString().substring(4, 8));
+                    return;
+                } catch (Exception e2) {
+                    LOG.warn("Write failed (both types) for UUID {}: {}", uuid, e2.getMessage());
+                    return;
+                }
+            }
+            LOG.warn("Write failed for UUID {}: {}", uuid, e.getMessage());
         }
     }
 

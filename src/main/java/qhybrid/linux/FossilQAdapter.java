@@ -1451,7 +1451,7 @@ public class FossilQAdapter {
 
         // Parse response: expect 03 07 XX (or just 03 07 for status=0x00)
         if (statusResponse.length < 2 || statusResponse[0] != 0x03 || statusResponse[1] != 0x07) {
-            LOG.warn("Unexpected auth status response: {} — skipping auth", bytesToHex(statusResponse));
+            LOG.info("Unexpected auth status response: {} — skipping auth", bytesToHex(statusResponse));
             return;
         }
 
@@ -1556,8 +1556,30 @@ public class FossilQAdapter {
             items.add(new ConfigurationPutRequest.TimezoneOffsetConfigItem(secondTz.shortValue()));
         }
 
+        LOG.info("Syncing config: stepGoal={}, vibeStrength={}, secondTz={}",
+                stepGoal, vibrationStrength & 0xFF,
+                secondTz != null ? secondTz : "disabled");
         queueWrite(new ConfigurationPutRequest(
-                items.toArray(new ConfigurationPutRequest.ConfigItem[0]), shimAdapter), false);
+                items.toArray(new ConfigurationPutRequest.ConfigItem[0]), shimAdapter) {
+            @Override
+            public void onFilePut(boolean success) {
+                LOG.info("Config sync (stepGoal={}, vibeStrength={}): {}",
+                        stepGoal, vibrationStrength & 0xFF,
+                        success ? "success" : "FAILED");
+                if (success && mac != null) {
+                    try {
+                        DeviceConfig dc = DeviceConfig.load(mac);
+                        if (dc.isSyncNeeded()) {
+                            dc.setSyncNeeded(false);
+                            dc.save();
+                            LOG.info("Cleared syncNeeded flag for {}", mac);
+                        }
+                    } catch (Exception e) {
+                        LOG.warn("Failed to clear syncNeeded: {}", e.getMessage());
+                    }
+                }
+            }
+        }, false);
 
         // NOTE: Do NOT overwrite button settings during init.
         // The watch persists button config across connections. Overwriting
@@ -2314,6 +2336,10 @@ public class FossilQAdapter {
     public void shutdown() {
         gestureDetector.shutdown();
         timeoutExecutor.shutdownNow();
+        if (transport.isConnected()) {
+            System.err.print("Disconnecting...");
+            System.err.flush();
+        }
         if (transport instanceof AutoCloseable) {
             try {
                 ((AutoCloseable) transport).close();
@@ -2321,5 +2347,6 @@ public class FossilQAdapter {
                 LOG.debug("Error closing transport", e);
             }
         }
+        System.err.println(" done.");
     }
 }

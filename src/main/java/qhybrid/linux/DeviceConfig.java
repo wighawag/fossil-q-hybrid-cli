@@ -34,6 +34,7 @@ public class DeviceConfig {
     private int stepGoal = 10000;
     private int vibrationStrength = 100;
     private Integer secondTimezone; // null = disabled, otherwise offset in minutes
+    private boolean syncNeeded; // true = config changed but not yet pushed to watch
 
     public DeviceConfig(String mac) {
         this.mac = mac;
@@ -50,6 +51,8 @@ public class DeviceConfig {
     public void setVibrationStrength(int vibrationStrength) { this.vibrationStrength = vibrationStrength; }
     public Integer getSecondTimezone() { return secondTimezone; }
     public void setSecondTimezone(Integer secondTimezone) { this.secondTimezone = secondTimezone; }
+    public boolean isSyncNeeded() { return syncNeeded; }
+    public void setSyncNeeded(boolean syncNeeded) { this.syncNeeded = syncNeeded; }
 
     // ========== Paths ==========
 
@@ -103,6 +106,7 @@ public class DeviceConfig {
         if (n != null) this.name = n;
         this.stepGoal = extractInt(json, "stepGoal", 10000);
         this.vibrationStrength = extractInt(json, "vibrationStrength", 100);
+        this.syncNeeded = extractBoolean(json, "syncNeeded", false);
 
         // secondTimezone: null means disabled
         String tzStr = extractRawValue(json, "secondTimezone");
@@ -121,7 +125,8 @@ public class DeviceConfig {
         sb.append(String.format("  \"name\": %s,\n", name != null ? "\"" + escapeJson(name) + "\"" : "null"));
         sb.append(String.format("  \"stepGoal\": %d,\n", stepGoal));
         sb.append(String.format("  \"vibrationStrength\": %d,\n", vibrationStrength));
-        sb.append(String.format("  \"secondTimezone\": %s\n", secondTimezone != null ? secondTimezone.toString() : "null"));
+        sb.append(String.format("  \"secondTimezone\": %s,\n", secondTimezone != null ? secondTimezone.toString() : "null"));
+        sb.append(String.format("  \"syncNeeded\": %s\n", syncNeeded));
         sb.append("}\n");
         return sb.toString();
     }
@@ -137,6 +142,9 @@ public class DeviceConfig {
             sb.append(String.format("\n  Second timezone:     UTC%+.1f (%d min)", secondTimezone / 60.0, secondTimezone));
         } else {
             sb.append("\n  Second timezone:     disabled");
+        }
+        if (syncNeeded) {
+            sb.append("\n  Sync needed:         YES (run 'fossil-q config sync' to push to watch)");
         }
         return sb.toString();
     }
@@ -168,6 +176,12 @@ public class DeviceConfig {
         } catch (NumberFormatException e) {
             return defaultValue;
         }
+    }
+
+    private static boolean extractBoolean(String json, String key, boolean defaultValue) {
+        String raw = extractRawValue(json, key);
+        if (raw == null || raw.equals("null")) return defaultValue;
+        return raw.trim().equals("true");
     }
 
     private static String extractRawValue(String json, String key) {

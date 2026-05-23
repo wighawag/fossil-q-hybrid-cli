@@ -45,6 +45,15 @@ import org.jline.terminal.TerminalBuilder;
                 Main.InactivityNudgeCmd.class,
                 Main.HandAnimCmd.class,
                 Main.ConfigCmd.class,
+        },
+        footer = {
+                "",
+                "Commands that connect to the watch: info, time, notify, notify-test, position-test,",
+                "  find, hands, calibrate, step-goal, step-count, vibration, timezone, alarm,",
+                "  activity, pair, monitor, buttons, second-timezone, goal-config, read-config,",
+                "  inactivity-nudge, hand-anim, notify-config --sync, config sync",
+                "",
+                "Local-only commands: config, notify-config (without --sync)",
         })
 public class Main implements Runnable {
     private static final Logger LOG;
@@ -137,6 +146,10 @@ public class Main implements Runnable {
             System.exit(1);
         }
 
+        // Status message on stderr (visible even in quiet mode)
+        System.err.print("Connecting to " + mac + "...");
+        System.err.flush();
+
         BleTransport transport;
         if (useSubprocess) {
             LOG.info("Using subprocess transport (bluetoothctl/busctl/gdbus)");
@@ -146,11 +159,28 @@ public class Main implements Runnable {
             transport = new DbusTransport();
         }
         if (!transport.connect(mac)) {
+            System.err.println(" failed");
             System.err.println("Error: Failed to connect to " + mac);
             System.exit(1);
         }
 
+        System.err.print(" connected. Initializing...");
+        System.err.flush();
+
         FossilQAdapter adapter = new FossilQAdapter(transport);
+
+        // Auto-sync: if device config is dirty, promote to fullInit
+        boolean autoSyncing = false;
+        if (!fullInit) {
+            DeviceConfig dc = DeviceConfig.load(mac);
+            if (dc.isSyncNeeded()) {
+                LOG.info("Device config has unsynced changes -- promoting to full init");
+                fullInit = true;
+                autoSyncing = true;
+            }
+        }
+
+        adapter.initialize(fullInit);
         adapter.initialize(fullInit);
 
         // For Fossil protocol, wait for the async init to complete
@@ -161,7 +191,24 @@ public class Main implements Runnable {
             }
         }
 
+        System.err.println(" ready.");
+
+        // If auto-sync was triggered, wait for the config/filter uploads to complete.
+        // waitForInit returns when auth finishes, but the config put and filter
+        // upload are still queued. Give them time to complete before the caller
+        // starts its own operations.
+        if (autoSyncing && adapter.isFossilProtocol()) {
+            sleep(3000);
+        }
+
         return adapter;
+    }
+
+    /**
+     * Shutdown adapter with status message.
+     */
+    static void shutdownAdapter(FossilQAdapter adapter) {
+        adapter.shutdown();
     }
 
     // ========== Subcommands ==========
@@ -173,27 +220,7 @@ public class Main implements Runnable {
         @Override
         public Integer call() {
             String mac = parent.requireMac();
-
-            BleTransport transport;
-            if (parent.useSubprocess) {
-                transport = new BluezTransport();
-            } else {
-                transport = new DbusTransport();
-            }
-            if (!transport.connect(mac)) {
-                System.err.println("Failed to connect");
-                return 1;
-            }
-
-            FossilQAdapter adapter = new FossilQAdapter(transport);
-            adapter.initialize();
-
-            // Wait for the async init to process responses
-            if (adapter.isFossilProtocol()) {
-                adapter.waitForInit(30_000);
-            }
-            // Extra delay for any in-flight file operations to complete
-            sleep(3000);
+            FossilQAdapter adapter = connectAndInit(mac, parent.useSubprocess);
 
             if (parent.jsonOutput) {
                 System.out.printf("{\"model\":\"%s\",\"firmware\":\"%s\",\"battery\":%d,\"protocol\":\"%s\"}%n",
@@ -208,7 +235,6 @@ public class Main implements Runnable {
             }
 
             adapter.shutdown();
-            try { ((AutoCloseable) transport).close(); } catch (Exception e) { /* ignore */ }
             return 0;
         }
     }
@@ -445,13 +471,26 @@ public class Main implements Runnable {
             }
 
             // --- Mode 4: Legacy (bare VibrationType name, no --vibe/--position) ---
+            if (typeOrVibration != null) {
+                // Check if it looks like an intended config name that wasn't found
+                try {
+                    VibrationType.valueOf(typeOrVibration.toUpperCase());
+                } catch (IllegalArgumentException e) {
+                    // Not a valid VibrationType — user probably meant a notification type name
+                    System.err.println("Unknown notification type: " + typeOrVibration);
+                    System.err.println("Not a configured type (see 'notify-config --list') or a VibrationType.");
+                    System.err.println("Available VibrationTypes: SINGLE_SHORT, DOUBLE_SHORT, TRIPLE_SHORT, " +
+                            "SINGLE_NORMAL, DOUBLE_NORMAL, TRIPLE_NORMAL, SINGLE_LONG");
+                    return 1;
+                }
+            }
             VibrationType vt = parseVibrationType(typeOrVibration);
             FossilQAdapter adapter = connectAndInit(parent.requireMac(), parent.useSubprocess);
             sleep(500);
             adapter.playNotification(vt, -1, -1);
             System.out.println("Notification sent: " + vt);
             sleep(2000);
-            adapter.shutdown();
+            shutdownAdapter(adapter);
             return 0;
         }
 
@@ -2304,6 +2343,7 @@ public class Main implements Runnable {
                      Main.ConfigSetCmd.class,
                      Main.ConfigSetDeviceCmd.class,
                      Main.ConfigListDevicesCmd.class,
+                     Main.ConfigSyncCmd.class,
              })
     static class ConfigCmd implements Runnable {
         @ParentCommand Main parent;
@@ -2391,12 +2431,14 @@ public class Main implements Runnable {
 
             DeviceConfig dc = DeviceConfig.load(mac);
             String normalized = key.toLowerCase().replace("-", "_").replace(" ", "_");
+            boolean needsSync = false; // watch-relevant settings need syncing
 
             try {
                 switch (normalized) {
                     case "name" -> {
                         dc.setName(value);
                         System.out.println("Name set to: " + value);
+                        // name is local-only, no sync needed
                     }
                     case "step_goal", "stepgoal", "steps" -> {
                         int goal = Integer.parseInt(value);
@@ -2405,6 +2447,7 @@ public class Main implements Runnable {
                             return 1;
                         }
                         dc.setStepGoal(goal);
+                        needsSync = true;
                         System.out.println("Step goal set to: " + goal);
                     }
                     case "vibration_strength", "vibration", "vibe" -> {
@@ -2414,6 +2457,7 @@ public class Main implements Runnable {
                             return 1;
                         }
                         dc.setVibrationStrength(strength);
+                        needsSync = true;
                         System.out.println("Vibration strength set to: " + strength + "%");
                     }
                     case "second_timezone", "timezone2", "tz2" -> {
@@ -2429,6 +2473,7 @@ public class Main implements Runnable {
                             dc.setSecondTimezone(offset);
                             System.out.printf("Second timezone set to UTC%+.1f (%d min)%n", offset / 60.0, offset);
                         }
+                        needsSync = true;
                     }
                     default -> {
                         System.err.println("Unknown setting: " + key);
@@ -2437,7 +2482,13 @@ public class Main implements Runnable {
                     }
                 }
 
+                if (needsSync) {
+                    dc.setSyncNeeded(true);
+                }
                 dc.save();
+                if (needsSync) {
+                    System.out.println("Run 'fossil-q config sync' to push to watch, or it will sync on next connect.");
+                }
             } catch (NumberFormatException e) {
                 System.err.println("Invalid value: " + value);
                 return 1;
@@ -2529,6 +2580,27 @@ public class Main implements Runnable {
                 return 1;
             }
 
+            return 0;
+        }
+    }
+
+    @Command(name = "sync", description = "Push local config to the watch (connects to device)")
+    static class ConfigSyncCmd implements Callable<Integer> {
+        @ParentCommand ConfigCmd parent;
+
+        @Override
+        public Integer call() {
+            String mac = parent.parent.requireMac();
+
+            // Force full init which syncs config + notification filter
+            FossilQAdapter adapter = connectAndInit(mac, parent.parent.useSubprocess, true);
+
+            // Wait for config upload to complete (queued during init)
+            sleep(3000);
+
+            // syncNeeded flag is cleared by onFilePut callback in adapter
+            System.out.println("Config synced to watch.");
+            adapter.shutdown();
             return 0;
         }
     }
