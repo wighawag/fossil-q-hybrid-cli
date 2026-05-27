@@ -72,6 +72,8 @@ Option 2 is cleaner for Android. The `TransactionBuilder` shim still needed sinc
 
 **Goal:** A focused, lightweight Android app exclusively for Fossil Q Hybrid coin-cell watches (Q Commuter, Q Activist).
 
+*Detailed planning, architecture, and SQLite/Room schema are specified in **[ANDROID-PLAN.md](ANDROID-PLAN.md)**.*
+
 ### Why Not Just Use GadgetBridge?
 
 GadgetBridge is excellent but:
