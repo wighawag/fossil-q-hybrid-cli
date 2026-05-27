@@ -8,9 +8,17 @@ import org.slf4j.LoggerFactory;
 import picocli.CommandLine;
 import picocli.CommandLine.*;
 
+import com.github.hypfvieh.bluetooth.DeviceManager;
+import com.github.hypfvieh.bluetooth.wrapper.BluetoothAdapter;
+import com.github.hypfvieh.bluetooth.wrapper.BluetoothDevice;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Scanner;
+import java.util.Set;
 import java.util.concurrent.Callable;
 
 import org.jline.terminal.Terminal;
@@ -45,6 +53,7 @@ import org.jline.terminal.TerminalBuilder;
                 Main.InactivityNudgeCmd.class,
                 Main.HandAnimCmd.class,
                 Main.ConfigCmd.class,
+                Main.ScanCmd.class,
         },
         footer = {
                 "",
@@ -2601,6 +2610,153 @@ public class Main implements Runnable {
             // syncNeeded flag is cleared by onFilePut callback in adapter
             System.out.println("Config synced to watch.");
             adapter.shutdown();
+            return 0;
+        }
+    }
+
+    @Command(name = "scan", description = "Scan for nearby Fossil Q Hybrid watches and add them")
+    static class ScanCmd implements Callable<Integer> {
+        @ParentCommand Main parent;
+
+        @Option(names = {"--all"}, description = "Show all BLE devices, not just Fossil watches")
+        boolean showAll;
+
+        @Option(names = {"-t", "--timeout"}, description = "Scan timeout in seconds", defaultValue = "15")
+        int timeout;
+
+        @Override
+        public Integer call() {
+            System.out.println("Initializing Bluetooth discovery...");
+            
+            DeviceManager deviceManager;
+            BluetoothAdapter adapter;
+            try {
+                deviceManager = DeviceManager.createInstance(false);
+                List<BluetoothAdapter> adapters = deviceManager.scanForBluetoothAdapters();
+                if (adapters.isEmpty()) {
+                    System.err.println("Error: No Bluetooth adapters found on this system.");
+                    return 1;
+                }
+                adapter = adapters.get(0);
+            } catch (Exception e) {
+                System.err.println("Error initializing Bluetooth/D-Bus: " + e.getMessage());
+                System.err.println("Make sure dbus is running and your user is in the bluetooth group.");
+                return 1;
+            }
+
+            System.out.println("Scanning for BLE devices... Press a button on your watch to make it advertise.");
+            try {
+                adapter.startDiscovery();
+            } catch (Exception e) {
+                System.err.println("Error starting discovery: " + e.getMessage());
+                return 1;
+            }
+
+            List<BluetoothDevice> foundWatches = new ArrayList<>();
+            Set<String> seenMacs = new HashSet<>();
+            
+            long deadline = System.currentTimeMillis() + (timeout * 1000L);
+            long lastPrint = 0;
+            
+            try {
+                while (System.currentTimeMillis() < deadline) {
+                    deviceManager.findBtDevicesByIntrospection(adapter);
+                    List<BluetoothDevice> devices = deviceManager.getDevices(true);
+                    for (BluetoothDevice d : devices) {
+                        String mac = d.getAddress();
+                        if (mac != null && !seenMacs.contains(mac)) {
+                            String name = d.getName();
+                            boolean isFossil = name != null && (
+                                    name.toLowerCase().contains("fossil") || 
+                                    name.toLowerCase().contains("q commuter") || 
+                                    name.toLowerCase().contains("q activist") || 
+                                    name.toLowerCase().contains("hybrid") || 
+                                    name.toLowerCase().contains("commuter") || 
+                                    name.toLowerCase().contains("activist")
+                            );
+                            
+                            if (showAll || isFossil) {
+                                seenMacs.add(mac);
+                                foundWatches.add(d);
+                                System.out.printf("  [%d] %s (%s)%n", foundWatches.size(), (name != null ? name : "Unknown"), mac);
+                            }
+                        }
+                    }
+                    
+                    long remaining = (deadline - System.currentTimeMillis()) / 1000;
+                    if (remaining > 0 && remaining != lastPrint && remaining % 3 == 0) {
+                        lastPrint = remaining;
+                        System.out.printf("Scanning... (%ds remaining)%n", remaining);
+                    }
+                    
+                    try {
+                        Thread.sleep(1000);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            } finally {
+                try {
+                    adapter.stopDiscovery();
+                } catch (Exception ignored) {}
+            }
+
+            if (foundWatches.isEmpty()) {
+                System.out.println("No watches found. Make sure the watch is awake and not paired to another device.");
+                return 0;
+            }
+
+            System.out.println("\nScan complete.");
+            System.out.println("Select a watch to add (or press Enter to cancel):");
+            
+            Scanner scanner = new Scanner(System.in);
+            String input = scanner.nextLine().trim();
+            if (input.isEmpty()) {
+                System.out.println("Cancelled.");
+                return 0;
+            }
+
+            int index;
+            try {
+                index = Integer.parseInt(input);
+            } catch (NumberFormatException e) {
+                System.err.println("Invalid selection.");
+                return 1;
+            }
+
+            if (index < 1 || index > foundWatches.size()) {
+                System.err.println("Selection out of range.");
+                return 1;
+            }
+
+            BluetoothDevice selected = foundWatches.get(index - 1);
+            String mac = selected.getAddress().toUpperCase();
+            String name = selected.getName();
+            if (name == null) name = "Fossil Q Hybrid";
+
+            System.out.printf("Adding watch: %s (%s)%n", name, mac);
+            
+            // Register active device
+            GlobalConfig global = GlobalConfig.load();
+            global.setActiveDevice(mac);
+            try {
+                global.save();
+                Files.createDirectories(GlobalConfig.deviceDir(mac));
+                
+                // Save a default friendly name to the device config
+                DeviceConfig dc = DeviceConfig.load(mac);
+                dc.setName(name);
+                dc.save();
+            } catch (IOException e) {
+                System.err.println("Error saving configuration: " + e.getMessage());
+                return 1;
+            }
+
+            System.out.println("\nSuccessfully added and set as active device!");
+            System.out.println("Config dir: " + GlobalConfig.deviceDir(mac));
+            System.out.println("You can now test connection with: fossil-q info");
+
             return 0;
         }
     }

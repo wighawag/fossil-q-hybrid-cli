@@ -1867,11 +1867,20 @@ public class FossilQAdapter {
             case "3dda0004-957f-7d4a-34a6-74696673696d":
             case "3dda0005-957f-7d4a-34a6-74696673696d":
                 // Auth indication intercept — if we're waiting for an auth response,
-                // complete the future and don't pass to the file transfer handler
-                if (pendingAuthResponse != null && !pendingAuthResponse.isDone()) {
-                    LOG.info("Auth indication received: {}", bytesToHex(value));
-                    pendingAuthResponse.complete(value);
-                    return;
+                // complete the future and don't pass to the file transfer handler.
+                // Critical: we MUST only intercept actual auth responses on 3dda0005
+                // that start with 03 (and followed by 07 or 06). Other packets (like
+                // 3dda0003, 3dda0004 or non-auth notifications starting with 81) must
+                // NOT be intercepted as auth.
+                if (uuidStr.equals("3dda0005-957f-7d4a-34a6-74696673696d") &&
+                        pendingAuthResponse != null && !pendingAuthResponse.isDone()) {
+                    if (value.length >= 2 && value[0] == 0x03 && (value[1] == 0x07 || value[1] == 0x06)) {
+                        LOG.info("Auth indication received: {}", bytesToHex(value));
+                        pendingAuthResponse.complete(value);
+                        return;
+                    } else {
+                        LOG.debug("Ignoring non-auth notification on 3dda0005 during handshake: {}", bytesToHex(value));
+                    }
                 }
                 // Fossil protocol responses (file transfer)
                 break;
