@@ -252,27 +252,34 @@ Instead of forcing a single default vibration pattern like the official app, thi
    - The file is written to characteristic `3dda0003` under handle `FileHandle.NOTIFICATION_PLAY`.
    - The watch immediately parses the file, matches the package CRC against the uploaded filter table, and executes the **exact vibration pattern (0-9)** and **precise hand movement degree (0-359)** defined by the user!
 
-### D. Google Calendar Sync (Offline 7-Day Alarms & Real-Time Sync)
+### D. Google Calendar Sync (Offline 7-Day Alarms & Dual-Trigger Sync)
 To warn the user about upcoming meetings and events even when they are physically separated from their phone:
 
-1. **Immediate Awareness via `ContentObserver`**:
-   - To prevent missing events that were created recently (which could fire in less than the periodic 4-hour background window), the app will register an Android **`ContentObserver`** listening on the Calendar Contract URI:
-     `CalendarContract.Events.CONTENT_URI`
-   - Whenever any calendar change (addition, edit, or deletion) occurs on the phone, the `ContentObserver` immediately intercepts the event and triggers an on-demand sync cycle.
-   - If the watch is connected, the updated alarm queue is compiled and pushed instantly. This eliminates polling delays and keeps the watch in perfect real-time synchronization.
+1. **How Cloud Changes are Captured (Laptop/Web/Emails)**:
+   - When you create an event on your laptop, accept an invite on the web, or confirm an event via email, the official Google Calendar app (or your account's sync adapter) syncs these updates down to your Android phone in the background.
+   - When these sync events write new data to the local Android Calendar database, the Android system fires a content change notification.
+   - Our **`ContentObserver`** listening on `CalendarContract.Events.CONTENT_URI` will **instantly detect** these sync writes, triggering a compile-and-upload cycle.
 
-2. **Periodic Safety Job (`WorkManager`)**:
+2. **The "Sync-on-Connect" Trigger (Companion Device Manager Integration)**:
+   - To make the syncing bulletproof and ensure zero-lag even if a calendar event is modified while the watch is disconnected, we will implement an active **Sync-on-Connect** trigger.
+   - Every time the watch reconnects or is detected nearby via the `CompanionDeviceManager` callback (`onDeviceAppeared`), the background service immediately:
+     1. Performs a fresh Calendar query.
+     2. Updates the local SQLite/Room alarm cache.
+     3. Compiles and uploads the calendar alarms (slots 16–31) to the watch.
+   - This ensures the watch is always synchronized with the absolute latest calendar state known to the phone the moment the BLE connection is established.
+
+3. **Periodic Safety Job (`WorkManager`)**:
    - A background Worker runs every 4 hours (or once a day as a robust fallback) to capture any missed updates and perform routine cleanup.
    - It queries the system Calendar Provider via `ContentResolver` for events occurring over the **next 7 days** and filters/sorts the nearest 16 calendar events.
 
-3. **Alarm Compilation & 16-Slot Limit**:
+4. **Alarm Compilation & 16-Slot Limit**:
    - For each event, the app extracts the local date/time (e.g., Friday at 10:15 AM).
    - Maps it to a **non-repeating weekday alarm** in slots 16-31.
      - `byte0 = 0x80 | (1 << fridayBit)` -> `0x80 | 32` -> `0xA0`.
      - `byte1 = 15` (minutes).
      - `byte2 = 10` (hour).
 
-4. **Upload**:
+5. **Upload**:
    - If the watch is currently connected, the database is updated and the alarm file is instantly compiled and uploaded to handle `FileHandle.ALARMS` (`0x0A00`).
    - If disconnected, the upload is queued and executes the moment the watch comes back in range.
    - Result: As long as the user connects their watch at least once a week, they will receive precise, vibrating physical watch alerts for their calendar events offline, with **zero phone connection required** during the event itself!
