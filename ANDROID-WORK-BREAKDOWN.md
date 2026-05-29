@@ -1200,6 +1200,110 @@ same `LogRingBuffer` for a CLI `logs` command.
 > not stored data). Remaining screens **WP16f** (sleep/activity charts) and **WP16g** (settings)
 > follow the same ViewModel+StateFlow / fake-backed-test pattern.
 
+> **WP16f STATUS:** ✅ DONE & VERIFIED (provable core JVM/Robolectric-tested; UI builds +
+> lint-passes; the actual activity-file fetch + parse pipeline flagged on-device-pending /
+> deferred to a later WP). The **sixth** user-facing screen: a **READ-ONLY, model-agnostic**
+> Sleep/Activity analytics view for the active watch (daily steps/calories + a sleep timeline +
+> a quality summary), derived from WP8 parsing. Lives in `qhybrid.android.sleep.*`. Mirrors the
+> proven WP16a–e two-layer pattern's **active-watch half exactly** (`combine` over
+> `observeActiveWatch` + `stateIn(WhileSubscribed)`; an injectable seam with a `*_WIRED=false`
+> deferral flag; centralized model-agnostic constants; a stateless `*Content`; a production
+> `factory`; Robolectric + in-memory Room tests via `DbTestBase` with a real `CoroutineScope` +
+> bounded `awaitState` polling).
+>
+> **DATA-SOURCE DECISION (drives the whole design) — NO PERSISTED STORE; FETCH DEFERRED.** WP8
+> (`qhybrid.protocol.activity.ActivitySummarizer` / `ActivityParser`) is a **pure on-demand**
+> function over a raw binary activity file (`byte[]`). There is **NO persisted activity/sleep
+> store**: WP4's Room schema has no activity entity, and the WP16/WP16f breakdown does NOT say
+> WP16f owns one. Therefore **NO new Room entity/DAO/repository method and NO speculative DB
+> schema were added.** The screen renders from an injectable `ActivitySource`; the real
+> fetch→parse pipeline (BLE read of the watch's activity file → `ActivityParser.parse` →
+> `SleepActivityAdapter` → state) is **deferred** behind `ServiceActivitySource.ACTIVITY_WIRED`
+> = `false` (no invented wire bytes; production `refresh()` only pokes the existing
+> `WatchConnectionService.syncNow`). The parser already exists (WP8) — only the *fetch* (an
+> activity-file read action on the WP3 service, plus optional caching) is missing; that is its
+> own later WP. Flip `ACTIVITY_WIRED` to true then.
+>
+> **DESIGN DECISIONS — READ-ONLY + MODEL-AGNOSTIC.** The screen only *displays* parsed data; the
+> only "action" is `refresh`, routed through the deferred source seam (no write/upload path,
+> unlike alarms/buttons/calibration). No per-model hard-coding — every watch emits the same
+> minute-record format WP8 decodes. Charts use **Compose primitives only** (`Canvas` step bars +
+> `Box`/`Row` stacked restful/restless bars) — **no new charting dependency** (none on the
+> classpath; verified).
+>
+> **(1) Provable core (`qhybrid.android.sleep`, Robolectric + in-memory Room):**
+> - `SleepActivityViewModel` + `SleepActivityUiState` — `combine(observeActiveWatch(),
+>   source.data)` into one immutable UiState via `stateIn(WhileSubscribed)`. The active-watch
+>   half (`activeWatch`/`hasActiveWatch`/`stepGoal`) is observed PURELY to know which watch is
+>   active; when none, the data half is **forced empty** (read-only, no leftover data). Derived
+>   helpers: `days`/`sleep`/`sleepSummary`, `totalSteps`/`totalCalories`/`totalActiveMinutes`,
+>   `isEmpty`, `canRefresh`. Sole intent `refresh()` (no-op without an active watch) delegates to
+>   the `ActivitySource` seam and returns the `ACTIVITY_WIRED` pending flag.
+> - `SleepActivityAdapter` + chart-ready immutable view models (`DaySummary`, `SleepSegment`,
+>   `SleepSummary`, `ActivityChartData`) — adapts WP8 output for display with **ZERO
+>   parsing/sleep math**: reuses `ActivitySummarizer.summarizeByDay` (per-day steps/calories/
+>   active-minutes) and `ActivitySummarizer.detectSleepSessions` (which delegates 1:1 to
+>   `ActivityParser.detectSleep`) and reshapes them into `java.time`-free / protocol-type-free
+>   Kotlin models so they flow straight into Compose and are trivially fakeable. `fromParsed(data,
+>   zone)` is the on-demand convenience (zone injected — no system clock).
+> - `SleepQuality` / `SleepActivityFormat` — centralized, model-agnostic display vocabulary
+>   (discipline like `VibePatterns`/`CalibrationHands`): the quality ids `good`/`fair`/`restless`
+>   + `none`, **thresholds mirroring `ActivityParser.SleepPeriod.quality()` 1:1** (<10% restless →
+>   good, <25% → fair, else restless), labels, and `durationLabel`/`restlessPercent` (never
+>   divides by zero). The protocol layer stays the single source of truth for the math.
+> - `ActivitySource` (interface) + `ServiceActivitySource` (production) — the injectable data
+>   seam (mirrors `AlarmSync`/`NotificationSync`/`ButtonSync`/`CalibrationSync`). Production
+>   emits empty `ActivityChartData` and `refresh()` only pokes `syncNow`, returning
+>   `ACTIVITY_WIRED=false` until the fetch WP lands (no new wire behavior, no invented bytes,
+>   no DB).
+> - Tests (`SleepActivityViewModelTest`, `SleepActivityAdapterTest`): UiState reflects the active
+>   watch + **empties when none** (even if the source holds data); a fake source feeds known data
+>   → correct Day/Sleep summaries + timeline + aggregate totals; the **WP8 adapter maps a known
+>   parser/detectSleep result correctly** (golden-style, reusing the REAL `ActivityParser` on the
+>   repo fixtures `activity.bin`/`activity-test.bin` — same files WP8 locks: 1 session, 855m,
+>   restless=6, quality `good`; the short file yields no sleep); quality-threshold + constants
+>   sanity (mirror the protocol); `refresh` hits the fake + reports the `ACTIVITY_WIRED` pending
+>   flag (and is a no-op without an active watch); empty/partial-data tolerance (zero records →
+>   no crash, days-but-no-sleep). `:android:testDebugUnitTest` = **128 green** (95 prior + 33
+>   new), 0 failures. (Build wiring: the android unit-test task now sets
+>   `systemProperty 'fossilq.repoRoot', rootDir.absolutePath` so the adapter golden test can
+>   locate the repo-root `activity*.bin` fixtures, mirroring `protocol/build.gradle`.)
+>
+> **(2) UI layer (`SleepActivityScreen.kt`, builds + lint-passes; behavior on-device-pending):**
+> - Stateless `SleepActivityContent(state, onRefresh)` (preview-/UI-testable with fake state, no
+>   VM/Room/BLE) + a thin `SleepActivityScreen()` wiring the production VM via
+>   `SleepActivityViewModel.factory(context)`. Renders an **Activity** summary card (steps /
+>   calories / active minutes + the WP4 step goal), a **per-day steps `Canvas` bar chart** (with a
+>   model-agnostic goal line from the WP4 row) + per-day readout, a **Sleep** quality summary card
+>   (total / restful / restless + a stacked ratio bar), a **sleep timeline** (one stacked
+>   restful/restless bar per session, width ∝ duration), and a **Refresh** button that surfaces
+>   the on-device-pending note when not wired. Clearly marked **read-only** ("nothing here is sent
+>   to the watch").
+> - Reachable via a **6th bottom-nav tab** added to `MainActivity` (Dashboard / Alarms /
+>   Notifications / Buttons / Calibration / **Sleep**). Sleep tab icon = `Icons.Filled.DateRange`
+>   (verified on the material-icons-core classpath the WP16e way — enumerated the jar's
+>   `filled/*Kt.class` entries; extended icons are NOT on the classpath). The WP15 Debug gear
+>   stays present + release-gated; WP16a–e still work.
+>
+> **Did NOT touch** protocol wire bytes / `ActivityParser` output / `ActivitySummarizer` math /
+> `BleTransport` / `AndroidBleTransport.kt` / WP3 service wire behavior (only calls the existing
+> `syncNow`) / existing WP4 repository semantics (**added NO DB entity/DAO/repo method — there is
+> no persisted activity store**) / WP15 Debug Menu gating. `:protocol:test` stays at **108 green**;
+> `./fossil-q --help` unchanged; `:android:assembleDebug` + `:android:lintDebug` succeed.
+>
+> **On-device verification pending:** the Compose charts/timeline rendering, the Refresh effect,
+> and the 6-tab bottom-nav switching can only be confirmed on a device. The headless half
+> (active-watch observation + the WP8→display adapter + refresh intent + constants) is unit-tested.
+>
+> **Deferred / follow-ups:** the **actual activity-file fetch + parse pipeline is a later WP**
+> (BLE read of the watch's activity file via the WP3 service → `ActivityParser.parse` →
+> `SleepActivityAdapter` → push into `ServiceActivitySource`, plus an optional parsed-result
+> cache); `ServiceActivitySource.ACTIVITY_WIRED` flips to true then, and this also feeds
+> `DashboardUiState.steps` (the WP16a placeholder). WP16f intentionally adds **NO Room schema**
+> (WP8 is on-demand). The **last remaining screen is WP16g** (settings: nudge, vibration strength,
+> timezone, preferred music app, settings transfer (WP4), log viewer (WP15)) — same
+> ViewModel+StateFlow / fake-backed-test pattern.
+
 > **WP16d PREP — concrete vocabulary (scanned from code, for the Buttons screen).** This is a
 > reference for the WP16d implementer so the constants are NOT rediscovered. **Design decision:
 > the WP16d UI is MODEL-AGNOSTIC** — it allows ALL buttons/modes/actions and does NOT gate by

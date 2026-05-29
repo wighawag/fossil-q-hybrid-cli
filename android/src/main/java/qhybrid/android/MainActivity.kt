@@ -28,6 +28,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Notifications
@@ -55,6 +56,7 @@ import androidx.compose.runtime.setValue
 import qhybrid.android.alarms.AlarmsScreen
 import qhybrid.android.buttons.ButtonsScreen
 import qhybrid.android.calibration.CalibrationScreen
+import qhybrid.android.sleep.SleepActivityScreen
 import qhybrid.android.dashboard.DashboardScreen
 import qhybrid.android.notifications.NotificationsScreen
 import qhybrid.android.debug.DebugMenu
@@ -112,9 +114,9 @@ class MainActivity : ComponentActivity() {
      */
     /**
      * WP16: the bottom-nav home tabs (Dashboard = WP16a, Alarms = WP16b,
-     * Notifications = WP16c, Buttons = WP16d, Calibration = WP16e).
+     * Notifications = WP16c, Buttons = WP16d, Calibration = WP16e, Sleep = WP16f).
      */
-    private enum class HomeTab { DASHBOARD, ALARMS, NOTIFICATIONS, BUTTONS, CALIBRATION }
+    private enum class HomeTab { DASHBOARD, ALARMS, NOTIFICATIONS, BUTTONS, CALIBRATION, SLEEP }
 
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
@@ -135,6 +137,7 @@ class MainActivity : ComponentActivity() {
             tab == HomeTab.NOTIFICATIONS -> "Notifications"
             tab == HomeTab.BUTTONS -> "Buttons"
             tab == HomeTab.CALIBRATION -> "Calibration"
+            tab == HomeTab.SLEEP -> "Sleep & Activity"
             else -> "Fossil Q"
         }
         Scaffold(
@@ -187,6 +190,12 @@ class MainActivity : ComponentActivity() {
                             icon = { Icon(Icons.Filled.Refresh, contentDescription = "Calibration") },
                             label = { Text("Calibrate") },
                         )
+                        NavigationBarItem(
+                            selected = tab == HomeTab.SLEEP,
+                            onClick = { tab = HomeTab.SLEEP },
+                            icon = { Icon(Icons.Filled.DateRange, contentDescription = "Sleep & Activity") },
+                            label = { Text("Sleep") },
+                        )
                     }
                 }
             },
@@ -199,6 +208,7 @@ class MainActivity : ComponentActivity() {
                     tab == HomeTab.NOTIFICATIONS -> NotificationsScreen()
                     tab == HomeTab.BUTTONS -> ButtonsScreen()
                     tab == HomeTab.CALIBRATION -> CalibrationScreen()
+                    tab == HomeTab.SLEEP -> SleepActivityScreen()
                     else -> DashboardScreen()
                 }
             }

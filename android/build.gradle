@@ -44,6 +44,11 @@ android {
         unitTests {
             includeAndroidResources = true
             returnDefaultValues = true
+            // WP16f: the activity*.bin fixtures live at the repo root; expose the path so the
+            // SleepActivityAdapter golden test can reuse the real ActivityParser on them.
+            all {
+                systemProperty 'fossilq.repoRoot', rootDir.absolutePath
+            }
         }
     }
 }
