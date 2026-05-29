@@ -296,15 +296,25 @@ The app utilizes our `ButtonConfigBuilder` to allow users to assign complex, ric
      - **24-Hour**: Displays the current 24-hour hour.
    - Note that due to varying physical watch faces and dials (e.g., 5-position dials on Q Activist vs 3-position dials on Q Commuter), certain watch models may physically ignore or lack support for specific modes. The app will hide incompatible modes based on the paired watch's hardware model info.
 
-2. **Phone-Side Music Controls (Virtual Multi-Mode Button)**:
+2. **Phone-Side Music Controls (Virtual Multi-Mode Button & MediaSession Integration)**:
    - Music control is **not** a physical dial/sub-eye mode. Instead, it is implemented entirely phone-side.
    - We map a watch button (e.g. MIDDLE) to trigger short, double-short, or long press events (`FORWARD_TO_PHONE` triggers on characteristic `3dda0006`).
    - The background service intercepts these events and passes them to our `ButtonGestureDetector`.
-   - The detector buffers clicks within a configurable window (e.g., 400ms) to distinguish single/double presses and triggers standard Android Media Session controls:
-     - **Single-Click**: Play/Pause.
-     - **Double-Click**: Next Track.
-     - **Triple-Click / Long Press**: Previous Track / Phone Ringing (Find My Phone).
-   - This keeps music controls highly responsive and flexible without requiring any physical watch face support.
+   - The detector buffers clicks within a configurable window (e.g., 400ms) to distinguish single/double presses and triggers standard Android Media Session controls.
+   - **Android Implementation (The Notification Listener Synergy)**:
+     - Because the user already granted **Notification Listener Access** (`NotificationListenerService`) for forward notifications, our app **automatically inherits permission** to use Android's **`MediaSessionManager`** without any extra permission prompts!
+     - The background service will query `MediaSessionManager.getActiveSessions()` to find active media sessions (e.g., Spotify, YouTube, VLC, or Apple Music).
+     - Instead of sending generic key events which are often ignored or swallowed by the system, our app will bind directly to the active session's **`MediaController`** and send precise transport controls:
+       - **Single-Click**: `mediaController.getTransportControls().play()` or `pause()` depending on current playback state.
+       - **Double-Click**: `mediaController.getTransportControls().skipToNext()`.
+       - **Triple-Click / Long Press**: `mediaController.getTransportControls().skipToPrevious()` or custom mapping.
+     - If no active media session is found (e.g. the music app was force-closed), the app falls back to a **Preferred Music App Auto-Launcher**:
+       - The user can select a **Preferred Music App** (e.g., Bandcamp, Spotify, Poweramp, etc.) in settings.
+       - If no active media session is running, the app will:
+         1. Query the package manager and launch the target music app (using standard launcher `Intent`).
+         2. Dispatch an explicit, targeted `ACTION_MEDIA_BUTTON` broadcast containing `KEYCODE_MEDIA_PLAY` aimed directly at that specific app's package and media button receiver. On Android, this targeted broadcast forces the OS to wake that specific player's background media service and start streaming playback immediately!
+       - If no preferred app is configured, the app falls back to dispatching global key events (`KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE` via the system `AudioManager`) to launch and resume the last active player.
+   - This keeps music controls highly responsive, extremely robust, and flexible without requiring any physical watch face support.
 
 3. **Gesture Actions**:
    - **Phone Ring (Find My Phone)**: Triggers a loud, looping ringtone on the phone (bypassing Do Not Disturb). Double-clicking stops it.
@@ -334,6 +344,52 @@ An analog watch requires calibration so its internal computer knows where "12 o'
 2. **Nudge Interaction**: The user can drag on-screen hands or tap `+` / `-` buttons. Each tap sends a relative/absolute move request to nudge the physical watch hands in real time.
 3. **Save**: Clicking "Confirm" sends `SaveCalibrationRequest` to tell the watch "where the hands are pointing right now is your absolute 12:00:00 reference".
 4. **Sync**: The app releases control (`ReleaseHandsControlRequest`) and immediately syncs the current time. The hands elegantly sweep to the correct current local time.
+
+### G. Inactivity Nudge & Vibration Strength
+To match the CLI capabilities and offer standard watch customization features:
+1. **Inactivity Nudge Setting**:
+   - The CLI supports enabling/disabling a sedentary "nudge" warning.
+   - We will build a Settings screen allowing users to:
+     - Toggle the nudge feature On/Off.
+     - Select inactivity duration (minutes, 1-255).
+     - Configure scheduling range: "From" (default: 08:00) and "To" (default: 20:00).
+   - Changes will write a `ConfigurationPutRequest` specifying the `InactivityWarningItem` parameters to characteristic `3dda0003` via `:protocol`.
+2. **Vibration Strength Slider**:
+   - A standard slider (0% to 100%) in Settings will trigger `SetVibrationStrengthRequest` on change, adjusting how hard the watch vibrates for notifications and alarms.
+
+### H. Sleep & Calorie Tracking (Native Hardware Data)
+Instead of writing complex, inaccurate software estimators, we will extract sleep and calorie analytics natively from the watch's binary files:
+1. **Calorie Calculations**:
+   - Our `ActivityParser` reverse-engineers the raw calorie counts stored by the watch's onboard microprocessor in byte 3 of each minute record (`int calories = b3 & 0x3F`).
+   - The app will save these exact calories in the Room database, displaying active calories burned alongside daily step counts in the dashboard. No third-party steps-to-calorie conversion algorithms are required since the watch hardware does it directly!
+2. **Sleep Tracking Analysis**:
+   - The watch's binary file tracks minute-by-minute activity steps, variability, and active flag state.
+   - We will invoke the shared `ActivityParser.detectSleep(...)` logic directly inside the Android app to automatically parse slept blocks:
+     - Detects sleep periods where steps are 0 and variability is below the adaptive median threshold.
+     - Classifies restless sleep minutes (e.g., tossing/turning) vs quiet deep sleep.
+     - Displays historical sleep charts (duration, sleep timeline, and overall sleep quality: "Good", "Fair", or "Restless") inside a dedicated Sleep Dashboard.
+
+### I. App Log Viewer Screen (Operational vs. Debug Logs)
+To provide transparency and a seamless developer/debugging experience, we will implement an in-app Log Viewer:
+1. **Visual Log Console**:
+   - A scrollable terminal-style view in Settings allowing real-time viewing of application logs.
+2. **Level Filtering**:
+   - **INFO Level**: Shows user-friendly high-level operational steps:
+     - `"Connecting to Fossil Watch (D9:20:71:11:74:2A)..."`
+     - `"Connected! Battery: 88%"`
+     - `"Fossil Handshake success (Authenticated)."`
+     - `"Synchronizing local watch time (UTC offset: +60 mins)..."`
+     - `"Calendar Sync: Compiled 6 calendar events into alarms 16-21. Sync success."`
+     - `"Notification: Intercepted WhatsApp. Play filter vibe 4, hands 90°/90°."`
+   - **DEBUG Level**: Shows low-level details for troubleshooting:
+     - GATT write requests, CCCD notification alerts, received raw hex byte arrays, database insert/updates, and internal exception stack traces.
+3. **Log Export**:
+   - Quick "Copy to Clipboard" and "Export to Text File" buttons to easily share logs for bug reports.
+
+### J. Bidirectional Find-My-Phone & Animations
+- **Find Watch (Phone-to-Watch)**: A prominent "Find Watch" button in the app dashboard triggers a repeating call notification or a specific hand choreography to locate a lost watch.
+- **Find Phone (Watch-to-Phone)**: Intercepting double-clicks of buttons configured as `FORWARD_TO_PHONE` will bypass Silent/DND modes to play a loud, repeating loop of the user's ringtone until stopped in the app.
+- **Hand Animations (Diagnostics)**: Expose a diagnostic utility sub-menu allowing users to play watch animations (`AnimationRequest` commands) to verify motor health and test physical hands movement.
 
 ---
 
