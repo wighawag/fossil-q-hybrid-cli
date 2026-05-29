@@ -1572,6 +1572,109 @@ same `LogRingBuffer` for a CLI `logs` command.
 >   + `qhybrid.protocol.ButtonConfigBuilder` + `qhybrid.protocol.buttonconfig.{ConfigFileBuilder,ConfigPayload}`;
 >   golden-tested in `Wp7ButtonCompilerTest`. SETTINGS_BUTTONS file 0x0600.
 
+> **WP-ACTIVITY STATUS:** ✅ DONE & VERIFIED (provable fetch→parse→publish core
+> JVM/Robolectric-tested against the fixtures + a fake byte source; the service wiring builds +
+> lint-passes; the actual BLE activity-file read effect flagged on-device-pending). This is the
+> **activity-file fetch WP** the WP14 + WP16f banners deferred: BLE read of the watch's activity
+> file via the WP3 service → `ActivityParser.parse` (WP8) → `SleepActivityAdapter` → push into a
+> data source the UI observes. **It flips `ServiceActivitySource.ACTIVITY_WIRED` true AND feeds
+> `DashboardUiState.steps`** (the WP16a placeholder). Follows the proven WP14/WP16 two-layer
+> pattern exactly: a pure, injectable decision/parse core + a thin Android layer (the WP3 service +
+> a process-wide in-memory holder) behind it. Implemented in 4 committed sub-parts (`wp-activity: …`).
+>
+> **CACHE DECISION (stated explicitly — NO Room schema added).** WP16f's banner is the source of
+> truth: WP8 (`ActivityParser` / `ActivitySummarizer`) is a *pure on-demand parser* and WP16f added
+> **NO persisted activity Room schema**. This WP **does NOT add one either** — the breakdown does
+> not give it a Room entity, and a DB schema would duplicate the watch's own file as the canonical
+> store. Instead the parsed result lives in **`qhybrid.android.sleep.ActivityState`** — a
+> **process-wide in-memory `StateFlow` holder mirroring WP3 `WatchState` exactly** (plain `object`,
+> single writer = the service, read-only observers everywhere). It survives the service being
+> rebound/recreated and is instantly available to a freshly-launched Activity, but is intentionally
+> NOT persisted across process death (a re-fetch is cheap; the watch's file is authoritative). Both
+> the Sleep screen's `ServiceActivitySource` and the Dashboard read this single holder.
+>
+> **(1) Fetch-pipeline core (`qhybrid.android.sleep.ActivityFetcher`, pure + JVM/Robolectric):**
+> - `ActivityFetcher.parse(raw: ByteArray?, zone)` — given a raw activity file `byte[]` (the SAME
+>   bytes the WP3 service / CLI `activity` command receive from
+>   `FossilController.requestActivity` → `onActivityData`), it parses via the golden-tested WP8
+>   surface (`ActivityParser.parse` → `SleepActivityAdapter.fromParsed`, i.e.
+>   `ActivitySummarizer.summarizeByDay` + `detectSleepSessions`) and produces the chart-ready
+>   `ActivityChartData` (whose `totalSteps` is the Dashboard step total). `totalSteps(raw, zone)`
+>   is the convenience for step-only callers. **Invents NO parsing math and NO wire bytes** — it
+>   only wires the existing pieces; the day-bucketing zone is injected (no system clock).
+> - **Tolerance (no-watch / empty / partial / malformed):** the watch returns `byte[0]` when there
+>   is no activity data (the `FILE_EMPTY` path), and `ActivityParser.parse` throws on
+>   too-short/unsupported files. The core treats null / empty / too-short / any parse failure as
+>   **"no data"** → `ActivityChartData.EMPTY` (never throws), so the UI shows nothing rather than
+>   crashing. A valid zero-record parse yields an empty-but-valid chart too.
+> - **Tests:** `ActivityFetcherTest` (8) reuse the REAL `ActivityParser` on the repo fixtures
+>   (`activity.bin` → totalSteps=2, 1 session 855m restless=6 good; `activity-test.bin` →
+>   totalSteps=6, no sleep, days present — the SAME golden values WP8/WP16f lock) + a fake byte
+>   source for the null/empty/too-short/malformed tolerance + purity.
+>
+> **(2) Service fetch action + `onActivityData` wiring (`WatchConnectionService`) + the holder:**
+> - `ActivityState` (the in-memory holder above) — `publish(chart, nowMillis)` (clock injected) sets
+>   a `StateFlow<ActivityStatus>` {data, lastUpdatedMillis, hasFetched} + a data-only `StateFlow`.
+>   `steps` resolves to `null` until the first fetch (UI placeholder), then the parsed total (0 for a
+>   confirmed-empty fetch). **Tests:** `ActivityStateTest` (5).
+> - The service now hooks `controller.onActivityData { … }` when the controller is created (mirroring
+>   the CLI's `setOnActivityData(…)`) → `onActivityBytes` parses via `ActivityFetcher` (zone =
+>   `ZoneId.systemDefault()`) and publishes into `ActivityState`. A new `ACTION_REQUEST_ACTIVITY`
+>   service action + static `WatchConnectionService.requestActivity(ctx, keep)` runs the BLE read on
+>   the **ble-worker** (`controller.requestActivity(keep)` — the SAME path the CLI drives; no invented
+>   bytes), guarded on link-up. The connect path also pulls the activity file **on connect**
+>   (already on the ble-worker) so the Sleep screen + Dashboard steps populate hands-free. BLE file
+>   transfer + on-device effect are on-device-pending.
+>
+> **(3) Flip `ACTIVITY_WIRED` + feed Dashboard steps:**
+> - `ServiceActivitySource` now exposes `ActivityState.data` as its `data` flow and its `refresh()`
+>   drives the real `WatchConnectionService.requestActivity(...)`; **`ACTIVITY_WIRED = true`**.
+> - `DashboardViewModel` gained a 4th injectable `combine` source (`ActivityState.status`, default
+>   the singleton) and wires `DashboardUiState.steps` to the published total (null unless a watch is
+>   active; `activityUpdatedMillis` surfaced for an optional "last updated" hint). `DashboardScreen`'s
+>   Steps card placeholder text changed from "not wired yet (WP16f)" to "no activity data fetched
+>   yet — connect or refresh".
+> - **Tests:** `DashboardViewModelTest` +2 (live steps come from `ActivityState`; null without an
+>   active watch); `SleepActivityViewModelTest` +1 `productionActivitySourceIsWired()` asserting the
+>   flipped constant (the fake-backed VM tests keep using their own fakes).
+>
+> **Reused vs newly wired:** REUSED unchanged — `FossilController.requestActivity`/`onActivityData`
+> + `FossilQAdapter.fetchActivity` (the CLI's exact fetch path), the golden-tested WP8
+> `ActivityParser`/`ActivitySummarizer` + the WP16f `SleepActivityAdapter`/`ActivityChartData`, the
+> WP3 service entry-point pattern + ble-worker threading + ble-gatt HandlerThread, the WP4
+> repository, the WP16f `ActivitySource`/`SleepActivityViewModel` surface. NEWLY WIRED —
+> `ActivityFetcher` (pure core), `ActivityState` (in-memory holder), the `ACTION_REQUEST_ACTIVITY`
+> action + `onActivityData` hook + fetch-on-connect in the service, `ServiceActivitySource` pointed
+> at the real holder/fetch, `ACTIVITY_WIRED=true`, and `DashboardUiState.steps`.
+>
+> **Did NOT touch** protocol wire bytes / `FossilController`/`FossilQAdapter` (the
+> `requestActivity`/`onActivityData` façade methods already existed — NO golden passthrough needed)
+> / `BleTransport` / `AndroidBleTransport.kt` (ble-gatt HandlerThread intact) /
+> `ActivityParser`/`ActivitySummarizer` output / the WP14 orchestrator/uploader behavior / existing
+> WP4 repository semantics (additive: none needed) / WP15 Debug Menu gating. **NO Room
+> entity/field added** (cache decision above).
+>
+> **Acceptance met:** `:protocol:test` **108 green** (unchanged — the façade already exposed
+> `requestActivity`/`onActivityData`, so no `:protocol` change was needed; all new logic is in
+> `:android`); `:android:testDebugUnitTest` **183 green** (the live baseline was 167 — the prior
+> banners' "176" overcounted; +16 new across the sub-parts: 8 `ActivityFetcher`, 5 `ActivityState`,
+> 2 Dashboard live-steps, 1 production-flag), 0 failures; `:android:assembleDebug` +
+> `:android:lintDebug` succeed; `./fossil-q --help` unchanged (md5 `7533ceccb6b29f81f6172bd5a71c5b98`).
+>
+> **On-device verification pending:** the actual BLE activity-file read + its delivery via
+> `onActivityData`, the fetch-on-connect firing end-to-end on a real watch, and the Sleep screen /
+> Dashboard steps updating live can only be confirmed on a device. The headless half — the
+> fetch→parse→publish logic + the no-data tolerance + the holder/observe contract + the
+> Dashboard/Sleep wiring — is unit-tested against the fixtures + a fake byte source. Model-agnostic
+> scope is on-device-pending: every watch emits the same minute-record format WP8 decodes.
+>
+> **Remaining non-UI milestones (after WP-ACTIVITY):** **WP13** calendar provider read +
+> ContentObserver → WP9 calendar→alarm mapping for slots 16–31 (the WP14 orchestrator already
+> compiles those slots — WP13 just populates the rows); the `NotificationListenerService`
+> interception + `MediaSessionManager` music control; the calibration live commands (WP F /
+> `CalibrationSync.CALIBRATION_WIRED`); and the protocol/CLI follow-ups (route the CLI
+> `alarm`/`notify`/`button`/`activity` commands through the shared WP5/6/7/8 helpers).
+
 **Goal:** The user-facing screens, each backed by a ViewModel reading WP4 + WP8 and writing via the service.
 
 **Sub-parts (each independently buildable with fake data/preview):**
