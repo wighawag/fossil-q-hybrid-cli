@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import qhybrid.android.db.ButtonMappingEntity
+import qhybrid.android.sync.ConnectionBanner
 import qhybrid.android.sync.SyncProgressUi
 import qhybrid.android.sync.SyncSaveButton
 
@@ -96,6 +97,9 @@ fun ButtonsContent(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            // WP-SYNCFIX: honest link state — editing is always allowed (Room is the source of
+            // truth); the banner says when changes reach the watch.
+            ConnectionBanner()
             when {
                 !state.hasActiveWatch -> Text(
                     "No active watch — associate one to manage button mappings.",

@@ -35,6 +35,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import qhybrid.android.sync.ConnectionBanner
 import qhybrid.android.sync.SyncProgressUi
 import qhybrid.android.sync.SyncStatusRow
 
@@ -113,6 +114,8 @@ fun SettingsContent(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text("Settings", style = MaterialTheme.typography.titleLarge)
+            // WP-SYNCFIX: honest link state — settings stay editable offline; banner says when synced.
+            ConnectionBanner()
             // WP-PROGRESS: each setting apply pokes a sync; surface the live SYNCING/result here.
             SyncStatusRow(progress = progress)
             if (!state.hasActiveWatch) {

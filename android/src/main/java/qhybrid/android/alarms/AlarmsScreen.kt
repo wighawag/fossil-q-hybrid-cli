@@ -48,6 +48,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import qhybrid.android.db.WatchAlarmEntity
+import qhybrid.android.sync.ConnectionBanner
 import qhybrid.android.sync.SyncProgressUi
 import qhybrid.android.sync.SyncSaveButton
 
@@ -130,6 +131,8 @@ fun AlarmsContent(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Spacer(Modifier.width(0.dp))
+            // WP-SYNCFIX: honest link state — alarms stay editable offline; banner says when synced.
+            ConnectionBanner()
             when {
                 !state.hasActiveWatch -> Text(
                     "No active watch — associate one to manage alarms.",

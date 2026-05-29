@@ -49,6 +49,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import qhybrid.android.sync.ConnectionBanner
 import qhybrid.android.sync.SyncProgressUi
 import qhybrid.android.sync.SyncSaveButton
 import kotlinx.coroutines.Dispatchers
@@ -148,6 +149,8 @@ fun NotificationsContent(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Spacer(Modifier.width(0.dp))
+            // WP-SYNCFIX: honest link state — rules stay editable offline; banner says when synced.
+            ConnectionBanner()
             when {
                 !state.hasActiveWatch -> Text(
                     "No active watch — associate one to manage notification rules.",
