@@ -16,6 +16,9 @@ import kotlinx.coroutines.launch
 import qhybrid.android.db.WatchAlarmEntity
 import qhybrid.android.db.WatchEntity
 import qhybrid.android.db.WatchRepository
+import qhybrid.android.sync.GlobalSyncStateSource
+import qhybrid.android.sync.SyncProgressUi
+import qhybrid.android.sync.SyncStateSource
 
 /**
  * WP16b — the Alarms screen's immutable UI state. A pure function of the WP4 active-watch
@@ -63,6 +66,8 @@ open class AlarmsViewModel(
     private val sync: AlarmSync,
     // Tests inject a TestScope/real scope; production passes null → uses [viewModelScope].
     scope: CoroutineScope? = null,
+    // WP-PROGRESS (sub-part 3): the process-wide sync signal the Save button observes.
+    syncSource: SyncStateSource = GlobalSyncStateSource(),
 ) : ViewModel() {
 
     private val coroutineScope: CoroutineScope = scope ?: viewModelScope
@@ -71,6 +76,16 @@ open class AlarmsViewModel(
         repo.observeActiveWatch()
             .flatMapLatest { active -> alarmsFor(active) }
             .stateIn(coroutineScope, SharingStarted.WhileSubscribed(5_000), AlarmsUiState())
+
+    /**
+     * WP-PROGRESS (sub-part 3) — the Save button's progress state, mapped purely from the
+     * process-wide [qhybrid.android.sync.SyncState] via [SyncProgressUi] (spinner + disable while
+     * SYNCING; transient success/error note). Visual rendering is on-device-pending.
+     */
+    val syncProgress: StateFlow<SyncProgressUi> =
+        syncSource.status
+            .map { SyncProgressUi.from(it) }
+            .stateIn(coroutineScope, SharingStarted.WhileSubscribed(5_000), SyncProgressUi.IDLE)
 
     private fun alarmsFor(active: WatchEntity?): Flow<AlarmsUiState> {
         val mac = active?.macAddress ?: return flowOf(AlarmsUiState(activeWatch = active))

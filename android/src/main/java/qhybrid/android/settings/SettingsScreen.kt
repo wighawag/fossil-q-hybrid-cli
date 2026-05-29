@@ -35,6 +35,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import qhybrid.android.sync.SyncProgressUi
+import qhybrid.android.sync.SyncStatusRow
 
 /**
  * WP16g — the Settings screen (the SEVENTH and LAST user-facing screen). State comes from
@@ -64,12 +66,14 @@ fun SettingsScreen(
     val context = LocalContext.current
     val vm: SettingsViewModel = viewModel(factory = SettingsViewModel.factory(context))
     val state by vm.uiState.collectAsStateWithLifecycle()
+    val progress by vm.syncProgress.collectAsStateWithLifecycle()
 
     // Load the installed-app list once for the music-app picker (reuses WP16c).
     LaunchedEffect(Unit) { vm.loadInstalledApps() }
 
     SettingsContent(
         state = state,
+        progress = progress,
         onSetVibration = vm::setVibrationStrength,
         onSetNudge = vm::setNudge,
         onSetTimezone = vm::setSecondTimezoneOffset,
@@ -95,6 +99,7 @@ fun SettingsContent(
     onTransfer: (String, String) -> Boolean,
     onOpenLogs: () -> Unit,
     modifier: Modifier = Modifier,
+    progress: SyncProgressUi = SyncProgressUi.IDLE,
 ) {
     var note by remember { mutableStateOf<String?>(null) }
 
@@ -108,6 +113,8 @@ fun SettingsContent(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text("Settings", style = MaterialTheme.typography.titleLarge)
+            // WP-PROGRESS: each setting apply pokes a sync; surface the live SYNCING/result here.
+            SyncStatusRow(progress = progress)
             if (!state.hasActiveWatch) {
                 Text(
                     "No active watch — per-watch settings are disabled. App preferences below " +

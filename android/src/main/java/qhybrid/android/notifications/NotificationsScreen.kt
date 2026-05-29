@@ -21,7 +21,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -50,6 +49,8 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import qhybrid.android.sync.SyncProgressUi
+import qhybrid.android.sync.SyncSaveButton
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import qhybrid.android.db.NotificationRuleEntity
@@ -76,6 +77,7 @@ fun NotificationsScreen(modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val vm: NotificationsViewModel = viewModel(factory = NotificationsViewModel.factory(context))
     val state by vm.uiState.collectAsStateWithLifecycle()
+    val progress by vm.syncProgress.collectAsStateWithLifecycle()
 
     // Load the installed launchable apps off the main thread; empty until ready so the dialog
     // still works (free-text) before the list arrives.
@@ -92,6 +94,7 @@ fun NotificationsScreen(modifier: Modifier = Modifier) {
         onUpdate = vm::updateRule,
         onDelete = vm::deleteRule,
         onSave = { vm.saveToWatch() },
+        progress = progress,
         modifier = modifier,
     )
 }
@@ -109,12 +112,12 @@ fun NotificationsContent(
     onDelete: (pkg: String) -> Unit,
     onSave: () -> Boolean,
     modifier: Modifier = Modifier,
+    progress: SyncProgressUi = SyncProgressUi.IDLE,
 ) {
     // Editor dialog state: null = closed; an entity with blank packageName = adding,
     // an entity with a real packageName already present = editing.
     var editing by remember { mutableStateOf<NotificationRuleEntity?>(null) }
     var addingNew by remember { mutableStateOf(false) }
-    var saveNote by remember { mutableStateOf<String?>(null) }
 
     Scaffold(
         modifier = modifier,
@@ -161,14 +164,12 @@ fun NotificationsContent(
                             "Per-app rules (${state.rules.size})",
                             style = MaterialTheme.typography.titleMedium,
                         )
-                        Button(onClick = {
-                            val wired = onSave()
-                            saveNote = if (wired) "Saved to watch."
-                            else "Saved locally. Filter-byte upload to the watch is pending (WP14)."
-                        }) { Text("Save to watch") }
-                    }
-                    saveNote?.let {
-                        Text(it, style = MaterialTheme.typography.labelSmall)
+                        // WP-PROGRESS: spinner + disable while SYNCING; transient success/error note.
+                        SyncSaveButton(
+                            progress = progress,
+                            hasActiveWatch = state.hasActiveWatch,
+                            onSave = { onSave() },
+                        )
                     }
                     Text(
                         "Pick an installed app (searchable by name), or type a package name.",

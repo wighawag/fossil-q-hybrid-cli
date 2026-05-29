@@ -18,6 +18,9 @@ import org.robolectric.annotation.Config
 import qhybrid.android.db.DbTestBase
 import qhybrid.android.notifications.InstalledApp
 import qhybrid.android.notifications.InstalledAppsProvider
+import qhybrid.android.sync.FakeSyncStateSource
+import qhybrid.android.sync.SyncProgressUi
+import qhybrid.android.sync.SyncState
 
 /**
  * WP16g — headless tests for the Settings state holder. Reuses the WP4 [DbTestBase] in-memory Room
@@ -95,7 +98,8 @@ class SettingsViewModelTest : DbTestBase() {
         prefs: SettingsPrefs = FakePrefs(),
         sync: SettingsSync = FakeSync(),
         apps: InstalledAppsProvider = FakeAppsProvider(emptyList()),
-    ) = SettingsViewModel(repo, prefs, sync, apps, vmScope)
+        syncSource: FakeSyncStateSource = FakeSyncStateSource(),
+    ) = SettingsViewModel(repo, prefs, sync, apps, vmScope, syncSource)
 
     private fun awaitState(
         flow: StateFlow<SettingsUiState>,
@@ -355,5 +359,33 @@ class SettingsViewModelTest : DbTestBase() {
         // WP14 sub-part 4: the live vibration / nudge / second-timezone commands
         // (persist-then-sync through the WP3 service's SyncOrchestrator) are wired.
         assertTrue(ServiceSettingsSync.SETTINGS_WIRED)
+    }
+
+    @Test
+    fun syncProgressReflectsSyncingThenSuccess() {
+        // WP-PROGRESS: each setting apply pokes a sync; the status-row progress flow maps it.
+        val source = FakeSyncStateSource()
+        val model = vm(syncSource = source)
+        assertFalse(model.syncProgress.value.syncing)
+
+        source.set(SyncState.SyncPhase.SYNCING)
+        val syncing = runBlocking {
+            withTimeout(5_000) { model.syncProgress.first { it.syncing } }
+        }
+        assertTrue(syncing.syncing)
+
+        source.set(
+            SyncState.SyncPhase.SUCCESS,
+            result = qhybrid.android.sync.SyncResult(
+                "AA:00:00:00:00:01",
+                listOf(qhybrid.android.sync.SyncSection.VIBRATION),
+                emptyList(),
+                emptyList(),
+            ),
+        )
+        val done = runBlocking {
+            withTimeout(5_000) { model.syncProgress.first { it.tone == SyncProgressUi.Tone.SUCCESS } }
+        }
+        assertFalse(done.syncing)
     }
 }

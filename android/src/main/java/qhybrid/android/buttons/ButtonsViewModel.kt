@@ -16,6 +16,9 @@ import kotlinx.coroutines.launch
 import qhybrid.android.db.ButtonMappingEntity
 import qhybrid.android.db.WatchEntity
 import qhybrid.android.db.WatchRepository
+import qhybrid.android.sync.GlobalSyncStateSource
+import qhybrid.android.sync.SyncProgressUi
+import qhybrid.android.sync.SyncStateSource
 
 /**
  * WP16d — the Buttons screen's immutable UI state. A pure function of the WP4 active-watch
@@ -68,6 +71,9 @@ open class ButtonsViewModel(
     private val sync: ButtonSync,
     // Tests inject a TestScope/real scope; production passes null → uses [viewModelScope].
     scope: CoroutineScope? = null,
+    // WP-PROGRESS (sub-part 3): the process-wide sync signal the Save button observes. Defaulted
+    // to the global holder for production; tests inject a [qhybrid.android.sync.FakeSyncStateSource].
+    syncSource: SyncStateSource = GlobalSyncStateSource(),
 ) : ViewModel() {
 
     private val coroutineScope: CoroutineScope = scope ?: viewModelScope
@@ -76,6 +82,17 @@ open class ButtonsViewModel(
         repo.observeActiveWatch()
             .flatMapLatest { active -> mappingsFor(active) }
             .stateIn(coroutineScope, SharingStarted.WhileSubscribed(5_000), ButtonsUiState())
+
+    /**
+     * WP-PROGRESS (sub-part 3) — the Save button's progress state, mapped purely from the
+     * process-wide [qhybrid.android.sync.SyncState] via [SyncProgressUi]. The button shows a
+     * spinner + disables while SYNCING, then a transient success/error note. (Visual spinner
+     * rendering is on-device-pending; the state mapping is unit-tested.)
+     */
+    val syncProgress: StateFlow<SyncProgressUi> =
+        syncSource.status
+            .map { SyncProgressUi.from(it) }
+            .stateIn(coroutineScope, SharingStarted.WhileSubscribed(5_000), SyncProgressUi.IDLE)
 
     private fun mappingsFor(active: WatchEntity?): Flow<ButtonsUiState> {
         val mac = active?.macAddress ?: return flowOf(ButtonsUiState(activeWatch = active))

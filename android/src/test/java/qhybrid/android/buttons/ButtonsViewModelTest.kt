@@ -17,6 +17,9 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import qhybrid.android.db.ButtonMappingEntity
 import qhybrid.android.db.DbTestBase
+import qhybrid.android.sync.FakeSyncStateSource
+import qhybrid.android.sync.SyncProgressUi
+import qhybrid.android.sync.SyncState
 
 /**
  * WP16d — headless tests for the Buttons state holder. Reuses the WP4 [DbTestBase] in-memory
@@ -42,7 +45,10 @@ class ButtonsViewModelTest : DbTestBase() {
         override fun saveToWatch(): Boolean { saveCount++; return wired }
     }
 
-    private fun vm(sync: ButtonSync = FakeButtonSync()) = ButtonsViewModel(repo, sync, vmScope)
+    private fun vm(
+        sync: ButtonSync = FakeButtonSync(),
+        syncSource: FakeSyncStateSource = FakeSyncStateSource(),
+    ) = ButtonsViewModel(repo, sync, vmScope, syncSource)
 
     private fun awaitState(
         flow: StateFlow<ButtonsUiState>,
@@ -355,6 +361,37 @@ class ButtonsViewModelTest : DbTestBase() {
         assertEquals(1, sync.saveCount)
         assertFalse(wired) // the FAKE reports false; the production flag is asserted below
     }
+
+    // ---- WP-PROGRESS: sync spinner state mapping --------------------------------
+
+    @Test
+    fun syncProgressReflectsSyncingThenSuccess() {
+        val source = FakeSyncStateSource()
+        val model = vm(syncSource = source)
+        // Idle: no spinner.
+        assertFalse(model.syncProgress.value.syncing)
+
+        source.set(SyncState.SyncPhase.SYNCING)
+        val syncing = awaitProgress(model) { it.syncing }
+        assertTrue(syncing.syncing)
+
+        source.set(
+            SyncState.SyncPhase.SUCCESS,
+            result = qhybrid.android.sync.SyncResult(
+                "AA:00:00:00:00:01",
+                listOf(qhybrid.android.sync.SyncSection.BUTTONS),
+                emptyList(),
+                emptyList(),
+            ),
+        )
+        val done = awaitProgress(model) { !it.syncing && it.tone == SyncProgressUi.Tone.SUCCESS }
+        assertEquals("Saved to watch.", done.note)
+    }
+
+    private fun awaitProgress(
+        model: ButtonsViewModel,
+        predicate: (SyncProgressUi) -> Boolean,
+    ): SyncProgressUi = runBlocking { withTimeout(5_000) { model.syncProgress.first { predicate(it) } } }
 
     @Test
     fun productionButtonUploadIsWired() {

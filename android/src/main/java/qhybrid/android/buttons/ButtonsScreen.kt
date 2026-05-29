@@ -13,7 +13,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -36,6 +35,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import qhybrid.android.db.ButtonMappingEntity
+import qhybrid.android.sync.SyncProgressUi
+import qhybrid.android.sync.SyncSaveButton
 
 /**
  * WP16d — the Buttons screen. Every Fossil Q Hybrid watch has exactly **three physical buttons**
@@ -49,18 +50,21 @@ import qhybrid.android.db.ButtonMappingEntity
  * Writes go through the VM ([ButtonsViewModel.setSlot] / [ButtonsViewModel.resetButton]).
  *
  * **On-device verification pending:** the slot cards, the mode dropdown, the action picker, the
- * dial-mode toggles, clear, and the Save effect can only be confirmed on a device. The actual
- * button-config upload to the watch is **WP14** ([ButtonSync] reports it not-yet-wired; the UI
- * flags it).
+ * dial-mode toggles, clear, and the Save effect can only be confirmed on a device. The
+ * button-config upload to the watch is wired (WP14 via [ButtonSync] → SyncOrchestrator); the
+ * WP-PROGRESS sync spinner/note (driven by [ButtonsViewModel.syncProgress]) reflects the live
+ * SYNCING→SUCCESS/ERROR state — the visual rendering itself is on-device-pending.
  */
 @Composable
 fun ButtonsScreen(modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val vm: ButtonsViewModel = viewModel(factory = ButtonsViewModel.factory(context))
     val state by vm.uiState.collectAsStateWithLifecycle()
+    val progress by vm.syncProgress.collectAsStateWithLifecycle()
 
     ButtonsContent(
         state = state,
+        progress = progress,
         onSetSlot = { id, mode, ids -> vm.setSlot(id, mode, ids) },
         onClear = vm::resetButton,
         onSave = { vm.saveToWatch() },
@@ -79,10 +83,10 @@ fun ButtonsContent(
     onClear: (buttonId: Int) -> Unit,
     onSave: () -> Boolean,
     modifier: Modifier = Modifier,
+    progress: SyncProgressUi = SyncProgressUi.IDLE,
 ) {
     // The slot currently being edited (buttonId), or null when no dialog is open.
     var editingSlot by remember { mutableStateOf<Int?>(null) }
-    var saveNote by remember { mutableStateOf<String?>(null) }
 
     Scaffold(modifier = modifier) { padding ->
         Column(
@@ -105,13 +109,13 @@ fun ButtonsContent(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text("Buttons", style = MaterialTheme.typography.titleMedium)
-                        Button(onClick = {
-                            val wired = onSave()
-                            saveNote = if (wired) "Saved to watch."
-                            else "Saved locally. Button-config upload to the watch is pending (WP14)."
-                        }) { Text("Save to watch") }
+                        // WP-PROGRESS: spinner + disable while SYNCING; transient success/error note.
+                        SyncSaveButton(
+                            progress = progress,
+                            hasActiveWatch = state.hasActiveWatch,
+                            onSave = { onSave() },
+                        )
                     }
-                    saveNote?.let { Text(it, style = MaterialTheme.typography.labelSmall) }
                     Text(
                         "Your watch has three buttons. Tap one to set what it does.",
                         style = MaterialTheme.typography.labelSmall,

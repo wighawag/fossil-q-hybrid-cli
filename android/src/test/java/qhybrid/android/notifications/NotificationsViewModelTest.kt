@@ -17,6 +17,9 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import qhybrid.android.db.DbTestBase
 import qhybrid.android.db.NotificationRuleEntity
+import qhybrid.android.sync.FakeSyncStateSource
+import qhybrid.android.sync.SyncProgressUi
+import qhybrid.android.sync.SyncState
 
 /**
  * WP16c — headless tests for the Notifications state holder. Reuses the WP4 [DbTestBase]
@@ -42,8 +45,10 @@ class NotificationsViewModelTest : DbTestBase() {
         override fun saveToWatch(): Boolean { saveCount++; return wired }
     }
 
-    private fun vm(sync: NotificationSync = FakeNotificationSync()) =
-        NotificationsViewModel(repo, sync, vmScope)
+    private fun vm(
+        sync: NotificationSync = FakeNotificationSync(),
+        syncSource: FakeSyncStateSource = FakeSyncStateSource(),
+    ) = NotificationsViewModel(repo, sync, vmScope, syncSource)
 
     private fun awaitState(
         flow: StateFlow<NotificationsUiState>,
@@ -258,6 +263,34 @@ class NotificationsViewModelTest : DbTestBase() {
         val wired = model.saveToWatch()
         assertEquals(1, sync.saveCount)
         assertFalse(wired) // the FAKE reports false; the production flag is asserted below
+    }
+
+    @Test
+    fun syncProgressReflectsSyncingThenSuccess() {
+        // WP-PROGRESS: the Save button's progress flow maps the process-wide sync signal.
+        val source = FakeSyncStateSource()
+        val model = vm(syncSource = source)
+        assertFalse(model.syncProgress.value.syncing)
+
+        source.set(SyncState.SyncPhase.SYNCING)
+        val syncing = runBlocking {
+            withTimeout(5_000) { model.syncProgress.first { it.syncing } }
+        }
+        assertTrue(syncing.syncing)
+
+        source.set(
+            SyncState.SyncPhase.SUCCESS,
+            result = qhybrid.android.sync.SyncResult(
+                "AA:00:00:00:00:01",
+                listOf(qhybrid.android.sync.SyncSection.NOTIFICATION_FILTER),
+                emptyList(),
+                emptyList(),
+            ),
+        )
+        val done = runBlocking {
+            withTimeout(5_000) { model.syncProgress.first { it.tone == SyncProgressUi.Tone.SUCCESS } }
+        }
+        assertFalse(done.syncing)
     }
 
     @Test

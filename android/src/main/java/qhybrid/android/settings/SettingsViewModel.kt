@@ -11,12 +11,16 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import qhybrid.android.db.WatchEntity
 import qhybrid.android.db.WatchRepository
 import qhybrid.android.notifications.InstalledApp
 import qhybrid.android.notifications.InstalledAppsProvider
+import qhybrid.android.sync.GlobalSyncStateSource
+import qhybrid.android.sync.SyncProgressUi
+import qhybrid.android.sync.SyncStateSource
 
 /**
  * WP16g — the Settings screen's immutable UI state. A combination of:
@@ -89,9 +93,21 @@ open class SettingsViewModel(
     private val appsProvider: InstalledAppsProvider,
     // Tests inject a real/Unconfined scope; production passes null → uses [viewModelScope].
     scope: CoroutineScope? = null,
+    // WP-PROGRESS (sub-part 3): the process-wide sync signal the Save/Apply controls observe.
+    syncSource: SyncStateSource = GlobalSyncStateSource(),
 ) : ViewModel() {
 
     private val coroutineScope: CoroutineScope = scope ?: viewModelScope
+
+    /**
+     * WP-PROGRESS (sub-part 3) — the Save/Apply progress state, mapped purely from the
+     * process-wide [qhybrid.android.sync.SyncState] via [SyncProgressUi] (spinner + disable while
+     * SYNCING; transient success/error note). Visual rendering is on-device-pending.
+     */
+    val syncProgress: StateFlow<SyncProgressUi> =
+        syncSource.status
+            .map { SyncProgressUi.from(it) }
+            .stateIn(coroutineScope, SharingStarted.WhileSubscribed(5_000), SyncProgressUi.IDLE)
 
     /** In-memory mirror of the persisted app prefs so writes re-render immediately. */
     private val appSettings = MutableStateFlow(prefs.get())

@@ -18,7 +18,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FilterChip
@@ -49,6 +48,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import qhybrid.android.db.WatchAlarmEntity
+import qhybrid.android.sync.SyncProgressUi
+import qhybrid.android.sync.SyncSaveButton
 
 /**
  * WP16b — the Alarms screen (user slots 0–15 only). State comes from [AlarmsViewModel]
@@ -65,8 +66,10 @@ fun AlarmsScreen(modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val vm: AlarmsViewModel = viewModel(factory = AlarmsViewModel.factory(context))
     val state by vm.uiState.collectAsStateWithLifecycle()
+    val progress by vm.syncProgress.collectAsStateWithLifecycle()
 
     AlarmsContent(
+        progress = progress,
         state = state,
         onAdd = { hour, minute, days, repeating ->
             vm.addAlarm(hour = hour, minute = minute, daysMask = days, isRepeating = repeating)
@@ -92,12 +95,11 @@ fun AlarmsContent(
     onToggleEnabled: (slotId: Int) -> Unit,
     onSave: () -> Boolean,
     modifier: Modifier = Modifier,
+    progress: SyncProgressUi = SyncProgressUi.IDLE,
 ) {
     // Editor dialog state: null = closed; a WatchAlarmEntity = editing (slot is fixed) or
     // a fresh template = adding (slotId == -1 marks "new").
     var editing by remember { mutableStateOf<WatchAlarmEntity?>(null) }
-    var saveNote by remember { mutableStateOf<String?>(null) }
-
     Scaffold(
         modifier = modifier,
         floatingActionButton = {
@@ -144,14 +146,12 @@ fun AlarmsContent(
                             "Alarms (${state.alarms.size}/${AlarmsUiState.USER_SLOT_COUNT})",
                             style = MaterialTheme.typography.titleMedium,
                         )
-                        Button(onClick = {
-                            val wired = onSave()
-                            saveNote = if (wired) "Saved to watch."
-                            else "Saved locally. Byte-upload to the watch is pending (WP14)."
-                        }) { Text("Save to watch") }
-                    }
-                    saveNote?.let {
-                        Text(it, style = MaterialTheme.typography.labelSmall)
+                        // WP-PROGRESS: spinner + disable while SYNCING; transient success/error note.
+                        SyncSaveButton(
+                            progress = progress,
+                            hasActiveWatch = state.hasActiveWatch,
+                            onSave = { onSave() },
+                        )
                     }
                     Text(
                         "Slots 0–15 (user alarms). Calendar slots 16–31 are managed automatically.",

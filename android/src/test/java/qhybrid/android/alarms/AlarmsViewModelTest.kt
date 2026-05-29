@@ -17,6 +17,9 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import qhybrid.android.db.DbTestBase
 import qhybrid.android.db.WatchAlarmEntity
+import qhybrid.android.sync.FakeSyncStateSource
+import qhybrid.android.sync.SyncProgressUi
+import qhybrid.android.sync.SyncState
 
 /**
  * WP16b — headless tests for the Alarms state holder. Reuses the WP4 [DbTestBase] in-memory
@@ -42,8 +45,10 @@ class AlarmsViewModelTest : DbTestBase() {
         override fun saveToWatch(): Boolean { saveCount++; return wired }
     }
 
-    private fun vm(sync: AlarmSync = FakeAlarmSync()) =
-        AlarmsViewModel(repo, sync, vmScope)
+    private fun vm(
+        sync: AlarmSync = FakeAlarmSync(),
+        syncSource: FakeSyncStateSource = FakeSyncStateSource(),
+    ) = AlarmsViewModel(repo, sync, vmScope, syncSource)
 
     private fun awaitState(
         flow: StateFlow<AlarmsUiState>,
@@ -285,6 +290,27 @@ class AlarmsViewModelTest : DbTestBase() {
         val wired = model.saveToWatch()
         assertEquals(1, sync.saveCount)
         assertFalse(wired) // the FAKE reports false; the production flag is asserted below
+    }
+
+    @Test
+    fun syncProgressReflectsSyncingThenError() {
+        // WP-PROGRESS: the Save button's progress flow maps the process-wide sync signal.
+        val source = FakeSyncStateSource()
+        val model = vm(syncSource = source)
+        assertFalse(model.syncProgress.value.syncing)
+
+        source.set(SyncState.SyncPhase.SYNCING)
+        val syncing = runBlocking {
+            withTimeout(5_000) { model.syncProgress.first { it.syncing } }
+        }
+        assertTrue(syncing.syncing)
+
+        source.set(SyncState.SyncPhase.ERROR, errorMessage = "link lost")
+        val err = runBlocking {
+            withTimeout(5_000) { model.syncProgress.first { it.tone == SyncProgressUi.Tone.ERROR } }
+        }
+        assertFalse(err.syncing)
+        assertTrue(err.note!!.contains("link lost"))
     }
 
     @Test
