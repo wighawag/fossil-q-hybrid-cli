@@ -2,6 +2,8 @@ plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
     id 'org.jetbrains.kotlin.plugin.compose'
+    // WP4: Room compiler via KSP.
+    id 'com.google.devtools.ksp'
 }
 
 android {
@@ -34,6 +36,19 @@ android {
     buildFeatures {
         compose true
     }
+
+    // WP4: Robolectric unit tests need Android resources available on the JVM.
+    testOptions {
+        unitTests {
+            includeAndroidResources = true
+            returnDefaultValues = true
+        }
+    }
+}
+
+// WP4: Room schema export location (kept off for now; schemas aren't checked in).
+ksp {
+    arg('room.incremental', 'true')
 }
 
 dependencies {
@@ -53,4 +68,16 @@ dependencies {
     // WP3: StateFlow connection-state holder + lifecycle-aware collection in Compose.
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
     implementation 'androidx.lifecycle:lifecycle-runtime-compose:2.8.7'
+
+    // WP4: Room persistence (multi-watch + clone/transfer). Pure data layer, no BLE.
+    implementation 'androidx.room:room-runtime:2.6.1'
+    implementation 'androidx.room:room-ktx:2.6.1'
+    ksp 'androidx.room:room-compiler:2.6.1'
+
+    // WP4: headless DAO/transfer tests on the JVM (in-memory Room via Robolectric).
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.robolectric:robolectric:4.13'
+    testImplementation 'androidx.test:core:1.6.1'
+    testImplementation 'androidx.room:room-testing:2.6.1'
+    testImplementation 'org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1'
 }

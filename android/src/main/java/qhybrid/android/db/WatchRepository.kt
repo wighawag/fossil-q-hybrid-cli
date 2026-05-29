@@ -1,0 +1,96 @@
+package qhybrid.android.db
+
+import android.content.Context
+import androidx.room.withTransaction
+import kotlinx.coroutines.flow.Flow
+
+/**
+ * WP4 — thin repository over the Room DAOs. This is the surface the rest of the app
+ * (UI in WP16, the WP3 service when DB-driven sync lands in WP14) consumes; callers
+ * never touch DAOs directly.
+ *
+ * NOTE on the associated-MAC relationship with WP3: [WatchEntity] is the source of truth
+ * for watch identity/state. WP3's CompanionManager SharedPreferences pref stays as the
+ * lightweight "which MAC to auto-reconnect to" pointer (read at boot), untouched. Use
+ * [registerWatch] to mirror an association into the DB and mark it active.
+ */
+class WatchRepository(
+    private val db: AppDatabase,
+    private val watchDao: WatchDao = db.watchDao(),
+    private val alarmDao: WatchAlarmDao = db.watchAlarmDao(),
+    private val ruleDao: NotificationRuleDao = db.notificationRuleDao(),
+    private val buttonDao: ButtonMappingDao = db.buttonMappingDao(),
+) {
+
+    constructor(context: Context) : this(AppDatabase.get(context))
+
+    // ---- watches -------------------------------------------------------------
+
+    suspend fun upsertWatch(watch: WatchEntity) = watchDao.upsert(watch)
+    suspend fun getWatch(mac: String): WatchEntity? = watchDao.getByMac(mac)
+    suspend fun getAllWatches(): List<WatchEntity> = watchDao.getAll()
+    fun observeWatches(): Flow<List<WatchEntity>> = watchDao.observeAll()
+    suspend fun deleteWatch(mac: String) = watchDao.deleteByMac(mac)
+
+    suspend fun getActiveWatch(): WatchEntity? = watchDao.getActive()
+    fun observeActiveWatch(): Flow<WatchEntity?> = watchDao.observeActive()
+    suspend fun setActiveWatch(mac: String) = watchDao.setActive(mac)
+
+    /**
+     * Mirror a CDM association into the DB: create the watch row if missing (preserving
+     * any existing details) and make it the single active watch. Idempotent.
+     */
+    suspend fun registerWatch(mac: String, name: String) {
+        val normalized = mac.uppercase()
+        val existing = watchDao.getByMac(normalized)
+        if (existing == null) {
+            watchDao.upsert(
+                WatchEntity(
+                    macAddress = normalized,
+                    name = name,
+                    model = null,
+                    firmwareVersion = null,
+                    batteryLevel = 0,
+                )
+            )
+        }
+        watchDao.setActive(normalized)
+    }
+
+    // ---- per-watch child settings -------------------------------------------
+
+    suspend fun getAlarms(mac: String) = alarmDao.getForWatch(mac)
+    fun observeAlarms(mac: String) = alarmDao.observeForWatch(mac)
+    suspend fun upsertAlarm(alarm: WatchAlarmEntity) = alarmDao.upsert(alarm)
+    suspend fun deleteAlarmSlot(mac: String, slotId: Int) = alarmDao.deleteSlot(mac, slotId)
+
+    suspend fun getRules(mac: String) = ruleDao.getForWatch(mac)
+    fun observeRules(mac: String) = ruleDao.observeForWatch(mac)
+    suspend fun upsertRule(rule: NotificationRuleEntity) = ruleDao.upsert(rule)
+
+    suspend fun getButtons(mac: String) = buttonDao.getForWatch(mac)
+    fun observeButtons(mac: String) = buttonDao.observeForWatch(mac)
+    suspend fun upsertButton(mapping: ButtonMappingEntity) = buttonDao.upsert(mapping)
+
+    // ---- clone / transfer ----------------------------------------------------
+
+    /**
+     * Copy all alarms, notification rules, and button mappings from [fromMac] onto
+     * [toMac] (ANDROID-PLAN §3 "Settings Transfer / Clone"). Each row is re-keyed to
+     * [toMac] and bulk-inserted with REPLACE; the source watch is never modified.
+     *
+     * Runs in a single transaction so a partial failure can't leave [toMac] half-cloned.
+     * Pre-existing rows on [toMac] that collide on PK are overwritten; non-colliding rows
+     * on [toMac] are left in place (matches the documented "bulk-insert with REPLACE").
+     */
+    suspend fun transferSettings(fromMac: String, toMac: String) {
+        db.withTransaction {
+            val alarms = alarmDao.getForWatch(fromMac).map { it.copy(watchMac = toMac) }
+            val rules = ruleDao.getForWatch(fromMac).map { it.copy(watchMac = toMac) }
+            val buttons = buttonDao.getForWatch(fromMac).map { it.copy(watchMac = toMac) }
+            alarmDao.upsertAll(alarms)
+            ruleDao.upsertAll(rules)
+            buttonDao.upsertAll(buttons)
+        }
+    }
+}
