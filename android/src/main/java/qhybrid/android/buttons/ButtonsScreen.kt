@@ -11,16 +11,16 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -204,14 +204,20 @@ private fun SlotEditorDialog(
     onDismiss: () -> Unit,
     onConfirm: (modeType: String, ids: List<String>) -> Unit,
 ) {
-    var mode by remember { mutableStateOf(initialMode) }
-    // Selected ids: actions when SINGLE_ACTION/MUSIC_MULTIMODE, dial modes when CUSTOM_TOGGLE.
-    var selected by remember { mutableStateOf(initialIds) }
+    var mode by remember { mutableStateOf(ButtonModes.normalize(initialMode)) }
+    // Selected ids: actions when SINGLE_ACTION/MUSIC_MULTIMODE (single-select, ≤1),
+    // dial modes when CUSTOM_TOGGLE (multi-select, the cycle). We always keep [selected]
+    // already normalized for the current [mode] so an invalid combination cannot be stored.
+    var selected by remember { mutableStateOf(ButtonMappingRules.normalizeIds(mode, initialIds)) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         confirmButton = {
-            TextButton(onClick = { onConfirm(mode, selected) }) { Text("Save") }
+            // [selected] is kept normalized for [mode]; normalize once more defensively so the
+            // editor can NEVER hand back an invalid combination (WP-BTN cardinality contract).
+            TextButton(onClick = { onConfirm(mode, ButtonMappingRules.normalizeIds(mode, selected)) }) {
+                Text("Save")
+            }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
         title = { Text(ButtonSlots.label(buttonId)) },
@@ -221,21 +227,34 @@ private fun SlotEditorDialog(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Text("Mode", style = MaterialTheme.typography.labelLarge)
-                ModeDropdown(selected = mode, onSelect = { mode = it })
+                ModeDropdown(
+                    selected = mode,
+                    onSelect = { newMode ->
+                        // Re-normalize the current selection for the new mode so switching
+                        // (e.g. CUSTOM_TOGGLE → SINGLE_ACTION) drops now-invalid extra ids.
+                        selected = ButtonMappingRules.normalizeIds(newMode, selected)
+                        mode = newMode
+                    },
+                )
 
                 HorizontalDivider()
 
                 if (ButtonModes.usesDialModes(mode)) {
-                    Text("Dial modes to cycle", style = MaterialTheme.typography.labelLarge)
+                    Text("Cycle dial modes", style = MaterialTheme.typography.labelLarge)
                     DialModeToggles(
                         selected = selected,
                         onToggle = { id -> selected = toggle(selected, id) },
                     )
                 } else {
-                    Text("Actions", style = MaterialTheme.typography.labelLarge)
-                    ActionCheckboxes(
-                        selected = selected,
-                        onToggle = { id -> selected = toggle(selected, id) },
+                    // Single-select: MUSIC_MULTIMODE offers only music-capable actions.
+                    val options =
+                        if (mode == ButtonModes.MUSIC_MULTIMODE) ButtonMappingRules.MUSIC_ACTIONS
+                        else ButtonActions.ALL
+                    Text("Action", style = MaterialTheme.typography.labelLarge)
+                    ActionRadioGroup(
+                        options = options,
+                        selected = selected.firstOrNull(),
+                        onSelect = { id -> selected = listOf(id) },
                     )
                 }
             }
@@ -243,6 +262,7 @@ private fun SlotEditorDialog(
     )
 }
 
+/** Multi-select toggle (CUSTOM_TOGGLE only): add/remove a dial-mode id from the cycle. */
 private fun toggle(list: List<String>, id: String): List<String> =
     if (id in list) list - id else list + id
 
@@ -264,19 +284,25 @@ private fun ModeDropdown(selected: String, onSelect: (String) -> Unit) {
     }
 }
 
+/**
+ * WP-BTN single-select action picker (SINGLE_ACTION / MUSIC_MULTIMODE). A radio group enforces
+ * the cardinality contract in the UI itself: exactly one action can be chosen, so an invalid
+ * multi-action combination can never be stored. [options] is the music-only subset for
+ * MUSIC_MULTIMODE, the full catalog otherwise.
+ */
 @Composable
-private fun ActionCheckboxes(selected: List<String>, onToggle: (String) -> Unit) {
+private fun ActionRadioGroup(options: List<String>, selected: String?, onSelect: (String) -> Unit) {
     LazyColumn(modifier = Modifier.heightIn(max = 240.dp)) {
-        items(ButtonActions.ALL, key = { it }) { id ->
+        items(options, key = { it }) { id ->
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .toggleable(value = id in selected, onValueChange = { onToggle(id) })
+                    .selectable(selected = id == selected, onClick = { onSelect(id) })
                     .padding(vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Checkbox(checked = id in selected, onCheckedChange = { onToggle(id) })
+                RadioButton(selected = id == selected, onClick = { onSelect(id) })
                 Text(ButtonActions.label(id), style = MaterialTheme.typography.bodyMedium)
             }
         }
@@ -287,7 +313,7 @@ private fun ActionCheckboxes(selected: List<String>, onToggle: (String) -> Unit)
 private fun DialModeToggles(selected: List<String>, onToggle: (String) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(
-            "Pick the dial positions a press cycles through.",
+            "This button cycles through the dial positions you pick, one per press.",
             style = MaterialTheme.typography.labelSmall,
         )
         ButtonDialModes.ALL.forEach { id ->
