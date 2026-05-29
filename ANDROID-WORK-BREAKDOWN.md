@@ -640,6 +640,114 @@ unchanged; `:android:assembleDebug` succeeds. No protocol wire bytes / `AlarmSlo
 
 ## WP14 — Sync Orchestration (WorkManager + Sync-on-Connect)
 
+> **WP14 STATUS:** ✅ DONE & VERIFIED (provable orchestration core JVM/Robolectric-tested; the
+> service wiring builds + lint-passes; the BLE upload effect flagged on-device-pending). Follows
+> the proven WP16 two-layer pattern exactly: a pure, injectable decision/compile core + a thin
+> Android layer (the WP3 service + WorkManager) behind it. **WP14 flips ALL the remaining WP16
+> `*_WIRED` / `SETTINGS_WIRED` flags true.** Implemented in 5 committed sub-parts (`wp14: …`).
+>
+> **(1) Sync orchestrator core (`qhybrid.android.sync`, pure + Robolectric/in-memory Room):**
+> - `SyncOrchestrator` (pure object) — given a `SyncInput` (the active watch's WP4 rows: alarms
+>   0–15, calendar 16–31, notification rules, button mappings + app/watch settings) it computes
+>   the compiled payloads via the **golden-tested WP5/6/7 compilers + WP16g vocabulary** and calls
+>   an injectable `Uploader` seam in a **defined, guarded order**: alarms → notification filter →
+>   buttons → vibration → nudge → second timezone. **Invents NO wire bytes** — reuses
+>   `AlarmCompiler` (WP5), `NotificationFilterEntry` (WP6), `ButtonConfigBuilder.build` (= WP7
+>   `ButtonCompiler`) exclusively. Row→protocol mapping is pure (daysMask passed straight through;
+>   `CUSTOM_TOGGLE` → dial-mode SEQUENCED/TOGGLE entries; other modes → `ConfigPayload` actions;
+>   unknown ids dropped).
+> - **Guards / tolerance:** no-active-watch → empty `SyncResult`, never throws; empty section →
+>   skipped (never push an empty file); all-disabled alarms → skipped (compiles to 0 bytes);
+>   **32-slot guard** delegated to `AlarmCompiler` (throws on 33+ → recorded as a `SyncError`,
+>   the remaining sections still run); null settings not applied. `SyncResult` records
+>   performed/skipped/errors for logging.
+> - `SyncInput`/`SyncSettings` (immutable snapshot) + `SyncDataLoader` (the suspend DB-reading
+>   bridge: 16/16 slot split, per-watch vibration from the WP4 row, app-pref nudge/second-timezone
+>   from the WP16g `SettingsPrefs`; nudge only included when enabled). Keeping the loader separate
+>   leaves the orchestrator a pure function of `SyncInput`.
+> - **Tests:** `SyncOrchestratorTest` (13, Robolectric) drive a `FakeUploader` and assert the
+>   compiled payloads **cross-checked against the same golden compilers** + the upload order + the
+>   guards (no-watch / empty / all-disabled / unknown-action / 32-slot / null-settings /
+>   performed-vs-skipped); `SyncDataLoaderTest` (6, in-memory Room) asserts the DB→`SyncInput`
+>   assembly.
+>
+> **(2) Service upload actions + `runOnConnectSync` (`qhybrid.android.WatchConnectionService`):**
+> - A private `ServiceUploader` implements `Uploader` against the WP3-owned `FossilController`,
+>   reusing the golden-tested façade upload + settings methods (`setAlarms` /
+>   `uploadNotificationFilter` / `setButtons` + `setVibrationStrength` / `setInactivityNudge` /
+>   `setSecondTimezone`). The alarm upload waits (bounded 30s) on the adapter's `CompletableFuture`
+>   to sequence the pass; the rest fire-and-forward like init.
+> - `runOnConnectSync(controller)` (the WP3 placeholder) now loads the active watch's config via
+>   `SyncDataLoader` and runs `SyncOrchestrator` against `ServiceUploader`, logging the result. It
+>   runs on the **ble-worker** thread (the caller is already on it), so the suspend DB read uses
+>   `runBlocking` off the main thread. `submitSync()` (the existing `syncNow` entry point) already
+>   routes through `runOnConnectSync`, so **`syncNow` now drives the orchestrator** too — and so
+>   does every WP16 "Save to watch" seam (they poke `syncNow`). No regression to the ble-gatt
+>   HandlerThread / transport / wire bytes.
+>
+> **(3) Flipped `*_WIRED` flags (sub-parts 3 & 4) — all true, each with a production-flag test:**
+> - `ServiceAlarmSync.ALARM_UPLOAD_WIRED = true` (WP5 `AlarmCompiler` → alarm file).
+> - `ServiceNotificationSync.FILTER_UPLOAD_WIRED = true` (WP6 `NotificationCompiler`, 32 B/entry).
+> - `ServiceButtonSync.BUTTON_UPLOAD_WIRED = true` (WP7 `ButtonCompiler` → SETTINGS_BUTTONS 0x0600).
+> - `ServiceSettingsSync.SETTINGS_WIRED = true` (vibration/nudge/second-timezone via
+>   `ConfigurationPutRequest` items 0x0A/0x09/0x11 — **persist-then-sync**: the VM persists the
+>   value to the WP4 row / `SettingsPrefs`, then `syncNow` reloads + applies it live). The
+>   `*Sync.saveToWatch()` impls are unchanged in behaviour (persist via the ViewModel intents,
+>   then `syncNow`); only the flag flips. The fake-backed ViewModel tests keep using `wired=false`
+>   fakes; a new `production…IsWired()` test in each ViewModel test asserts the production constant.
+>
+> **(4) Periodic safety job + sync-on-connect glue (sub-part 5):**
+> - **DEP CHOICE (stated):** WorkManager was NOT on the classpath → added first-party
+>   `androidx.work:work-runtime-ktx:2.9.1` (named in ANDROID-PLAN §5/§6) rather than hand-rolling
+>   AlarmManager.
+> - `SyncScheduleDecider` (**pure, unit-tested**) — the conservative "safety net" decision: **NO
+>   continuous scanning, NO forced connect** (CDM owns reconnection). Rules: no associated watch →
+>   skip; associated but link down → skip (the CDM reconnect + sync-on-connect path owns it);
+>   associated + link up → `syncNow` to reconcile drift. Clamps the period to WorkManager's 15-min
+>   floor.
+> - `SyncSafetyWorker` (`CoroutineWorker`) applies the decider to `WatchState` + the CDM
+>   association and pokes `syncNow` only when the link is up (always `Result.success` — a skip is
+>   normal). `SyncScheduler` enqueues UNIQUE periodic work (KEEP, default 6 h) with NOT_REQUIRED
+>   network + battery-not-low constraints (low-priority reconciler; defers under Doze). Armed
+>   (idempotent) on `BootReceiver` re-arm + on service `ACTION_CONNECT`; cancelled on full stop.
+>   Sync-on-connect itself is sub-part 2.
+> - **Tests:** `SyncScheduleDeciderTest` (5).
+>
+> **Reused vs newly wired:** REUSED unchanged — every protocol compiler/façade (WP5/6/7 +
+> settings), the WP3 service entry points + ble-worker threading + ble-gatt HandlerThread, the
+> WP4 repository surface, the WP16g `SettingsPrefs`/`SettingsVocabulary` + the WP16d button
+> vocabulary, the WP16 `*Sync` seams' `saveToWatch()` behaviour. NEWLY WIRED — the
+> `qhybrid.android.sync` package (orchestrator core + loader + uploader seam + scheduler/worker),
+> `runOnConnectSync` filled in, the 4 `*_WIRED` flags, WorkManager scheduling.
+>
+> **Did NOT touch** protocol wire bytes / `FossilController`/`FossilQAdapter` / `BleTransport` /
+> `AndroidBleTransport.kt` (ble-gatt HandlerThread intact) / `ActivityParser`/`ActivitySummarizer`
+> output / existing WP4 repository semantics (additive only — none needed) / WP15 Debug Menu
+> gating. **NO Room entity/field added** (WP14 doesn't own one; calendar slots 16–31 stay WP9/WP13).
+>
+> **Acceptance met:** `:protocol:test` **108 green** (unchanged — all orchestration logic is in
+> `:android` since it maps Room rows + drives the Android service; the compilers it reuses are
+> already golden-tested in `:protocol`); `:android:testDebugUnitTest` **176 green** (139 at WP16g
+> baseline → +13 vocab already present = 148, then +28 new across sub-parts 1/3/4/5: 19 sync core,
+> 3 alarm/notif/button production-flag, 1 settings production-flag, 5 scheduler), 0 failures;
+> `:android:assembleDebug` + `:android:lintDebug` succeed; `./fossil-q --help` unchanged.
+>
+> **On-device verification pending:** the actual BLE writes (alarm/filter/button file transfer +
+> the live `ConfigurationPutRequest` settings) and their hardware effect; sync-on-connect firing
+> end-to-end on a real watch; the WorkManager periodic schedule + Doze deferral. The headless half
+> — the compile order / guards / DB→payload mapping / settings + the periodic decision logic — is
+> unit-tested. Model-agnostic scope is on-device-pending: a watch that lacks a setting/button/dial
+> mode ignores it on-device.
+>
+> **Remaining non-UI milestones (unchanged by WP14):** the **activity-file fetch WP** (BLE read →
+> WP8 parse → `ServiceActivitySource`, flips `ACTIVITY_WIRED` + feeds `DashboardUiState.steps`);
+> **WP13** calendar provider read + ContentObserver → WP9 calendar→alarm mapping for slots 16–31
+> (the orchestrator already accepts `calendarAlarms` and compiles slots 16–31, so WP13 just needs
+> to populate those rows); **WP9** calendar slots 16–31 are wired through the compiler but unfed
+> until WP13; the `NotificationListenerService` interception + `MediaSessionManager` music control;
+> the calibration live commands (WP F, `CALIBRATION_WIRED`); and the protocol/CLI follow-ups
+> (routing the CLI `alarm`/`notify`/`button` commands through the shared WP5/6/7 helpers).
+
 **Goal:** Tie triggers together: periodic safety job, ContentObserver push, and sync-on-connect; compile (WP5/WP6/WP7) and upload via service (WP3).
 
 **Depends on:** WP3, WP4, WP5, WP6, WP7, WP9, WP13.
