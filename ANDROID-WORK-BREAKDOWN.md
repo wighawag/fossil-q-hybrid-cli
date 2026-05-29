@@ -913,6 +913,86 @@ same `LogRingBuffer` for a CLI `logs` command.
 > (notifications), **WP16d** (buttons), **WP16e** (calibration), **WP16f** (sleep/activity charts),
 > **WP16g** (settings) follow the same ViewModel+StateFlow / fake-backed-test pattern.
 
+> **WP16c STATUS:** ✅ DONE & VERIFIED (provable core JVM/Robolectric-tested; UI builds +
+> lint-passes; list/picker rendering + the real filter-byte upload flagged on-device-pending /
+> deferred to WP14). Mirrors the proven WP16a/WP16b two-layer pattern exactly: a unit-tested
+> state holder + an Android UI layer that compiles and lint-passes. Manages per-app
+> `NotificationRuleEntity` rows (vibe pattern + precise hand position) for the active watch.
+>
+> **(1) Provable core (`qhybrid.android.notifications`, Robolectric + in-memory Room):**
+> - `NotificationsViewModel` + `NotificationsUiState` — observes the WP4
+>   `WatchRepository.observeActiveWatch()` and (per active watch) `observeRules(mac)`, **sorted
+>   by packageName**, into one immutable `NotificationsUiState` via `flatMapLatest` +
+>   `stateIn(WhileSubscribed)` (identical structure to WP16b). Derived helpers: `activeMac`,
+>   `hasActiveWatch`, `packageNames` (for duplicate-rejection).
+> - Intents: `addRule` (**rejects a duplicate packageName** — the composite PK is
+>   [watchMac, packageName]; we don't want a silent REPLACE — and no-ops on no-active-watch /
+>   blank package; returns a Boolean accepted/rejected), `updateRule` (→ `upsertRule`),
+>   `deleteRule(pkg)` (→ new single-row repo/DAO `deleteRule(mac, pkg)`), `setVibePattern`,
+>   and `setHandPosition(hour/minute degrees)`. All writes **clamp** vibe to 0–9 and degrees
+>   to 0–359 before persisting.
+> - `VibePatterns` — centralized vibe-pattern constants + human labels shared by VM + tests +
+>   UI so they cannot drift: `AUTO=0, CALL=1, TEXT=2, EMAIL=3, DEFAULT=4 … ONE_LONG=8, NO_VIBE=9`
+>   plus `LABELS`, `ALL`, `clamp`/`clampDegrees`/`label`/`handSummary`. **This IS the WP6 wire
+>   convention 1:1** (NotificationCompiler 0xC3 VIBRATION byte / FINDINGS #23) — the stored value
+>   is the on-wire vibe byte; NO translation. Degree bounds 0–359 match FINDINGS #24.
+> - `NotificationSync` interface + `ServiceNotificationSync` production impl: "Save to watch"
+>   forwards to the existing WP3 `WatchConnectionService.syncNow` (the rows are already persisted
+>   to Room by the intents). **No new BLE/protocol behavior.** `saveToWatch()` returns
+>   `FILTER_UPLOAD_WIRED=false` to surface that the **actual filter-byte upload pipeline (WP6
+>   `NotificationCompiler.compileFilter` → 32-byte-per-entry BLE filter-file write) is DEFERRED
+>   to WP14**; the UI shows an "on-device-pending" note until then.
+> - **Additive DB change:** added single-row `NotificationRuleDao.deleteRule(mac, pkg)` (same
+>   style as the existing `deleteForWatch`) + `WatchRepository.deleteRule(mac, pkg)`. No change
+>   to existing DAO/repository semantics.
+> - **Tests:** `android/src/test/.../notifications/NotificationsViewModelTest.kt` (12, Robolectric
+>   + `DbTestBase` in-memory Room): vibe constants match the wire convention + clamp bounds; rules
+>   combine sorted by packageName; empty/no-active-watch; add inserts the given fields; duplicate
+>   packageName rejected (NOT overwritten); add no-op on no-active-watch / blank package; vibe +
+>   hand-position updates write the right row; `updateRule` clamps out-of-range values; delete
+>   removes the row; save delegates to the fake and reports the WP14-pending flag. Plus 1 DAO test
+>   `CrudRoundTripTest.rule_deleteSingleRow` for the new single-row delete. (Same
+>   REAL-`CoroutineScope` + bounded `awaitState` polling as WP16a/b, since Room Flows re-emit on
+>   Room's executor.) `:android:testDebugUnitTest` now **50 total (37 prior + 13)**, 0 failures.
+>
+> **(2) UI layer (`qhybrid.android.notifications.NotificationsScreen`, build + lint green):**
+> - `NotificationsScreen()` hosts the production VM via `viewModel(factory = …)` and renders a
+>   stateless `NotificationsContent(state, intents…)` (pure function of `NotificationsUiState` +
+>   lambdas → preview/UI-testable with fake state). A `LazyColumn` of per-app rules (package name,
+>   vibe-pattern label, hand-position summary), an **Add app rule** FAB, a delete icon per row,
+>   and a **Save to watch** button (with the WP14-pending note). The add/edit `AlertDialog` has a
+>   package field (free text + an `ExposedDropdownMenu` of a small `SAMPLE_PACKAGES` list, with
+>   inline duplicate-package validation), a **vibe-pattern dropdown** (`0 — Auto … 9 — Silent`),
+>   and hour/minute **hand-degree** number inputs (0–359).
+> - Reachable via a **third tab** on the existing bottom `NavigationBar` in `MainActivity`
+>   (Dashboard / Alarms / **Notifications**). The Notifications tab uses `Icons.Filled.Email`
+>   from `material-icons-core` (the `Notifications` icon is already used by the Alarms tab; the
+>   extended/`Alarm` icons are NOT on the classpath). The nav only shows on the home surface; the
+>   **top-right Setup gear** and the **WP15 Debug gear (still release-gated** by
+>   `DebugMenu.isEnabled()`) overlay on top; WP16a Dashboard + WP16b Alarms tabs are unchanged.
+>
+> **Acceptance met:** `:protocol:test` 108 green (unchanged); `:android:testDebugUnitTest` 50 green
+> (37 + 13); `:android:assembleDebug` + `:android:lintDebug` succeed; `./fossil-q --help` unchanged.
+> NO change to protocol wire bytes / `BleTransport` / `AndroidBleTransport.kt` / WP3
+> `WatchConnectionService` wire behavior (only calls the existing `syncNow` entry point) /
+> `NotificationCompiler` output / existing WP4 repository semantics (only ADDED the single-row
+> `deleteRule`) / WP15 Debug Menu gating; WP16a Dashboard + WP16b Alarms still work.
+>
+> **On-device verification pending:** the Compose Notifications list/scroll, the package field +
+> sample dropdown, the vibe-pattern dropdown, the hand-degree inputs, the delete/save effects, and
+> the 3-tab bottom-nav switching can only be confirmed on a device. The headless half (state
+> combination + intents → right repo/fake calls + correct clamping/duplicate-rejection) is
+> unit-tested.
+>
+> **Deferred / follow-ups:** the **actual filter-byte upload to the watch is WP14** (compile the
+> per-app rows via WP6 `NotificationCompiler.compileFilter` → 32-byte-per-entry BLE filter-file
+> write); `ServiceNotificationSync.FILTER_UPLOAD_WIRED` flips to true then. **Populating the
+> installed-app list** (querying `PackageManager` / `NotificationListenerService` plumbing) is its
+> OWN later WP — for WP16c the package is a free-text field (with a small `SAMPLE_PACKAGES`
+> convenience list); the UI flags this. Remaining screens **WP16d** (buttons), **WP16e**
+> (calibration), **WP16f** (sleep/activity charts), **WP16g** (settings) follow the same
+> ViewModel+StateFlow / fake-backed-test pattern.
+
 **Goal:** The user-facing screens, each backed by a ViewModel reading WP4 + WP8 and writing via the service.
 
 **Sub-parts (each independently buildable with fake data/preview):**

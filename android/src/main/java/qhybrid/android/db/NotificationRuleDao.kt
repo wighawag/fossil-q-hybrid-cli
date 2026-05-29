@@ -23,6 +23,9 @@ interface NotificationRuleDao {
     @Query("DELETE FROM notification_rules WHERE watchMac = :mac")
     suspend fun deleteForWatch(mac: String)
 
+    @Query("DELETE FROM notification_rules WHERE watchMac = :mac AND packageName = :pkg")
+    suspend fun deleteRule(mac: String, pkg: String)
+
     @Query("SELECT * FROM notification_rules WHERE watchMac = :mac AND packageName = :pkg")
     suspend fun getRule(mac: String, pkg: String): NotificationRuleEntity?
 

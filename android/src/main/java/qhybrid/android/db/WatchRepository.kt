@@ -67,6 +67,7 @@ class WatchRepository(
     suspend fun getRules(mac: String) = ruleDao.getForWatch(mac)
     fun observeRules(mac: String) = ruleDao.observeForWatch(mac)
     suspend fun upsertRule(rule: NotificationRuleEntity) = ruleDao.upsert(rule)
+    suspend fun deleteRule(mac: String, pkg: String) = ruleDao.deleteRule(mac, pkg)
 
     suspend fun getButtons(mac: String) = buttonDao.getForWatch(mac)
     fun observeButtons(mac: String) = buttonDao.observeForWatch(mac)

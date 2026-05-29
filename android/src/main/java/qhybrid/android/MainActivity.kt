@@ -28,6 +28,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Settings
@@ -51,6 +52,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import qhybrid.android.alarms.AlarmsScreen
 import qhybrid.android.dashboard.DashboardScreen
+import qhybrid.android.notifications.NotificationsScreen
 import qhybrid.android.debug.DebugMenu
 import qhybrid.android.debug.DebugMenuScreen
 import androidx.compose.ui.Modifier
@@ -104,8 +106,11 @@ class MainActivity : ComponentActivity() {
      * shown ONLY in debug builds ([DebugMenu.isEnabled] == BuildConfig.DEBUG) so the
      * developer surface never ships enabled in a release build (WP15 requirement).
      */
-    /** WP16: the bottom-nav home tabs (Dashboard = WP16a, Alarms = WP16b). */
-    private enum class HomeTab { DASHBOARD, ALARMS }
+    /**
+     * WP16: the bottom-nav home tabs (Dashboard = WP16a, Alarms = WP16b,
+     * Notifications = WP16c).
+     */
+    private enum class HomeTab { DASHBOARD, ALARMS, NOTIFICATIONS }
 
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
@@ -123,6 +128,7 @@ class MainActivity : ComponentActivity() {
             showDebug -> "Debug Menu"
             showSetup -> "Setup"
             tab == HomeTab.ALARMS -> "Alarms"
+            tab == HomeTab.NOTIFICATIONS -> "Notifications"
             else -> "Fossil Q"
         }
         Scaffold(
@@ -157,6 +163,12 @@ class MainActivity : ComponentActivity() {
                             icon = { Icon(Icons.Filled.Notifications, contentDescription = "Alarms") },
                             label = { Text("Alarms") },
                         )
+                        NavigationBarItem(
+                            selected = tab == HomeTab.NOTIFICATIONS,
+                            onClick = { tab = HomeTab.NOTIFICATIONS },
+                            icon = { Icon(Icons.Filled.Email, contentDescription = "Notifications") },
+                            label = { Text("Notifications") },
+                        )
                     }
                 }
             },
@@ -166,6 +178,7 @@ class MainActivity : ComponentActivity() {
                     showDebug && DebugMenu.isEnabled() -> DebugMenuScreen()
                     showSetup -> HomeScreen()
                     tab == HomeTab.ALARMS -> AlarmsScreen()
+                    tab == HomeTab.NOTIFICATIONS -> NotificationsScreen()
                     else -> DashboardScreen()
                 }
             }

@@ -59,6 +59,24 @@ class CrudRoundTripTest : DbTestBase() {
         assertNull(ruleDao.getRule(mac, "com.whatsapp"))
     }
 
+    /** WP16c — single-row [NotificationRuleDao.deleteRule] removes only the matching package. */
+    @Test
+    fun rule_deleteSingleRow() = runTest {
+        watchDao.upsert(watch(mac))
+        ruleDao.upsert(rule(mac, "com.whatsapp"))
+        ruleDao.upsert(rule(mac, "com.slack"))
+        assertEquals(2, ruleDao.getForWatch(mac).size)
+
+        ruleDao.deleteRule(mac, "com.whatsapp")
+        val remaining = ruleDao.getForWatch(mac)
+        assertEquals(1, remaining.size)
+        assertEquals("com.slack", remaining.first().packageName)
+
+        // Deleting a non-existent package is a harmless no-op.
+        ruleDao.deleteRule(mac, "com.absent")
+        assertEquals(1, ruleDao.getForWatch(mac).size)
+    }
+
     @Test
     fun button_crud() = runTest {
         watchDao.upsert(watch(mac))

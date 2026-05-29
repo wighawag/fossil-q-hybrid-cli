@@ -1,0 +1,170 @@
+package qhybrid.android.notifications
+
+import android.content.Context
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+import qhybrid.android.db.NotificationRuleEntity
+import qhybrid.android.db.WatchEntity
+import qhybrid.android.db.WatchRepository
+
+/**
+ * WP16c — the Notifications screen's immutable UI state. A pure function of the WP4
+ * active-watch row + that watch's per-app notification rules, sorted by packageName.
+ */
+data class NotificationsUiState(
+    /** The WP4 active watch (the one whose rules we edit), or null if none. */
+    val activeWatch: WatchEntity? = null,
+    /** Per-app rules for the active watch, sorted by packageName ascending. */
+    val rules: List<NotificationRuleEntity> = emptyList(),
+) {
+    val activeMac: String? get() = activeWatch?.macAddress
+    val hasActiveWatch: Boolean get() = activeWatch != null
+
+    /** Package names already configured (for duplicate-rejection in the UI). */
+    val packageNames: Set<String> get() = rules.mapTo(HashSet()) { it.packageName }
+}
+
+/**
+ * WP16c — observes the WP4 active watch and its per-app notification rules into one
+ * [NotificationsUiState], and exposes the rule intents (add/update/delete + per-field
+ * setters + save).
+ *
+ * Add/update/delete go through [WatchRepository] (WP4). "Save to watch" delegates to the
+ * injectable [NotificationSync] seam so the ViewModel is unit-testable with a fake (no
+ * service, no BLE). **No new BLE/protocol behavior is added** — the real filter-byte upload
+ * is WP14 (see [NotificationSync]); vibePattern is the WP6 wire convention 1:1 (see
+ * [VibePatterns]).
+ */
+@Suppress("OPT_IN_USAGE") // flatMapLatest is experimental-but-stable in our coroutines version
+open class NotificationsViewModel(
+    private val repo: WatchRepository,
+    private val sync: NotificationSync,
+    // Tests inject a TestScope/real scope; production passes null → uses [viewModelScope].
+    scope: CoroutineScope? = null,
+) : ViewModel() {
+
+    private val coroutineScope: CoroutineScope = scope ?: viewModelScope
+
+    val uiState: StateFlow<NotificationsUiState> =
+        repo.observeActiveWatch()
+            .flatMapLatest { active -> rulesFor(active) }
+            .stateIn(coroutineScope, SharingStarted.WhileSubscribed(5_000), NotificationsUiState())
+
+    private fun rulesFor(active: WatchEntity?): Flow<NotificationsUiState> {
+        val mac = active?.macAddress ?: return flowOf(NotificationsUiState(activeWatch = active))
+        return repo.observeRules(mac).map { rows ->
+            // observeRules already ORDER BYs packageName, but re-sort defensively so the
+            // UiState contract (sorted by packageName) holds regardless of the DAO query.
+            NotificationsUiState(activeWatch = active, rules = rows.sortedBy { it.packageName })
+        }
+    }
+
+    // ---- intents -------------------------------------------------------------
+
+    /**
+     * Add a new per-app rule. **Rejects a duplicate packageName** for the active watch
+     * (the composite PK is [watchMac, packageName]; we don't want an add to silently
+     * REPLACE an existing rule). No-op (returns false) if there is no active watch, the
+     * package is blank, or a rule for that package already exists.
+     *
+     * @return true if the rule was queued for insert, false if rejected.
+     */
+    fun addRule(
+        packageName: String,
+        vibePattern: Int = VibePatterns.DEFAULT,
+        hourHandDegrees: Int = 0,
+        minuteHandDegrees: Int = 0,
+    ): Boolean {
+        val state = uiState.value
+        val mac = state.activeMac ?: return false
+        val pkg = packageName.trim()
+        if (pkg.isEmpty()) return false
+        if (pkg in state.packageNames) return false // duplicate-package rejection
+        coroutineScope.launch {
+            // Guard against a TOCTOU race with Room's flow latency: re-check the DB.
+            if (repo.getRules(mac).any { it.packageName == pkg }) return@launch
+            repo.upsertRule(
+                NotificationRuleEntity(
+                    watchMac = mac,
+                    packageName = pkg,
+                    vibePattern = VibePatterns.clamp(vibePattern),
+                    hourHandDegrees = VibePatterns.clampDegrees(hourHandDegrees),
+                    minuteHandDegrees = VibePatterns.clampDegrees(minuteHandDegrees),
+                )
+            )
+        }
+        return true
+    }
+
+    /**
+     * Upsert an edited rule row (watchMac/packageName is the composite PK, so it replaces
+     * the matching row). Values are clamped to their valid ranges.
+     */
+    fun updateRule(rule: NotificationRuleEntity) {
+        coroutineScope.launch {
+            repo.upsertRule(
+                rule.copy(
+                    vibePattern = VibePatterns.clamp(rule.vibePattern),
+                    hourHandDegrees = VibePatterns.clampDegrees(rule.hourHandDegrees),
+                    minuteHandDegrees = VibePatterns.clampDegrees(rule.minuteHandDegrees),
+                )
+            )
+        }
+    }
+
+    /** Delete the rule for [packageName] of the active watch. No-op if no active watch. */
+    fun deleteRule(packageName: String) {
+        val mac = uiState.value.activeMac ?: return
+        coroutineScope.launch { repo.deleteRule(mac, packageName) }
+    }
+
+    /** Set the vibe pattern (0–9, WP6 1:1) for [packageName]'s rule. */
+    fun setVibePattern(packageName: String, vibePattern: Int) {
+        val rule = uiState.value.rules.firstOrNull { it.packageName == packageName } ?: return
+        updateRule(rule.copy(vibePattern = VibePatterns.clamp(vibePattern)))
+    }
+
+    /** Set the hour + minute hand positions (0–359 degrees) for [packageName]'s rule. */
+    fun setHandPosition(packageName: String, hourHandDegrees: Int, minuteHandDegrees: Int) {
+        val rule = uiState.value.rules.firstOrNull { it.packageName == packageName } ?: return
+        updateRule(
+            rule.copy(
+                hourHandDegrees = VibePatterns.clampDegrees(hourHandDegrees),
+                minuteHandDegrees = VibePatterns.clampDegrees(minuteHandDegrees),
+            )
+        )
+    }
+
+    /**
+     * "Save to watch" — the rows are already persisted to Room by the intents above; this
+     * delegates to [NotificationSync] to poke the service. Returns whether the real
+     * filter-byte upload is wired yet (false until WP14; the UI surfaces an
+     * "on-device-pending" note when false).
+     */
+    fun saveToWatch(): Boolean = sync.saveToWatch()
+
+    companion object {
+        /** Production factory: real [WatchRepository] + [ServiceNotificationSync]. */
+        fun factory(context: Context): ViewModelProvider.Factory {
+            val appContext = context.applicationContext
+            return object : ViewModelProvider.Factory {
+                @Suppress("UNCHECKED_CAST")
+                override fun <T : ViewModel> create(modelClass: Class<T>): T =
+                    NotificationsViewModel(
+                        repo = WatchRepository(appContext),
+                        sync = ServiceNotificationSync(appContext),
+                    ) as T
+            }
+        }
+    }
+}
