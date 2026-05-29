@@ -12,8 +12,17 @@ import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
+import kotlinx.coroutines.runBlocking
+import qhybrid.android.db.WatchRepository
+import qhybrid.android.settings.SharedPreferencesSettingsPrefs
+import qhybrid.android.sync.SyncDataLoader
+import qhybrid.android.sync.SyncOrchestrator
+import qhybrid.android.sync.Uploader
 import qhybrid.protocol.FossilController
+import qhybrid.protocol.model.NotificationFilterEntry
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
@@ -250,12 +259,39 @@ class WatchConnectionService : Service() {
     }
 
     /**
-     * Sync-on-connect entry point. WP3 keeps this at the WP2 auth-only baseline; WP5/6/9
-     * will add alarm/filter/calendar uploads here, and WP14 will call [syncNow] to re-run it.
+     * WP14 — sync-on-connect. Loads the active watch's configuration (WP4 rows + WP16g app
+     * prefs) via [SyncDataLoader] and runs the pure [SyncOrchestrator] against a production
+     * [ServiceUploader] over [controller]. ALWAYS runs on the ble-worker thread (the caller —
+     * [connectAndInit] / [submitSync] — is already on it), so the suspending DB read is done
+     * with [runBlocking] safely (never the main thread).
+     *
+     * BLE effect is on-device-pending; the decision logic + payload compilation are unit-tested
+     * (WP14 sub-part 1). Reuses the golden-tested protocol compilers/façade — no wire bytes
+     * invented.
      */
     private fun runOnConnectSync(controller: FossilController) {
-        // Intentionally minimal for WP3. Placeholder for future WPs.
+        try {
+            val input = runBlocking { loader().load() }
+            if (!input.hasWatch) {
+                Log.i(TAG, "sync: no active watch — nothing to upload")
+                return
+            }
+            val result = SyncOrchestrator.sync(input, ServiceUploader(controller))
+            Log.i(
+                TAG,
+                "sync done mac=${result.mac} performed=${result.performed} " +
+                    "skipped=${result.skipped} errors=${result.errors}",
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "sync failed", e)
+        }
     }
+
+    private fun loader(): SyncDataLoader =
+        SyncDataLoader(
+            WatchRepository(applicationContext),
+            SharedPreferencesSettingsPrefs(applicationContext),
+        )
 
     private fun submitSync() {
         worker.execute {
@@ -265,6 +301,58 @@ class WatchConnectionService : Service() {
                 return@execute
             }
             runCatching { runOnConnectSync(c) }
+        }
+    }
+
+    /**
+     * WP14 — production [Uploader] over the WP3-owned [FossilController]. Reuses the golden-tested
+     * façade upload + settings methods (WP5/6/7 + ConfigurationPutRequest items); invents NO wire
+     * bytes. Every call runs on the ble-worker thread (this is only ever constructed/called from
+     * [runOnConnectSync], which is already on the worker). The alarm upload waits (bounded) on the
+     * adapter's CompletableFuture so the pass is sequenced; the others are fire-and-forward like
+     * the CLI/init path.
+     */
+    private class ServiceUploader(private val controller: FossilController) : Uploader {
+        override fun uploadAlarms(alarmFile: ByteArray): Boolean {
+            val future = CompletableFuture<Boolean>()
+            controller.setAlarms(alarmFile, future)
+            return runCatching { future.get(UPLOAD_TIMEOUT_MS, TimeUnit.MILLISECONDS) }
+                .getOrElse {
+                    Log.w(TAG, "alarm upload timed out / failed", it)
+                    false
+                }
+        }
+
+        override fun uploadNotificationFilter(entries: List<NotificationFilterEntry>): Boolean {
+            controller.uploadNotificationFilter(entries)
+            return true
+        }
+
+        override fun uploadButtons(buttonConfigFile: ByteArray): Boolean {
+            controller.setButtons(buttonConfigFile)
+            return true
+        }
+
+        override fun applyVibrationStrength(strength: Int): Boolean {
+            controller.setVibrationStrength(strength.toShort())
+            return true
+        }
+
+        override fun applyInactivityNudge(
+            fromHour: Int, fromMinute: Int, toHour: Int, toMinute: Int,
+            inactiveMinutes: Int, enabled: Boolean,
+        ): Boolean {
+            controller.setInactivityNudge(fromHour, fromMinute, toHour, toMinute, inactiveMinutes, enabled)
+            return true
+        }
+
+        override fun applySecondTimezone(offsetMinutes: Int): Boolean {
+            controller.setSecondTimezone(offsetMinutes.toShort())
+            return true
+        }
+
+        companion object {
+            private const val UPLOAD_TIMEOUT_MS = 30_000L
         }
     }
 
