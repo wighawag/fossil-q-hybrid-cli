@@ -17,6 +17,8 @@ import qhybrid.android.db.WatchRepository
 import qhybrid.android.settings.SharedPreferencesSettingsPrefs
 import qhybrid.android.sync.SyncDataLoader
 import qhybrid.android.sync.SyncOrchestrator
+import qhybrid.android.sync.SyncState
+import qhybrid.android.sync.SyncStateReporter
 import qhybrid.android.sync.Uploader
 import qhybrid.protocol.FossilController
 import qhybrid.protocol.model.NotificationFilterEntry
@@ -311,14 +313,32 @@ class WatchConnectionService : Service() {
                 Log.i(TAG, "sync: no active watch — nothing to upload")
                 return
             }
-            val result = SyncOrchestrator.sync(input, ServiceUploader(controller))
-            Log.i(
-                TAG,
-                "sync done mac=${result.mac} performed=${result.performed} " +
-                    "skipped=${result.skipped} errors=${result.errors}",
-            )
+            // WP-PROGRESS (sub-part 2): the WP3 service is the SINGLE writer of the process-wide
+            // SyncState. Delegate the phase choreography (SYNCING before the pass — the Save
+            // buttons spin + disable — then SUCCESS from the result, or ERROR if the pass throws
+            // before producing one) to the pure, unit-tested SyncStateReporter. We only mark
+            // SYNCING once we know there IS an active watch, so a no-watch poke stays IDLE. The
+            // BLE effect itself is on-device-pending; section-level failures are carried through
+            // honestly via SyncResult.errors (see SyncState.SyncStatus.hadSectionErrors).
+            val result = SyncStateReporter.reportAround(System::currentTimeMillis) {
+                SyncOrchestrator.sync(input, ServiceUploader(controller))
+            }
+            if (result != null) {
+                Log.i(
+                    TAG,
+                    "sync done mac=${result.mac} performed=${result.performed} " +
+                        "skipped=${result.skipped} errors=${result.errors}",
+                )
+            }
         } catch (e: Exception) {
+            // A failure loading the input (before the sync pass) — reportAround handles failures
+            // of the pass itself. Record ERROR so the UI does not hang on a stale SYNCING.
             Log.e(TAG, "sync failed", e)
+            SyncState.publish(
+                SyncState.SyncPhase.ERROR,
+                errorMessage = e.message ?: e.javaClass.simpleName,
+                nowMillis = System.currentTimeMillis(),
+            )
         }
     }
 
