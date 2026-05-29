@@ -95,6 +95,17 @@ public class FossilController {
         return FossilQAdapter.buildNotificationFilterFile(entries);
     }
 
+    /**
+     * Build the official-format NOTIFICATION_PLAY file bytes (pure, deterministic).
+     * Time and messageId are injected so the bytes are reproducible; the live
+     * play path injects {@code System.currentTimeMillis()} internally.
+     */
+    public static byte[] buildPlayFile(String packageName, String title, String sender,
+                                       String message, int nowEpochSeconds, int messageId) {
+        return qhybrid.protocol.requests.fossil.notification.NotificationCompiler
+                .buildPlayFile(packageName, title, sender, message, nowEpochSeconds, messageId);
+    }
+
     public void playNotification(String packageName) {
         adapter.playNotificationByPackageName(packageName);
     }

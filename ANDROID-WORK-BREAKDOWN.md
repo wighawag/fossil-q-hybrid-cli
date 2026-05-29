@@ -399,6 +399,22 @@ now 36 total (22 prior + 14), 0 failures. `./fossil-q --help` unchanged;
 
 **Done when:** compiled filter reproduces the documented CRC/position/vibe layout.
 
+**STATUS: DONE & VERIFIED.** Pure helper `qhybrid.protocol.requests.fossil.notification.NotificationCompiler`
+(`compileFilter`, `compileEntry`, `compileEntryWithCrc`, `buildPlayFile`, `computeNullTerminatedCrc`).
+The existing `FossilQAdapter` filter + play builders now **delegate** to it (single source of truth;
+live wire bytes unchanged). The impure play path injects `System.currentTimeMillis()` (timestamp +
+messageId) into the pure `buildPlayFile`. Façade `FossilController.buildPlayFile(...)` added next to
+`buildNotificationFilterFile(...)`. Golden tests: `protocol/src/test/.../golden/Wp6NotificationCompilerTest.java`
+(19 tests) — known-package CRCs (`com.whatsapp`=0x40C7ED7C, `com.google.android.calendar`=0xBA3DC156),
+per-entry layout, the full FINDINGS #17 7-entry/224-byte capture via the CRC-injected builder, N×32
+length, input-order, and the deterministic play file with time-dependent fields asserted at the right
+offsets. `:protocol:test` 68 green. **Variable-length / SENDER_NAME (0x02) form (FINDINGS #21d) is NOT
+implemented — possible future work.**
+
+> **TODO (CLI wiring, later):** the `:cli` `notify` / `notify-config` commands should be routed
+> through this same pure helper (via `FossilController.buildNotificationFilterFile` /
+> `FossilController.buildPlayFile`) so there is exactly one notification-byte implementation.
+
 ---
 
 ## WP7 — Button Mapping Compile (multi-entry + dial modes)

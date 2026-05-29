@@ -352,60 +352,15 @@ public class FossilQAdapter {
     }
 
     private byte[] buildOfficialNotificationFile(String title, String sender, String message, String packageName) {
-        java.nio.charset.Charset utf8 = java.nio.charset.StandardCharsets.UTF_8;
-        byte[] titleBytes = (title + "\0").getBytes(utf8);
-        byte[] senderBytes = (sender + "\0").getBytes(utf8);
-        byte[] messageBytes = (message + "\0").getBytes(utf8);
-
-        // Extra fields the official app adds (not in GB):
-        byte[] sentinelBytes = new byte[]{(byte) 0xFF, (byte) 0xFF, (byte) 0xFF, (byte) 0xFF};
-        int timestamp = (int) (System.currentTimeMillis() / 1000);
-        byte[] timestampBytes = java.nio.ByteBuffer.allocate(4)
-                .order(java.nio.ByteOrder.LITTLE_ENDIAN).putInt(timestamp).array();
-
-        byte lengthBufferLength = 12; // Official app uses 12, GB uses 10
-        byte notificationType = 3;    // NOTIFICATION
-        byte flags = 0x02;
-        byte uidLength = 4;
-        byte appBundleCRCLength = 4;
-
+        // Live wire path: capture the clock here (twice, exactly as before — the
+        // timestamp field and the messageId), then delegate to the pure WP6 helper
+        // so the bytes are byte-identical and there is a single source of truth.
+        int now = (int) (System.currentTimeMillis() / 1000);
         int messageId = (int) System.currentTimeMillis();
-
-        // CRC of package name — must match the CRC in the notification filter.
-        // Use null-terminated CRC to match the official Fossil app format.
         int packageCrc = computeNullTerminatedCrc(packageName);
         LOG.info("Notification CRC: 0x{} (package: {})", String.format("%08X", packageCrc), packageName);
-
-        short mainBufferLength = (short) (lengthBufferLength + uidLength + appBundleCRCLength
-                + titleBytes.length + senderBytes.length + messageBytes.length
-                + sentinelBytes.length + timestampBytes.length);
-
-        java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(mainBufferLength);
-        buf.order(java.nio.ByteOrder.LITTLE_ENDIAN);
-
-        // Length buffer header (12 bytes: mainBufLen(2)+lbl(1)+type(1)+flags(1)+uidl(1)+crcl(1)+5 field lengths)
-        buf.putShort(mainBufferLength);
-        buf.put(lengthBufferLength);
-        buf.put(notificationType);
-        buf.put(flags);
-        buf.put(uidLength);
-        buf.put(appBundleCRCLength);
-        buf.put((byte) titleBytes.length);
-        buf.put((byte) senderBytes.length);
-        buf.put((byte) messageBytes.length);
-        buf.put((byte) sentinelBytes.length);    // Extra field 1 length
-        buf.put((byte) timestampBytes.length);   // Extra field 2 length
-
-        // Data fields
-        buf.putInt(messageId);
-        buf.putInt(packageCrc);
-        buf.put(titleBytes);
-        buf.put(senderBytes);
-        buf.put(messageBytes);
-        buf.put(sentinelBytes);
-        buf.put(timestampBytes);
-
-        return buf.array();
+        return qhybrid.protocol.requests.fossil.notification.NotificationCompiler
+                .buildPlayFile(packageName, title, sender, message, now, messageId);
     }
 
     public void playNotification(PlayNotificationRequest.VibrationType vibration, int hourDeg, int minDeg) {
@@ -1633,13 +1588,8 @@ public class FossilQAdapter {
      * the watch firmware to not match the filter entry.
      */
     static int computeNullTerminatedCrc(String packageName) {
-        byte[] nameBytes = packageName.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-        byte[] withNull = new byte[nameBytes.length + 1];
-        System.arraycopy(nameBytes, 0, withNull, 0, nameBytes.length);
-        withNull[nameBytes.length] = 0;
-        java.util.zip.CRC32 crc = new java.util.zip.CRC32();
-        crc.update(withNull);
-        return (int) crc.getValue();
+        return qhybrid.protocol.requests.fossil.notification.NotificationCompiler
+                .computeNullTerminatedCrc(packageName);
     }
 
     /**
@@ -1649,12 +1599,8 @@ public class FossilQAdapter {
      * Byte-identical to the per-entry builder used during init.
      */
     public static byte[] buildNotificationFilterFile(java.util.List<qhybrid.protocol.model.NotificationFilterEntry> entries) {
-        java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(entries.size() * 32);
-        buf.order(java.nio.ByteOrder.LITTLE_ENDIAN);
-        for (qhybrid.protocol.model.NotificationFilterEntry e : entries) {
-            buf.put(buildNotificationFilterData(e.packageName, e.vibe, e.hourDeg, e.minDeg));
-        }
-        return buf.array();
+        return qhybrid.protocol.requests.fossil.notification.NotificationCompiler
+                .compileFilter(entries);
     }
 
     /**
@@ -1674,43 +1620,9 @@ public class FossilQAdapter {
                                                 short hourDeg, short minDeg) {
         int crc = computeNullTerminatedCrc(packageName);
         LOG.info("Filter CRC for '{}': 0x{}", packageName, String.format("%08X", crc));
-
-        // Entry size: packetLength(2) + CRC(6) + GROUP(3) + PRIORITY(3) +
-        //             MOVEMENT(12) + DISPLAY(3) + VIBRATION(3) = 32 total
-        java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(32);
-        buf.order(java.nio.ByteOrder.LITTLE_ENDIAN);
-
-        buf.putShort((short) 30); // packet length (excluding this 2-byte field)
-
-        buf.put((byte) 0x04);     // PACKAGE_NAME_CRC
-        buf.put((byte) 4);
-        buf.putInt(crc);
-
-        buf.put((byte) 0x80);     // GROUP_ID
-        buf.put((byte) 1);
-        buf.put((byte) 0);        // 0 = default group (official app uses 0)
-
-        buf.put((byte) 0xC1);     // PRIORITY
-        buf.put((byte) 1);
-        buf.put((byte) 0);        // 0 = default priority (official app uses 0)
-
-        buf.put((byte) 0xC2);     // HAND_MOVEMENT (10 bytes: hour, min, subeye, duration, subeye2)
-        buf.put((byte) 10);
-        buf.putShort(hourDeg);    // hour hand degrees
-        buf.putShort(minDeg);     // minute hand degrees
-        buf.putShort((short) -1); // subeye: no move
-        buf.putShort((short) 10000); // duration 10000ms (official app default)
-        buf.putShort((short) -2); // subeye2: device default (-2)
-
-        buf.put((byte) 0xC4);     // DISPLAY_CONFIG
-        buf.put((byte) 1);
-        buf.put((byte) 0);
-
-        buf.put((byte) 0xC3);     // VIBRATION
-        buf.put((byte) 1);
-        buf.put(vibePattern);
-
-        return buf.array();
+        // Delegate to the pure WP6 helper (single source of truth, byte-identical).
+        return qhybrid.protocol.requests.fossil.notification.NotificationCompiler
+                .compileEntry(packageName, vibePattern, hourDeg, minDeg);
     }
 
     private void syncNotificationSettings() {
