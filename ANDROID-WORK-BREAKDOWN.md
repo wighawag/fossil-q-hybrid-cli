@@ -467,6 +467,45 @@ compiler bytes); a TODO note marks routing it directly through `ButtonCompiler` 
 
 ## WP8 — Activity / Sleep / Calorie Parsing Surface
 
+**Status:** ✅ DONE & VERIFIED (JVM, no hardware). Pure surface added to `:protocol`:
+`qhybrid.protocol.activity.ActivitySummarizer` (slf4j-free; `java.time` only). It adds
+**ZERO parsing math** — it only wraps/aggregates the EXISTING `ActivityParser` output into
+clean platform-neutral domain objects for the UI/DB, and the sleep path **delegates 1:1** to
+`ActivityParser.detectSleep(...)`:
+- **(a) per-day:** `DayActivity` {date, steps, calories, activeMinutes, recordCount} +
+  `summarizeByDay(ActivityData, ZoneId)` (zone injected — no system clock) + `totalSteps`/
+  `totalCalories` convenience.
+- **(b) sleep:** `SleepSession` {start/endEpochSeconds, durationMinutes, restlessMinutes,
+  avgVariability, quality} + `detectSleepSessions(ActivityData)` (+ thresholds overload) which
+  calls `ActivityParser.detectSleep` and maps each `SleepPeriod` 1:1. `ActivityParser` is
+  untouched and remains the single source of truth for byte decoding + sleep detection.
+
+Fçade entry points added: `FossilController.summarizeActivityByDay(data, zone)` and
+`FossilController.detectSleepSessions(data)` (mirrors WP6/WP7 static pure helpers).
+
+14 new fixture/golden tests (`protocol/src/test/.../golden/Wp8ActivitySummarizerTest.java`)
+green; `:protocol:test` now **94 total (83 prior + 11)**, 0 failures. `./fossil-q --help`
+unchanged; `:android:assembleDebug` succeeds. No `ActivityParser` math/output / `BleTransport`
+/ `AndroidBleTransport.kt` / WP3 service / WP5–WP9 compiler output touched.
+
+**Golden values locked (from the repo fixtures via the existing parser):**
+- `activity-test.bin`: 1 segment, 18 records → **totalSteps=6, calorieSum=0, sleepSessions=0**
+  (18 records < the 30-minute sleep minimum → empty list).
+- `activity.bin`: 2 segments, 857 records → **totalSteps=2, calorieSum=0, sleepSessions=1**,
+  that session **duration=855m, restless=6, quality="good"**.
+- Per-day equivalence: Σ day steps == `ActivityData.totalSteps()`; Σ day calories == raw
+  record calorie sum; day buckets sorted ascending; Σ recordCount == `records.size()`.
+- Sleep equivalence: `detectSleepSessions` returns exactly what `ActivityParser.detectSleep`
+  returns (count + every field, incl. avgVariability and quality).
+- Edge cases: empty `ActivityData` (no records) → both surfaces empty; single segment
+  (`activity-test.bin`); multi-segment ordering (`activity.bin`).
+
+> **CLI FOLLOW-UP (not part of this WP — do later):** `:cli` `Main.java` (the `activity`
+> command, ~lines 2366–2385) already surfaces activity/sleep/calorie via direct
+> `ActivityParser` calls + `formatSummary`/`formatSleepSummary`/`formatNdjson*`. Route its
+> per-day/sleep output through this same `ActivitySummarizer` / `FossilController` surface so
+> there is exactly one parsing-surface implementation (mirrors the WP6/WP7 CLI follow-ups).
+
 **Goal:** Expose `ActivityParser` outputs (steps, calories, sleep periods) as clean domain objects for the UI/DB. The parser already exists — this WP is the API + tests around it.
 
 **Scope:**

@@ -5,7 +5,9 @@ import qhybrid.protocol.BleTransport;
 import qhybrid.protocol.FossilQAdapter;
 import qhybrid.protocol.model.NotificationFilterEntry;
 import qhybrid.protocol.model.SyncSettings;
+import qhybrid.protocol.activity.ActivitySummarizer;
 
+import java.time.ZoneId;
 import java.util.List;
 import java.util.function.Consumer;
 
@@ -136,6 +138,26 @@ public class FossilController {
             qhybrid.protocol.buttonconfig.ConfigPayload[] payloads, boolean appendChecksum) {
         return qhybrid.protocol.requests.fossil.button.ButtonCompiler
                 .compileSingleEntryPerButton(payloads, appendChecksum);
+    }
+
+    /**
+     * Summarize parsed activity data into per-local-day step/calorie totals (WP8).
+     * Pure aggregation over {@link ActivityParser} output; single source of truth =
+     * {@code ActivitySummarizer}. The day-bucketing zone is injected (no system clock).
+     */
+    public static List<ActivitySummarizer.DayActivity> summarizeActivityByDay(
+            ActivityParser.ActivityData data, ZoneId zone) {
+        return ActivitySummarizer.summarizeByDay(data, zone);
+    }
+
+    /**
+     * Detect sleep sessions from parsed activity data (WP8). Delegates to
+     * {@link ActivityParser#detectSleep} via {@code ActivitySummarizer} — no
+     * detection math re-implemented.
+     */
+    public static List<ActivitySummarizer.SleepSession> detectSleepSessions(
+            ActivityParser.ActivityData data) {
+        return ActivitySummarizer.detectSleepSessions(data);
     }
 
     public void setInactivityNudge(int fromHour, int fromMinute, int toHour, int toMinute,
