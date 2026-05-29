@@ -232,6 +232,57 @@ class ButtonsViewModelTest : DbTestBase() {
         runBlocking { assertEquals(1, repo.getButtons("AA:00:00:00:00:01").size) }
     }
 
+    // ---- 3-slot UI surface (TOP/MIDDLE/BOTTOM) -------------------------------
+
+    @Test
+    fun slotsAlwaysExposeThreeFixedButtonsInOrder() {
+        runBlocking {
+            watchDao.upsert(watch("AA:00:00:00:00:01", active = true))
+            // Only configure the MIDDLE button; TOP/BOTTOM must still appear (as null).
+            buttonDao.upsert(mapping("AA:00:00:00:00:01", ButtonSlots.MIDDLE))
+        }
+        val model = vm()
+        val s = awaitState(model.uiState) { it.mappingFor(ButtonSlots.MIDDLE) != null }
+
+        assertEquals(listOf(ButtonSlots.TOP, ButtonSlots.MIDDLE, ButtonSlots.BOTTOM), s.slots.map { it.first })
+        assertNull(s.slots[0].second)              // TOP unconfigured
+        assertEquals(ButtonSlots.MIDDLE, s.slots[1].second?.buttonId)
+        assertNull(s.slots[2].second)              // BOTTOM unconfigured
+    }
+
+    @Test
+    fun setSlotCreatesThenUpdatesTheSameRow() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }
+        val model = vm()
+        awaitState(model.uiState) { it.hasActiveWatch }
+
+        // First call creates the TOP-button row.
+        model.setSlot(ButtonSlots.TOP, ButtonModes.SINGLE_ACTION, listOf(ButtonActions.DATE))
+        val s1 = awaitState(model.uiState) { it.mappingFor(ButtonSlots.TOP) != null }
+        assertEquals(ButtonModes.SINGLE_ACTION, s1.mappingFor(ButtonSlots.TOP)?.modeType)
+        assertEquals(listOf(ButtonActions.DATE), ButtonActionsJson.decode(s1.mappingFor(ButtonSlots.TOP)?.actionsJson))
+
+        // Second call to the same slot replaces it (still one row, no duplicate).
+        model.setSlot(ButtonSlots.TOP, ButtonModes.CUSTOM_TOGGLE, listOf(ButtonDialModes.ALARM, ButtonDialModes.DATE))
+        val s2 = awaitState(model.uiState) {
+            it.mappingFor(ButtonSlots.TOP)?.modeType == ButtonModes.CUSTOM_TOGGLE
+        }
+        assertEquals(1, s2.mappings.size)
+        assertEquals(
+            listOf(ButtonDialModes.ALARM, ButtonDialModes.DATE),
+            ButtonActionsJson.decode(s2.mappingFor(ButtonSlots.TOP)?.actionsJson),
+        )
+    }
+
+    @Test
+    fun setSlotNoOpWithoutActiveWatch() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = false)) }
+        val model = vm()
+        awaitState(model.uiState) { !it.hasActiveWatch }
+        model.setSlot(ButtonSlots.TOP, ButtonModes.SINGLE_ACTION, listOf(ButtonActions.DATE))
+        runBlocking { assertEquals(0, repo.getButtons("AA:00:00:00:00:01").size) }
+    }
+
     // ---- save -----------------------------------------------------------------
 
     @Test

@@ -36,6 +36,17 @@ data class ButtonsUiState(
 
     /** Button ids already configured (for duplicate-rejection in the UI). */
     val buttonIds: Set<Int> get() = mappings.mapTo(HashSet()) { it.buttonId }
+
+    /** The existing mapping for [buttonId], or null if that slot is unconfigured. */
+    fun mappingFor(buttonId: Int): ButtonMappingEntity? =
+        mappings.firstOrNull { it.buttonId == buttonId }
+
+    /**
+     * The fixed three-button view (TOP/MIDDLE/BOTTOM) the Buttons screen renders. Each entry is
+     * the existing [ButtonMappingEntity] for that physical button, or null when unconfigured.
+     */
+    val slots: List<Pair<Int, ButtonMappingEntity?>>
+        get() = ButtonSlots.ALL.map { id -> id to mappingFor(id) }
 }
 
 /**
@@ -143,6 +154,26 @@ open class ButtonsViewModel(
     /** Convenience: set the actions for [buttonId] from a typed list (encoded via the helper). */
     fun setActionList(buttonId: Int, actions: List<String>) {
         setActions(buttonId, ButtonActionsJson.encode(actions))
+    }
+
+    /**
+     * WP16d (3-slot UI) — upsert one physical button slot's full config (mode + action/dial-mode
+     * id list) in a single write, creating the row if the slot was previously unconfigured.
+     * No-op if there is no active watch. The modeType is normalized and the id list is
+     * round-tripped through [ButtonActionsJson] so a malformed value can't be persisted.
+     */
+    fun setSlot(buttonId: Int, modeType: String, ids: List<String>) {
+        val mac = uiState.value.activeMac ?: return
+        coroutineScope.launch {
+            repo.upsertButton(
+                ButtonMappingEntity(
+                    watchMac = mac,
+                    buttonId = buttonId,
+                    modeType = ButtonModes.normalize(modeType),
+                    actionsJson = ButtonActionsJson.encode(ButtonActionsJson.decode(ButtonActionsJson.encode(ids))),
+                )
+            )
+        }
     }
 
     /**

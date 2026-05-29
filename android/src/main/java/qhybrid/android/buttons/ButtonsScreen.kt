@@ -5,31 +5,22 @@ package qhybrid.android.buttons
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.selection.toggleable
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -41,27 +32,26 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import qhybrid.android.db.ButtonMappingEntity
 
 /**
- * WP16d — the Buttons screen (per-button mapping + dial-mode toggles). State comes from
- * [ButtonsViewModel] (WP4 active watch + its mappings, sorted by buttonId); intents delegate to
- * the VM, which persists via [qhybrid.android.db.WatchRepository] (WP4) and pushes via the
- * injectable [ButtonSync] seam.
+ * WP16d — the Buttons screen. Every Fossil Q Hybrid watch has exactly **three physical buttons**
+ * (TOP/MIDDLE/BOTTOM = 0x10/0x20/0x30, see
+ * [qhybrid.protocol.requests.fossil.button.ButtonCompiler]), so the UI is a fixed **three-slot**
+ * layout — one card per button — rather than a free-form add/remove-by-buttonId flow. Each slot
+ * has its own mode + action set, edited in place; "Clear" resets a slot to unconfigured.
  *
- * **MODEL-AGNOSTIC by design:** the UI allows ANY buttonId / mode / action / count and does NOT
- * gate behind a watch-model lookup table. Validating that a given buttonId actually exists on the
- * connected hardware is out of scope (on-device-pending / WP14).
+ * State comes from [ButtonsViewModel] (WP4 active watch + its mappings); a slot's existing
+ * [ButtonMappingEntity] (or null when unconfigured) is surfaced via [ButtonsUiState.slots].
+ * Writes go through the VM ([ButtonsViewModel.setSlot] / [ButtonsViewModel.resetButton]).
  *
- * **On-device verification pending:** the LazyColumn rendering, the mode dropdown, the action
- * picker, the dial-mode toggles, reset, and the Save effect can only be confirmed on a device.
- * The actual button-config upload to the watch is **WP14** ([ButtonSync] reports it as
- * not-yet-wired and the UI flags it).
+ * **On-device verification pending:** the slot cards, the mode dropdown, the action picker, the
+ * dial-mode toggles, clear, and the Save effect can only be confirmed on a device. The actual
+ * button-config upload to the watch is **WP14** ([ButtonSync] reports it not-yet-wired; the UI
+ * flags it).
  */
 @Composable
 fun ButtonsScreen(modifier: Modifier = Modifier) {
@@ -71,9 +61,8 @@ fun ButtonsScreen(modifier: Modifier = Modifier) {
 
     ButtonsContent(
         state = state,
-        onAdd = { id, mode, json -> vm.addMapping(id, mode, json) },
-        onUpdate = vm::updateMapping,
-        onReset = vm::resetButton,
+        onSetSlot = { id, mode, ids -> vm.setSlot(id, mode, ids) },
+        onClear = vm::resetButton,
         onSave = { vm.saveToWatch() },
         modifier = modifier,
     )
@@ -81,50 +70,28 @@ fun ButtonsScreen(modifier: Modifier = Modifier) {
 
 /**
  * Stateless Buttons body — pure function of [ButtonsUiState] + intent lambdas, so it is
- * preview-/UI-testable with fake state and no VM/Room/BLE.
+ * preview-/UI-testable with fake state and no VM/Room/BLE. Renders the three fixed slots.
  */
 @Composable
 fun ButtonsContent(
     state: ButtonsUiState,
-    onAdd: (buttonId: Int, modeType: String, actionsJson: String) -> Boolean,
-    onUpdate: (ButtonMappingEntity) -> Unit,
-    onReset: (buttonId: Int) -> Unit,
+    onSetSlot: (buttonId: Int, modeType: String, ids: List<String>) -> Unit,
+    onClear: (buttonId: Int) -> Unit,
     onSave: () -> Boolean,
     modifier: Modifier = Modifier,
 ) {
-    // Editor dialog state: null = closed; addingNew distinguishes add vs edit.
-    var editing by remember { mutableStateOf<ButtonMappingEntity?>(null) }
-    var addingNew by remember { mutableStateOf(false) }
+    // The slot currently being edited (buttonId), or null when no dialog is open.
+    var editingSlot by remember { mutableStateOf<Int?>(null) }
     var saveNote by remember { mutableStateOf<String?>(null) }
 
-    Scaffold(
-        modifier = modifier,
-        floatingActionButton = {
-            if (state.hasActiveWatch) {
-                ExtendedFloatingActionButton(
-                    onClick = {
-                        addingNew = true
-                        editing = ButtonMappingEntity(
-                            watchMac = state.activeMac ?: "",
-                            buttonId = nextSuggestedButtonId(state.buttonIds),
-                            modeType = ButtonModes.DEFAULT,
-                            actionsJson = ButtonActionsJson.encode(listOf(ButtonActions.DEFAULT)),
-                        )
-                    },
-                    icon = { Icon(Icons.Filled.Add, contentDescription = null) },
-                    text = { Text("Add button mapping") },
-                )
-            }
-        },
-    ) { padding ->
+    Scaffold(modifier = modifier) { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(horizontal = 16.dp),
+                .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Spacer(Modifier.width(0.dp))
             when {
                 !state.hasActiveWatch -> Text(
                     "No active watch — associate one to manage button mappings.",
@@ -137,10 +104,7 @@ fun ButtonsContent(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(
-                            "Button mappings (${state.mappings.size})",
-                            style = MaterialTheme.typography.titleMedium,
-                        )
+                        Text("Buttons", style = MaterialTheme.typography.titleMedium)
                         Button(onClick = {
                             val wired = onSave()
                             saveNote = if (wired) "Saved to watch."
@@ -149,68 +113,44 @@ fun ButtonsContent(
                     }
                     saveNote?.let { Text(it, style = MaterialTheme.typography.labelSmall) }
                     Text(
-                        "Add any button (e.g. 0x10/0x20/0x30, or more on 5-position dials). Any " +
-                            "buttonId/mode/count is allowed — hardware validation is on-device-pending.",
+                        "Your watch has three buttons. Tap one to set what it does.",
                         style = MaterialTheme.typography.labelSmall,
                     )
 
-                    if (state.mappings.isEmpty()) {
-                        Text(
-                            "No button mappings yet — tap “Add button mapping”.",
-                            style = MaterialTheme.typography.bodyMedium,
+                    state.slots.forEach { (buttonId, mapping) ->
+                        SlotCard(
+                            buttonId = buttonId,
+                            mapping = mapping,
+                            onClick = { editingSlot = buttonId },
+                            onClear = { onClear(buttonId) },
                         )
-                    } else {
-                        LazyColumn(
-                            modifier = Modifier.fillMaxSize(),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            items(state.mappings, key = { it.buttonId }) { m ->
-                                MappingRow(
-                                    mapping = m,
-                                    onClick = { addingNew = false; editing = m },
-                                    onReset = { onReset(m.buttonId) },
-                                )
-                            }
-                        }
                     }
                 }
             }
         }
     }
 
-    editing?.let { template ->
-        MappingEditorDialog(
-            initial = template,
-            isNew = addingNew,
-            existingButtonIds = state.buttonIds,
-            onDismiss = { editing = null },
-            onConfirm = { result ->
-                if (addingNew) {
-                    onAdd(result.buttonId, result.modeType, result.actionsJson)
-                } else {
-                    onUpdate(result)
-                }
-                editing = null
+    editingSlot?.let { buttonId ->
+        val existing = state.mappingFor(buttonId)
+        SlotEditorDialog(
+            buttonId = buttonId,
+            initialMode = ButtonModes.normalize(existing?.modeType),
+            initialIds = ButtonActionsJson.decode(existing?.actionsJson),
+            onDismiss = { editingSlot = null },
+            onConfirm = { mode, ids ->
+                onSetSlot(buttonId, mode, ids)
+                editingSlot = null
             },
         )
     }
 }
 
-/** A friendly buttonId hex label, e.g. "Button 0x10". */
-private fun buttonLabel(buttonId: Int): String = "Button 0x%02X".format(buttonId)
-
-/** Suggest the next unused 0x10-increment buttonId (model-agnostic; user can override). */
-private fun nextSuggestedButtonId(existing: Set<Int>): Int {
-    var id = 0x10
-    while (id in existing) id += 0x10
-    return id
-}
-
 @Composable
-private fun MappingRow(
-    mapping: ButtonMappingEntity,
+private fun SlotCard(
+    buttonId: Int,
+    mapping: ButtonMappingEntity?,
     onClick: () -> Unit,
-    onReset: () -> Unit,
+    onClear: () -> Unit,
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Row(
@@ -220,26 +160,30 @@ private fun MappingRow(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                TextButton(
-                    onClick = onClick,
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
-                ) {
-                    Text(buttonLabel(mapping.buttonId), style = MaterialTheme.typography.titleMedium)
+                Text(ButtonSlots.label(buttonId), style = MaterialTheme.typography.titleMedium)
+                if (mapping == null) {
+                    Text(
+                        "Not set",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    Text(
+                        "Mode: ${ButtonModes.label(mapping.modeType)}",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Text(
+                        if (ButtonModes.usesDialModes(mapping.modeType))
+                            "Dial: ${dialSummary(mapping.actionsJson)}"
+                        else
+                            ButtonActionsJson.summary(mapping.actionsJson),
+                        style = MaterialTheme.typography.labelSmall,
+                    )
                 }
-                Text(
-                    "Mode: ${ButtonModes.label(mapping.modeType)}",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                Text(
-                    if (ButtonModes.usesDialModes(mapping.modeType))
-                        "Dial: ${dialSummary(mapping.actionsJson)}"
-                    else
-                        ButtonActionsJson.summary(mapping.actionsJson),
-                    style = MaterialTheme.typography.labelSmall,
-                )
             }
-            IconButton(onClick = onReset) {
-                Icon(Icons.Filled.Delete, contentDescription = "Reset button mapping")
+            TextButton(onClick = onClick) { Text(if (mapping == null) "Set" else "Edit") }
+            if (mapping != null) {
+                TextButton(onClick = onClear) { Text("Clear") }
             }
         }
     }
@@ -253,81 +197,35 @@ private fun dialSummary(actionsJson: String?): String {
 }
 
 @Composable
-private fun MappingEditorDialog(
-    initial: ButtonMappingEntity,
-    isNew: Boolean,
-    existingButtonIds: Set<Int>,
+private fun SlotEditorDialog(
+    buttonId: Int,
+    initialMode: String,
+    initialIds: List<String>,
     onDismiss: () -> Unit,
-    onConfirm: (ButtonMappingEntity) -> Unit,
+    onConfirm: (modeType: String, ids: List<String>) -> Unit,
 ) {
-    var buttonIdText by remember { mutableStateOf("0x%02X".format(initial.buttonId)) }
-    var mode by remember { mutableStateOf(ButtonModes.normalize(initial.modeType)) }
+    var mode by remember { mutableStateOf(initialMode) }
     // Selected ids: actions when SINGLE_ACTION/MUSIC_MULTIMODE, dial modes when CUSTOM_TOGGLE.
-    var selected by remember { mutableStateOf(ButtonActionsJson.decode(initial.actionsJson)) }
-
-    val parsedId = parseButtonId(buttonIdText)
-    val duplicate = isNew && parsedId != null && parsedId in existingButtonIds
-    val valid = parsedId != null && !duplicate
+    var selected by remember { mutableStateOf(initialIds) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         confirmButton = {
-            TextButton(
-                enabled = valid,
-                onClick = {
-                    onConfirm(
-                        initial.copy(
-                            buttonId = parsedId ?: initial.buttonId,
-                            modeType = mode,
-                            actionsJson = ButtonActionsJson.encode(selected),
-                        )
-                    )
-                },
-            ) { Text(if (isNew) "Add" else "Save") }
+            TextButton(onClick = { onConfirm(mode, selected) }) { Text("Save") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-        title = { Text(if (isNew) "New button mapping" else "Edit button mapping") },
+        title = { Text(ButtonSlots.label(buttonId)) },
         text = {
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                if (isNew) {
-                    OutlinedTextField(
-                        value = buttonIdText,
-                        onValueChange = { buttonIdText = it.take(6) },
-                        label = { Text("Button id (e.g. 0x10, 0x20, 16, 32…)") },
-                        singleLine = true,
-                        isError = duplicate || parsedId == null,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    if (duplicate) {
-                        Text(
-                            "A mapping for this button already exists.",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.error,
-                        )
-                    } else if (parsedId == null) {
-                        Text(
-                            "Enter a hex (0x10) or decimal button id.",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.error,
-                        )
-                    }
-                } else {
-                    Text(buttonLabel(initial.buttonId), style = MaterialTheme.typography.titleMedium)
-                }
-
-                HorizontalDivider()
-
                 Text("Mode", style = MaterialTheme.typography.labelLarge)
                 ModeDropdown(selected = mode, onSelect = { mode = it })
 
                 HorizontalDivider()
 
                 if (ButtonModes.usesDialModes(mode)) {
-                    // Dial-mode toggles (sub-eye positions). Stored in the same id list.
                     Text("Dial modes to cycle", style = MaterialTheme.typography.labelLarge)
                     DialModeToggles(
                         selected = selected,
@@ -347,20 +245,6 @@ private fun MappingEditorDialog(
 
 private fun toggle(list: List<String>, id: String): List<String> =
     if (id in list) list - id else list + id
-
-/**
- * Parse a button id from hex ("0x10", "10h"), bare hex ("10" when it has hex letters), or
- * decimal. We accept "0x.." as hex and a plain number as decimal so both conventions work.
- */
-private fun parseButtonId(text: String): Int? {
-    val t = text.trim().lowercase()
-    if (t.isEmpty()) return null
-    return when {
-        t.startsWith("0x") -> t.removePrefix("0x").toIntOrNull(16)
-        t.endsWith("h") -> t.removeSuffix("h").toIntOrNull(16)
-        else -> t.toIntOrNull(10)
-    }?.takeIf { it in 0..0xFF }
-}
 
 @Composable
 private fun ModeDropdown(selected: String, onSelect: (String) -> Unit) {
@@ -406,7 +290,6 @@ private fun DialModeToggles(selected: List<String>, onToggle: (String) -> Unit) 
             "Pick the dial positions a press cycles through.",
             style = MaterialTheme.typography.labelSmall,
         )
-        // FlowRow would be nicer; a simple wrapping list of chips keeps deps minimal.
         ButtonDialModes.ALL.forEach { id ->
             FilterChip(
                 selected = id in selected,

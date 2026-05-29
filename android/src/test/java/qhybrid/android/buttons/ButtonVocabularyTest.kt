@@ -16,6 +16,24 @@ import org.robolectric.annotation.Config
 @Config(sdk = [33])
 class ButtonVocabularyTest {
 
+    // ---- ButtonSlots (fixed 3-button layout) ---------------------------------
+
+    @Test
+    fun buttonSlotsMirrorProtocolIndices() {
+        // 0x10=TOP, 0x20=MIDDLE, 0x30=BOTTOM (ButtonCompiler.BUTTON_INDICES).
+        assertEquals(0x10, ButtonSlots.TOP)
+        assertEquals(0x20, ButtonSlots.MIDDLE)
+        assertEquals(0x30, ButtonSlots.BOTTOM)
+        assertEquals(listOf(0x10, 0x20, 0x30), ButtonSlots.ALL)
+        assertEquals("Top button", ButtonSlots.label(ButtonSlots.TOP))
+        assertEquals("Middle button", ButtonSlots.label(ButtonSlots.MIDDLE))
+        assertEquals("Bottom button", ButtonSlots.label(ButtonSlots.BOTTOM))
+        assertTrue(ButtonSlots.isKnown(ButtonSlots.BOTTOM))
+        assertFalse(ButtonSlots.isKnown(0x99))
+        // Unknown ids fall back to a hex label.
+        assertEquals("Button 0x99", ButtonSlots.label(0x99))
+    }
+
     // ---- ButtonModes ---------------------------------------------------------
 
     @Test

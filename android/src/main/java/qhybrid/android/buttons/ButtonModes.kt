@@ -18,6 +18,33 @@ package qhybrid.android.buttons
  * - `MUSIC_MULTIMODE` — multi-function music control (one press cycles music functions).
  * - `CUSTOM_TOGGLE`   — press cycles through several physical dial modes (sub-eye positions).
  */
+/**
+ * WP16d — the three physical buttons every Fossil Q Hybrid watch has, in TOP/MIDDLE/BOTTOM
+ * order. The ids mirror the protocol exactly: 0x10=TOP, 0x20=MIDDLE, 0x30=BOTTOM (see
+ * [qhybrid.protocol.requests.fossil.button.ButtonCompiler] `BUTTON_INDICES`). The Buttons
+ * screen renders one fixed slot per entry — no free-form buttonId entry, no add/remove flow.
+ */
+object ButtonSlots {
+    const val TOP = 0x10
+    const val MIDDLE = 0x20
+    const val BOTTOM = 0x30
+
+    /** The three buttons in physical (top-to-bottom) order. */
+    val ALL = listOf(TOP, MIDDLE, BOTTOM)
+
+    private val LABELS = mapOf(
+        TOP to "Top button",
+        MIDDLE to "Middle button",
+        BOTTOM to "Bottom button",
+    )
+
+    /** Human label for a slot id; falls back to a hex label for unknown ids. */
+    fun label(buttonId: Int): String = LABELS[buttonId] ?: "Button 0x%02X".format(buttonId)
+
+    /** True if [buttonId] is one of the three known physical buttons. */
+    fun isKnown(buttonId: Int): Boolean = buttonId in LABELS
+}
+
 object ButtonModes {
     const val SINGLE_ACTION = "SINGLE_ACTION"
     const val MUSIC_MULTIMODE = "MUSIC_MULTIMODE"
