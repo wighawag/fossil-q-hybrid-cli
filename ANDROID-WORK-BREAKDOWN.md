@@ -957,13 +957,31 @@ same `LogRingBuffer` for a CLI `logs` command.
 >
 > **(2) UI layer (`qhybrid.android.notifications.NotificationsScreen`, build + lint green):**
 > - `NotificationsScreen()` hosts the production VM via `viewModel(factory = …)` and renders a
->   stateless `NotificationsContent(state, intents…)` (pure function of `NotificationsUiState` +
->   lambdas → preview/UI-testable with fake state). A `LazyColumn` of per-app rules (package name,
->   vibe-pattern label, hand-position summary), an **Add app rule** FAB, a delete icon per row,
->   and a **Save to watch** button (with the WP14-pending note). The add/edit `AlertDialog` has a
->   package field (free text + an `ExposedDropdownMenu` of a small `SAMPLE_PACKAGES` list, with
->   inline duplicate-package validation), a **vibe-pattern dropdown** (`0 — Auto … 9 — Silent`),
->   and hour/minute **hand-degree** number inputs (0–359).
+>   stateless `NotificationsContent(state, installedApps, intents…)` (pure function of
+>   `NotificationsUiState` + the installed-app list + lambdas → preview/UI-testable with fake
+>   state). A `LazyColumn` of per-app rules (package name, vibe-pattern label, hand-position
+>   summary), an **Add app rule** FAB, a delete icon per row, and a **Save to watch** button
+>   (with the WP14-pending note). The add/edit `AlertDialog` has a **searchable installed-app
+>   picker** (`AppPicker`: a text field that filters the installed-app list **live by display
+>   name OR package id** — fixing the earlier static non-filtering dropdown — showing each app's
+>   **icon + friendly name** with the package id as a subtitle; already-configured apps are hidden
+>   and the field doubles as a free-text fallback), inline duplicate-package validation, a
+>   **vibe-pattern dropdown** (`0 — Auto … 9 — Silent`), and hour/minute **hand-degree** number
+>   inputs (0–359).
+> - **Installed-app list (pulled forward):** `InstalledAppsProvider` seam +
+>   `SystemInstalledAppsProvider` production impl enumerate **launchable** apps via
+>   `PackageManager.queryIntentActivities(ACTION_MAIN/CATEGORY_LAUNCHER)` — **no special
+>   permission, no Play-sensitive `QUERY_ALL_PACKAGES`** (only surfaces apps with a launcher
+>   icon, i.e. the user-facing apps that post notifications), de-duped per package, sorted by
+>   label, loaded off the main thread (`LaunchedEffect` + `Dispatchers.IO`). The pure
+>   search/filter (`InstalledApp.matches`) is unit-tested (`InstalledAppsTest`, 5).
+>   - **Manifest (additive):** Android 11+ (API 30+) filters `PackageManager` queries to the
+>     caller's visible set, so a `<queries>` element with a `MAIN`/`LAUNCHER` intent was added to
+>     `AndroidManifest.xml` (**OPTION A** — no runtime permission, no Play-sensitive
+>     `QUERY_ALL_PACKAGES`); without it the picker only saw a handful of self-visible apps.
+>     **OPTION B (future, if non-launchable packages are ever needed):** declare the
+>     `QUERY_ALL_PACKAGES` permission instead — noted as Play-Store-sensitive (requires a
+>     submission justification).
 > - Reachable via a **third tab** on the existing bottom `NavigationBar` in `MainActivity`
 >   (Dashboard / Alarms / **Notifications**). The Notifications tab uses `Icons.Filled.Email`
 >   from `material-icons-core` (the `Notifications` icon is already used by the Alarms tab; the
@@ -971,25 +989,27 @@ same `LogRingBuffer` for a CLI `logs` command.
 >   **top-right Setup gear** and the **WP15 Debug gear (still release-gated** by
 >   `DebugMenu.isEnabled()`) overlay on top; WP16a Dashboard + WP16b Alarms tabs are unchanged.
 >
-> **Acceptance met:** `:protocol:test` 108 green (unchanged); `:android:testDebugUnitTest` 50 green
-> (37 + 13); `:android:assembleDebug` + `:android:lintDebug` succeed; `./fossil-q --help` unchanged.
-> NO change to protocol wire bytes / `BleTransport` / `AndroidBleTransport.kt` / WP3
-> `WatchConnectionService` wire behavior (only calls the existing `syncNow` entry point) /
-> `NotificationCompiler` output / existing WP4 repository semantics (only ADDED the single-row
-> `deleteRule`) / WP15 Debug Menu gating; WP16a Dashboard + WP16b Alarms still work.
+> **Acceptance met:** `:protocol:test` 108 green (unchanged); `:android:testDebugUnitTest` 55 green
+> (37 + 18: 12 ViewModel + 1 DAO + 5 installed-app search); `:android:assembleDebug` +
+> `:android:lintDebug` succeed; `./fossil-q --help` unchanged. NO change to protocol wire bytes /
+> `BleTransport` / `AndroidBleTransport.kt` / WP3 `WatchConnectionService` wire behavior (only
+> calls the existing `syncNow` entry point) / `NotificationCompiler` output / existing WP4
+> repository semantics (only ADDED the single-row `deleteRule`) / WP15 Debug Menu gating; WP16a
+> Dashboard + WP16b Alarms still work.
 >
 > **On-device verification pending:** the Compose Notifications list/scroll, the package field +
 > sample dropdown, the vibe-pattern dropdown, the hand-degree inputs, the delete/save effects, and
-> the 3-tab bottom-nav switching can only be confirmed on a device. The headless half (state
-> combination + intents → right repo/fake calls + correct clamping/duplicate-rejection) is
-> unit-tested.
+> the 3-tab bottom-nav switching, and the live installed-app enumeration/icons can only be
+> confirmed on a device. The headless half (state combination + intents → right repo/fake calls +
+> correct clamping/duplicate-rejection + app search/filter) is unit-tested.
 >
 > **Deferred / follow-ups:** the **actual filter-byte upload to the watch is WP14** (compile the
 > per-app rows via WP6 `NotificationCompiler.compileFilter` → 32-byte-per-entry BLE filter-file
-> write); `ServiceNotificationSync.FILTER_UPLOAD_WIRED` flips to true then. **Populating the
-> installed-app list** (querying `PackageManager` / `NotificationListenerService` plumbing) is its
-> OWN later WP — for WP16c the package is a free-text field (with a small `SAMPLE_PACKAGES`
-> convenience list); the UI flags this. Remaining screens **WP16d** (buttons), **WP16e**
+> write); `ServiceNotificationSync.FILTER_UPLOAD_WIRED` flips to true then. The **searchable
+> installed-app picker (name + icon) was pulled forward** into WP16c (launcher-intent query, no
+> special permission); the remaining `NotificationListenerService` plumbing (actually
+> *intercepting* posted notifications to push play files) stays a later WP. Remaining screens
+> **WP16d** (buttons), **WP16e**
 > (calibration), **WP16f** (sleep/activity charts), **WP16g** (settings) follow the same
 > ViewModel+StateFlow / fake-backed-test pattern.
 

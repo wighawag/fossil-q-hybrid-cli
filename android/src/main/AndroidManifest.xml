@@ -36,6 +36,21 @@
     <!-- WP3: show the persistent foreground-service notification on Android 13+. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- WP16c: package visibility for the installed-app picker (Notifications screen).
+         Android 11+ (API 30+) filters PackageManager queries to your visible set unless you
+         declare what you need to see. This <queries> entry surfaces apps that have a LAUNCHER
+         activity (user-facing apps that post notifications) so queryIntentActivities(LAUNCHER)
+         returns the full list. No runtime permission, no Play-sensitive QUERY_ALL_PACKAGES.
+         If we later need NON-launchable packages too, switch to OPTION B: add the
+         <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"/> permission
+         (note: Play-Store-sensitive, requires a declared justification at submission). -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
     <uses-feature
         android:name="android.hardware.bluetooth_le"
         android:required="true" />

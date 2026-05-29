@@ -11,7 +11,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -23,20 +25,18 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExposedDropdownMenuBox
-import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -46,8 +46,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import qhybrid.android.db.NotificationRuleEntity
 
 /**
@@ -61,9 +65,11 @@ import qhybrid.android.db.NotificationRuleEntity
  * filter-byte upload to the watch is **WP14** ([NotificationSync] reports it as not-yet-wired
  * and the UI flags it).
  *
- * **Deferred (later WP):** populating the *installed-app list* (querying `PackageManager` /
- * `NotificationListenerService` plumbing) is its own later WP. For WP16c the package is entered
- * via a free-text field (a small sample list is offered as a convenience); see [SAMPLE_PACKAGES].
+ * **App picker:** the add-rule dialog offers a **searchable list of installed, launchable apps**
+ * (display name + icon) supplied by the injectable [InstalledAppsProvider] seam, which enumerates
+ * launcher apps via `PackageManager` (no special permission; no `QUERY_ALL_PACKAGES`). The user
+ * searches by app name OR package id; a free-text fallback is kept for packages the launcher
+ * query doesn't surface.
  */
 @Composable
 fun NotificationsScreen(modifier: Modifier = Modifier) {
@@ -71,8 +77,17 @@ fun NotificationsScreen(modifier: Modifier = Modifier) {
     val vm: NotificationsViewModel = viewModel(factory = NotificationsViewModel.factory(context))
     val state by vm.uiState.collectAsStateWithLifecycle()
 
+    // Load the installed launchable apps off the main thread; empty until ready so the dialog
+    // still works (free-text) before the list arrives.
+    val provider = remember(context) { SystemInstalledAppsProvider(context) }
+    var installedApps by remember { mutableStateOf<List<InstalledApp>>(emptyList()) }
+    LaunchedEffect(provider) {
+        installedApps = withContext(Dispatchers.IO) { provider.installedApps() }
+    }
+
     NotificationsContent(
         state = state,
+        installedApps = installedApps,
         onAdd = { pkg, vibe, hourDeg, minDeg -> vm.addRule(pkg, vibe, hourDeg, minDeg) },
         onUpdate = vm::updateRule,
         onDelete = vm::deleteRule,
@@ -81,24 +96,14 @@ fun NotificationsScreen(modifier: Modifier = Modifier) {
     )
 }
 
-/** A few common packages offered as a convenience until the real app-list WP lands. */
-val SAMPLE_PACKAGES = listOf(
-    "com.whatsapp",
-    "com.google.android.apps.messaging",
-    "com.android.email",
-    "com.google.android.gm",
-    "com.google.android.calendar",
-    "com.slack",
-    "org.telegram.messenger",
-)
-
 /**
- * Stateless Notifications body — pure function of [NotificationsUiState] + intent lambdas, so
- * it is preview-/UI-testable with fake state and no VM/Room/BLE.
+ * Stateless Notifications body — pure function of [NotificationsUiState] + the installed-app
+ * list + intent lambdas, so it is preview-/UI-testable with fake state and no VM/Room/BLE.
  */
 @Composable
 fun NotificationsContent(
     state: NotificationsUiState,
+    installedApps: List<InstalledApp>,
     onAdd: (pkg: String, vibe: Int, hourDeg: Int, minDeg: Int) -> Boolean,
     onUpdate: (NotificationRuleEntity) -> Unit,
     onDelete: (pkg: String) -> Unit,
@@ -166,8 +171,7 @@ fun NotificationsContent(
                         Text(it, style = MaterialTheme.typography.labelSmall)
                     }
                     Text(
-                        "App-list picker (installed apps / notification access) is a later WP — " +
-                            "enter a package name for now.",
+                        "Pick an installed app (searchable by name), or type a package name.",
                         style = MaterialTheme.typography.labelSmall,
                     )
 
@@ -200,6 +204,7 @@ fun NotificationsContent(
             initial = template,
             isNew = addingNew,
             existingPackages = state.packageNames,
+            installedApps = installedApps,
             onDismiss = { editing = null },
             onConfirm = { result ->
                 if (addingNew) {
@@ -255,6 +260,7 @@ private fun RuleEditorDialog(
     initial: NotificationRuleEntity,
     isNew: Boolean,
     existingPackages: Set<String>,
+    installedApps: List<InstalledApp>,
     onDismiss: () -> Unit,
     onConfirm: (NotificationRuleEntity) -> Unit,
 ) {
@@ -292,10 +298,13 @@ private fun RuleEditorDialog(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 if (isNew) {
-                    PackageField(
-                        value = pkg,
-                        onValueChange = { pkg = it },
+                    AppPicker(
+                        query = pkg,
+                        onQueryChange = { pkg = it },
+                        installedApps = installedApps,
+                        existingPackages = existingPackages,
                         isError = duplicate,
+                        onPick = { pkg = it },
                     )
                     if (duplicate) {
                         Text(
@@ -339,37 +348,92 @@ private fun RuleEditorDialog(
     )
 }
 
+/**
+ * Searchable installed-app picker: a text field that **filters the installed-app list live by
+ * display name OR package id** as the user types (fixing the previous static/non-filtering
+ * dropdown), showing each match's icon + friendly name with the package id as a subtitle. The
+ * field doubles as a free-text package entry for apps the launcher query doesn't surface.
+ */
 @Composable
-private fun PackageField(
-    value: String,
-    onValueChange: (String) -> Unit,
+private fun AppPicker(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    installedApps: List<InstalledApp>,
+    existingPackages: Set<String>,
     isError: Boolean,
+    onPick: (packageName: String) -> Unit,
 ) {
-    var expanded by remember { mutableStateOf(false) }
-    ExposedDropdownMenuBox(
-        expanded = expanded,
-        onExpandedChange = { expanded = it },
-    ) {
+    val matches = remember(query, installedApps) {
+        installedApps.asSequence()
+            .filter { it.matches(query) }
+            .filter { it.packageName !in existingPackages } // hide already-configured apps
+            .take(50)
+            .toList()
+    }
+    Column {
         OutlinedTextField(
-            value = value,
-            onValueChange = onValueChange,
-            label = { Text("App package name") },
+            value = query,
+            onValueChange = onQueryChange,
+            label = { Text("Search apps or type a package name") },
             singleLine = true,
             isError = isError,
-            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-            modifier = Modifier
-                .fillMaxWidth()
-                .menuAnchor(MenuAnchorType.PrimaryEditable),
+            modifier = Modifier.fillMaxWidth(),
         )
-        ExposedDropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false },
-        ) {
-            SAMPLE_PACKAGES.forEach { sample ->
-                DropdownMenuItem(
-                    text = { Text(sample) },
-                    onClick = { onValueChange(sample); expanded = false },
-                )
+        if (installedApps.isEmpty()) {
+            Text(
+                "Loading installed apps… you can also type a package name.",
+                style = MaterialTheme.typography.labelSmall,
+            )
+        } else if (matches.isNotEmpty()) {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 220.dp),
+            ) {
+                items(matches, key = { it.packageName }) { app ->
+                    AppPickerRow(app = app, onClick = { onPick(app.packageName) })
+                }
+            }
+        } else {
+            Text(
+                "No matching installed app — the typed package will be used as-is.",
+                style = MaterialTheme.typography.labelSmall,
+            )
+        }
+    }
+}
+
+@Composable
+private fun AppPickerRow(app: InstalledApp, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        val bmp = remember(app.packageName, app.icon) {
+            runCatching { app.icon?.toBitmap()?.asImageBitmap() }.getOrNull()
+        }
+        if (bmp != null) {
+            Icon(
+                bitmap = bmp,
+                contentDescription = null,
+                tint = androidx.compose.ui.graphics.Color.Unspecified,
+                modifier = Modifier.size(32.dp),
+            )
+        } else {
+            Spacer(Modifier.size(32.dp))
+        }
+        Column(modifier = Modifier.weight(1f)) {
+            TextButton(
+                onClick = onClick,
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+            ) {
+                Column {
+                    Text(app.label, style = MaterialTheme.typography.bodyLarge)
+                    Text(app.packageName, style = MaterialTheme.typography.labelSmall)
+                }
             }
         }
     }
