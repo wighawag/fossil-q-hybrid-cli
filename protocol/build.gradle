@@ -58,3 +58,35 @@ sourceSets {
         }
     }
 }
+
+// === Android consumption variant (ROADMAP Phase 2 "Shim Strategy", Option 2) ===
+//
+// :protocol carries hand-written stubs for Android APIs (android.*, androidx.*)
+// so the vendored Gadgetbridge classes compile on the PLAIN JVM (the CLI). On
+// Android those same APIs are REAL, so the stubs must NOT be on the Android
+// compile classpath — otherwise they shadow the SDK (e.g. android.os.Build,
+// BluetoothGattCharacteristic) and the protocol would bind to fakes.
+//
+// We therefore publish a second jar that strips the android/ and androidx/ stub
+// packages but keeps everything else (vendored GB protocol, nodomain/* GB stubs,
+// qhybrid.linux.*). :android consumes THIS jar; :cli keeps the full one.
+tasks.register('androidStrippedJar', Jar) {
+    dependsOn 'classes'
+    archiveClassifier.set('android')
+    from sourceSets.main.output
+    // Drop the Android-API stubs — the real SDK provides these on Android.
+    exclude 'android/**'
+    exclude 'androidx/**'
+}
+
+configurations {
+    // A consumable configuration carrying the shim-stripped jar for :android.
+    androidApi {
+        canBeConsumed = true
+        canBeResolved = false
+    }
+}
+
+artifacts {
+    androidApi(tasks.named('androidStrippedJar'))
+}

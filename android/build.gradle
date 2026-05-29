@@ -37,12 +37,15 @@ android {
 }
 
 dependencies {
-    // Shared protocol library (vendored GB tree + FossilQAdapter + BleTransport).
-    // For the WP0 skeleton we consume :protocol as a plain project dependency to
-    // prove classpath wiring. The srcDirs-reuse-of-GB pattern (ANDROID-PLAN §1) is
-    // introduced later (WP0.5 / WP2) once AndroidBleTransport needs to compile the
-    // vendored classes against real Android BLE types.
-    implementation project(':protocol')
+    // Shared protocol library, SHIM-STRIPPED for Android (ROADMAP Phase 2 Option 2).
+    // We consume :protocol's 'androidApi' configuration, which excludes the
+    // android/* and androidx/* API stubs so the REAL Android SDK classes resolve
+    // (BluetoothGattCharacteristic, Build, Context, ...). The nodomain/* GB stubs
+    // and qhybrid.linux.* protocol code are still included.
+    implementation project(path: ':protocol', configuration: 'androidApi')
+    // :protocol exposes slf4j-api as `api`, but a raw-artifact dependency does
+    // not carry transitive deps, so declare it explicitly here.
+    implementation 'org.slf4j:slf4j-api:2.0.9'
 
     implementation platform('androidx.compose:compose-bom:2024.09.03')
     implementation 'androidx.activity:activity-compose:1.9.3'

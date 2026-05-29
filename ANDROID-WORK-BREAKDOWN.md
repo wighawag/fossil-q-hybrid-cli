@@ -73,6 +73,8 @@ Two full reference trees exist locally and should be consulted by the relevant W
 
 ## WP0 — Gradle Multi-Module Split
 
+**Status:** ✅ DONE. Multi-module split (`:protocol` / `:cli` / `:android`) complete; all four acceptance tests pass; `sync.sh` updated to `protocol/gadgetbridge/` and verified; CLI behaves identically (run via `./fossil-q`). Note: per the deferred "Option A" compromise, `DeviceConfig`/`GlobalConfig`/`NotificationConfig` temporarily live in `:protocol` (cleaned up in WP1). One cosmetic constant (`VIBE_PATTERN_NAMES`) moved from `Main` into `NotificationConfig` to break a `:protocol`→`:cli` back-reference.
+
 **Goal:** `:protocol` (pure Java) + `:cli` (Java app) + `:android` (Android app) in one tree. CLI stays 100% working.
 
 **Scope:**
@@ -96,6 +98,10 @@ Two full reference trees exist locally and should be consulted by the relevant W
 
 ## WP0.5 — Walking Skeleton (Installable "Hello-Watch" APK)
 
+**Status:** ✅ DONE — VERIFIED ON HARDWARE. The APK installs on a real phone, requests Bluetooth permission, connects to the watch, runs the Fossil auth handshake (~1 min on first bond, as expected), and reads live device info: e.g. Model `HW.0.0`, Firmware `HW0.0.2.9r.v3`, Battery `22%`, Protocol `Fossil (2.x)`. This proves the full stack runs inside an APK: real BLE → `AndroidBleTransport` (async→blocking bridge) → shared `:protocol` `FossilQAdapter` → device info.
+
+Implemented: real `AndroidBleTransport` (Kotlin) bridging async `BluetoothGatt` to the blocking `BleTransport` contract; a Compose screen with an editable MAC field (prefilled `D9:20:71:11:74:2A`), a "Request Bluetooth permission" button, and a "Connect" button that drives `FossilQAdapter` (init off the main thread) and shows live battery %/firmware/model. Also implemented ROADMAP Phase 2 "Shim Strategy" Option 2: `:android` consumes a SHIM-STRIPPED `:protocol` artifact (`androidApi` configuration / `androidStrippedJar` task) that excludes the `android/*` + `androidx/*` API stubs so the REAL Android SDK classes resolve. All three modules build clean; CLI unaffected. NOTE: this skeleton calls `FossilQAdapter` directly — the `FossilController` façade remains WP1's deliverable.
+
 **Goal:** Prove the *entire toolchain* end-to-end with the smallest possible runnable APK, BEFORE building any features. This de-risks the build/permission/BLE setup early so we know the foundation is sound.
 
 **Scope (deliberately minimal):**
@@ -117,6 +123,8 @@ Two full reference trees exist locally and should be consulted by the relevant W
 ---
 
 ## WP1 — Protocol Headless Façade + FakeBleTransport
+
+**Status:** ⏳ NOT STARTED.
 
 **Goal:** A clean, platform-agnostic entry point into the protocol that both Android and tests drive, plus an in-memory fake transport for unit testing the request/response queue without any BLE.
 
