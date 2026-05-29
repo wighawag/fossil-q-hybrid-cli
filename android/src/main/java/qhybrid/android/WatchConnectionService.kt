@@ -49,9 +49,11 @@ class WatchConnectionService : Service() {
         const val ACTION_CONNECT = "qhybrid.android.action.CONNECT"
         const val ACTION_DISCONNECT = "qhybrid.android.action.DISCONNECT"
         const val ACTION_SYNC_NOW = "qhybrid.android.action.SYNC_NOW"
+        const val ACTION_REQUEST_ACTIVITY = "qhybrid.android.action.REQUEST_ACTIVITY"
         const val ACTION_DEVICE_APPEARED = "qhybrid.android.action.DEVICE_APPEARED"
         const val ACTION_STOP = "qhybrid.android.action.STOP"
         const val EXTRA_MAC = "mac"
+        const val EXTRA_KEEP = "keep"
 
         private const val INIT_TIMEOUT_MS = 60_000L
 
@@ -71,6 +73,22 @@ class WatchConnectionService : Service() {
 
         /** Re-run the sync-on-connect operations (WP5/6/9 fill these in). */
         fun syncNow(context: Context) = start(context, ACTION_SYNC_NOW)
+
+        /**
+         * WP-ACTIVITY — read the watch's activity file (BLE read on the ble-worker), parse it via
+         * the WP8 surface, and publish the result into [qhybrid.android.sleep.ActivityState] which
+         * the Sleep screen + Dashboard observe. Reuses the SAME fetch path the CLI `activity`
+         * command drives (`FossilController.requestActivity` → `onActivityData`); invents NO wire
+         * bytes. By default the watch deletes the file after reading (official-app behaviour);
+         * pass [keep] = true to retain it on the watch.
+         */
+        fun requestActivity(context: Context, keep: Boolean = false) {
+            val intent = Intent(context, WatchConnectionService::class.java).apply {
+                action = ACTION_REQUEST_ACTIVITY
+                putExtra(EXTRA_KEEP, keep)
+            }
+            ContextCompatStartForeground(context, intent)
+        }
 
         fun disconnect(context: Context) = start(context, ACTION_DISCONNECT)
 
@@ -142,6 +160,7 @@ class WatchConnectionService : Service() {
                 }
             }
             ACTION_SYNC_NOW -> submitSync()
+            ACTION_REQUEST_ACTIVITY -> submitRequestActivity(intent.getBooleanExtra(EXTRA_KEEP, false))
             ACTION_DISCONNECT -> submitDisconnect(stopAfter = false)
             ACTION_STOP -> submitDisconnect(stopAfter = true)
             else -> Log.d(TAG, "unhandled action $action")
@@ -208,6 +227,10 @@ class WatchConnectionService : Service() {
             )
         }
         controller.onConfigSynced { Log.i(TAG, "Config synced") }
+        // WP-ACTIVITY: parse + publish the activity file as soon as the watch delivers it
+        // (same callback the CLI `activity` command uses). The fetch is triggered by
+        // ACTION_REQUEST_ACTIVITY or the on-connect poke below; this only handles the result.
+        controller.onActivityData { bytes -> onActivityBytes(bytes) }
 
         try {
             if (!controller.connect(mac)) {
@@ -243,6 +266,14 @@ class WatchConnectionService : Service() {
                 )
                 // WP3 sync-on-connect hook (WP5/6/9 fill in alarm/filter/calendar uploads).
                 runOnConnectSync(controller)
+                // WP-ACTIVITY: also pull the activity file on connect so the Sleep screen +
+                // Dashboard steps are populated hands-free. We are already on the ble-worker, so
+                // drive the existing fetch path directly; the result is published by
+                // onActivityData → onActivityBytes. Failures are non-fatal (logged).
+                if (controller.isFossilProtocol()) {
+                    runCatching { controller.requestActivity(false) }
+                        .onFailure { Log.w(TAG, "on-connect activity fetch failed", it) }
+                }
             } else {
                 publish(
                     WatchState.LinkState.INITIALIZED,
@@ -306,6 +337,46 @@ class WatchConnectionService : Service() {
             }
             runCatching { runOnConnectSync(c) }
         }
+    }
+
+    /**
+     * WP-ACTIVITY — request the watch's activity file on the ble-worker. The actual parse +
+     * publish happens in [onActivityBytes] (wired via `controller.onActivityData` above) when the
+     * file transfer completes — exactly mirroring the CLI `activity` command's
+     * `setOnActivityData(...)` + `fetchActivity(keep)` sequence. NO new wire bytes are invented;
+     * this only drives the existing `FossilController.requestActivity` path.
+     */
+    private fun submitRequestActivity(keep: Boolean) {
+        worker.execute {
+            val c = controllerRef.get()
+            if (c == null || !isLinkUp()) {
+                Log.d(TAG, "requestActivity ignored — not connected")
+                return@execute
+            }
+            runCatching {
+                Log.i(TAG, "requesting activity file (keep=$keep)")
+                c.requestActivity(keep)
+            }.onFailure { Log.e(TAG, "requestActivity failed", it) }
+        }
+    }
+
+    /**
+     * WP-ACTIVITY — handle a delivered activity file: parse it via the pure WP8-backed
+     * [qhybrid.android.sleep.ActivityFetcher] (tolerant of empty/partial/malformed — the watch
+     * sends `byte[0]` when there is no data) and publish the result into the process-wide
+     * [qhybrid.android.sleep.ActivityState] holder that the Sleep screen + Dashboard observe.
+     * Runs on the ble-worker callback thread; only touches in-memory state (no DB, no UI).
+     */
+    private fun onActivityBytes(bytes: ByteArray?) {
+        val size = bytes?.size ?: 0
+        Log.i(TAG, "activity file delivered: $size bytes — parsing")
+        val chart = qhybrid.android.sleep.ActivityFetcher.parse(bytes, java.time.ZoneId.systemDefault())
+        qhybrid.android.sleep.ActivityState.publish(chart, System.currentTimeMillis())
+        Log.i(
+            TAG,
+            "activity parsed: ${chart.days.size} day(s), ${chart.totalSteps} steps, " +
+                "${chart.sleep.size} sleep session(s)",
+        )
     }
 
     /**
