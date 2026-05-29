@@ -12,15 +12,15 @@ repositories {
 }
 
 dependencies {
-    // slf4j-api is used by the shared adapters/config classes and is exposed
-    // on the compile classpath of consumers (:cli, :android), hence `api`.
+    // The protocol layer is pure, platform-neutral Java. Its ONLY dependency is
+    // slf4j-api (exposed to consumers :cli / :android, hence `api`). No Android,
+    // no Linux, no vendored GadgetBridge tree, no shims.
     api 'org.slf4j:slf4j-api:2.0.9'
 
-    // --- Test harness (JVM-only; locks protocol wire behavior before the re-own) ---
+    // --- Test harness (JVM-only): FakeBleTransport + golden-byte regression gates ---
     testImplementation platform('org.junit:junit-bom:5.10.2')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
-    // Route protocol slf4j logs somewhere visible during tests.
     testRuntimeOnly 'org.slf4j:slf4j-simple:2.0.9'
 }
 
@@ -28,78 +28,4 @@ test {
     useJUnitPlatform()
     // activity*.bin fixtures live at the repo root; expose the path to tests.
     systemProperty 'fossilq.repoRoot', rootDir.absolutePath
-}
-
-sourceSets {
-    main {
-        java {
-            // Our shared protocol code + Android/GB shims live in src/main/java.
-            // The vendored Gadgetbridge protocol tree (sync.sh-managed, untouched)
-            // is compiled directly from gadgetbridge/app/src/main/java.
-            srcDirs = ['src/main/java', 'gadgetbridge/app/src/main/java']
-
-            // === fossil_hr subdirectories: exclude everything except fossil_hr/file/ ===
-            // These are copied as part of requests/ tree but are HR-only
-            exclude '**/fossil_hr/adapter/**'
-            exclude '**/fossil_hr/alexa/**'
-            exclude '**/fossil_hr/application/**'
-            exclude '**/fossil_hr/async/**'
-            exclude '**/fossil_hr/authentication/**'
-            exclude '**/fossil_hr/buttons/**'
-            exclude '**/fossil_hr/commute/**'
-            exclude '**/fossil_hr/configuration/**'
-            exclude '**/fossil_hr/image/**'
-            exclude '**/fossil_hr/json/**'
-            exclude '**/fossil_hr/menu/**'
-            exclude '**/fossil_hr/music/**'
-            exclude '**/fossil_hr/notification/**'
-            exclude '**/fossil_hr/quickreply/**'
-            exclude '**/fossil_hr/theme/**'
-            exclude '**/fossil_hr/translation/**'
-            exclude '**/fossil_hr/widget/**'
-            exclude '**/fossil_hr/workout/**'
-
-            // === fossil_hr/file/: keep ResultCode.java + FileEncryptedInterface.java only ===
-            exclude '**/fossil_hr/file/FileEncryptedGetRequest.java'
-            exclude '**/fossil_hr/file/FileEncryptedPutRequest.java'
-            exclude '**/fossil_hr/file/FileEncryptedLookupAndGetRequest.java'
-            exclude '**/fossil_hr/file/AssetFile.java'
-            exclude '**/fossil_hr/file/AssetFilePutRequest.java'
-
-            // === Individual files with heavy deps ===
-            exclude '**/FirmwareFilePutRequest.java'    // needs GBApplication, R.string.*
-        }
-    }
-}
-
-// === Android consumption variant (ROADMAP Phase 2 "Shim Strategy", Option 2) ===
-//
-// :protocol carries hand-written stubs for Android APIs (android.*, androidx.*)
-// so the vendored Gadgetbridge classes compile on the PLAIN JVM (the CLI). On
-// Android those same APIs are REAL, so the stubs must NOT be on the Android
-// compile classpath — otherwise they shadow the SDK (e.g. android.os.Build,
-// BluetoothGattCharacteristic) and the protocol would bind to fakes.
-//
-// We therefore publish a second jar that strips the android/ and androidx/ stub
-// packages but keeps everything else (vendored GB protocol, nodomain/* GB stubs,
-// qhybrid.linux.*). :android consumes THIS jar; :cli keeps the full one.
-tasks.register('androidStrippedJar', Jar) {
-    dependsOn 'classes'
-    archiveClassifier.set('android')
-    from sourceSets.main.output
-    // Drop the Android-API stubs — the real SDK provides these on Android.
-    exclude 'android/**'
-    exclude 'androidx/**'
-}
-
-configurations {
-    // A consumable configuration carrying the shim-stripped jar for :android.
-    androidApi {
-        canBeConsumed = true
-        canBeResolved = false
-    }
-}
-
-artifacts {
-    androidApi(tasks.named('androidStrippedJar'))
 }

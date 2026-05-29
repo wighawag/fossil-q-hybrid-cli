@@ -10,7 +10,7 @@ A Linux desktop CLI tool for communicating with **coin-cell battery** Fossil Q H
 
 ## How it works
 
-This project reuses [GadgetBridge](https://codeberg.org/Gadgetbridge/Gadgetbridge)'s Fossil Q Hybrid protocol layer (requests, file transfer, configuration encoding) **without patching any upstream code**. Instead, we provide shim/stub classes that satisfy Android API imports at compile time, and a `BluezTransport` that bridges the protocol to Linux's BlueZ D-Bus stack.
+This project's Fossil Q Hybrid protocol layer (requests, file transfer, configuration encoding, auth handshake) is **derived from [GadgetBridge](https://codeberg.org/Gadgetbridge/Gadgetbridge)** and re-owned as clean, platform-neutral Java in the `qhybrid.protocol` package (depending only on a small `BleTransport` seam — no Android, no Linux). A `BluezTransport` bridges it to Linux's BlueZ D-Bus stack on the CLI, and an `AndroidBleTransport` bridges it to `BluetoothGatt` on Android. See [PROTOCOL-PROVENANCE.md](PROTOCOL-PROVENANCE.md) and [NOTICE](NOTICE) for attribution.
 
 ```
 ┌─────────────────────────────────────────────┐

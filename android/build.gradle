@@ -37,15 +37,10 @@ android {
 }
 
 dependencies {
-    // Shared protocol library, SHIM-STRIPPED for Android (ROADMAP Phase 2 Option 2).
-    // We consume :protocol's 'androidApi' configuration, which excludes the
-    // android/* and androidx/* API stubs so the REAL Android SDK classes resolve
-    // (BluetoothGattCharacteristic, Build, Context, ...). The nodomain/* GB stubs
-    // and qhybrid.linux.* protocol code are still included.
-    implementation project(path: ':protocol', configuration: 'androidApi')
-    // :protocol exposes slf4j-api as `api`, but a raw-artifact dependency does
-    // not carry transitive deps, so declare it explicitly here.
-    implementation 'org.slf4j:slf4j-api:2.0.9'
+    // Shared protocol library (pure platform-neutral Java). After the protocol
+    // re-own there are no Android-API stubs in :protocol, so the REAL Android SDK
+    // classes resolve naturally — a plain project dependency is all we need.
+    implementation project(':protocol')
     // Route the protocol's slf4j logs to Android logcat (otherwise they no-op
     // and we are blind to FossilQAdapter's auth/init behavior).
     implementation 'uk.uuid.slf4j:slf4j-android:2.0.9-0'

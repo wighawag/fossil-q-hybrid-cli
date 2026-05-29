@@ -1,0 +1,32 @@
+fossil-q-hybrid
+Copyright (C) 2026 wighawag and contributors
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License, version 3, as published by
+the Free Software Foundation. See the LICENSE file for the full text.
+
+================================================================================
+Third-party attribution
+================================================================================
+
+Protocol layer (qhybrid.protocol.*)
+-----------------------------------
+The Fossil Q Hybrid protocol implementation — BLE request classes, file-transfer
+state machine, configuration/alarm/button/notification encoders, activity file
+formats, and the authentication handshake — is DERIVED FROM GadgetBridge:
+
+    GadgetBridge
+    https://codeberg.org/Gadgetbridge/Gadgetbridge
+    Source revision: f5b5416ca84de63a65e527e1e5e0a5202f3e3f4f
+    Licensed GPLv3.
+    Copyright (C) the GadgetBridge contributors
+    (incl. Andreas Shimokawa, Carsten Pfeiffer, Daniel Dakhno, Arjan Schrijver,
+     Taavi Eomae, and others — see per-file copyright headers in GadgetBridge).
+
+These files were adapted and re-owned for this project to be platform-neutral
+(no Android dependencies) and now live under the package `qhybrid.protocol`.
+The combined work is distributed under the AGPLv3. Per-file provenance and the
+exact original→re-owned path mapping are recorded in PROTOCOL-PROVENANCE.md.
+
+We gratefully acknowledge the GadgetBridge project's reverse-engineering of the
+Fossil Q Hybrid protocol, without which this project would not exist.
