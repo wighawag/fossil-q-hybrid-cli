@@ -1,0 +1,336 @@
+package qhybrid.android.sync
+
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+import qhybrid.android.buttons.ButtonActions
+import qhybrid.android.buttons.ButtonActionsJson
+import qhybrid.android.buttons.ButtonDialModes
+import qhybrid.android.buttons.ButtonModes
+import qhybrid.android.buttons.ButtonSlots
+import qhybrid.android.db.ButtonMappingEntity
+import qhybrid.android.db.NotificationRuleEntity
+import qhybrid.android.db.WatchAlarmEntity
+import qhybrid.android.db.WatchEntity
+import qhybrid.protocol.ButtonConfigBuilder
+import qhybrid.protocol.buttonconfig.ConfigPayload
+import qhybrid.protocol.model.NotificationFilterEntry
+import qhybrid.protocol.requests.fossil.alarm.AlarmCompiler
+import qhybrid.protocol.requests.fossil.alarm.AlarmSlot
+
+/**
+ * WP14 sub-part 1 — headless tests for the pure [SyncOrchestrator] against a [FakeUploader].
+ *
+ * Asserts the right compiled payloads + the defined upload order + the guards (skip-empty,
+ * 32-slot guard, no-watch tolerance) WITHOUT any Android service or BLE. The compiled bytes are
+ * cross-checked against the SAME golden-tested protocol compilers (WP5/6/7) so the orchestrator
+ * is proven to invent no wire bytes.
+ */
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [33])
+class SyncOrchestratorTest {
+
+    /** Records every uploader call (payload + order). */
+    private class FakeUploader(
+        private val alarmsWired: Boolean = true,
+        private val filterWired: Boolean = true,
+        private val buttonsWired: Boolean = true,
+        private val settingsWired: Boolean = true,
+    ) : Uploader {
+        val order = mutableListOf<SyncSection>()
+        var alarmBytes: ByteArray? = null
+        var filterEntries: List<NotificationFilterEntry>? = null
+        var buttonBytes: ByteArray? = null
+        var vibration: Int? = null
+        var nudge: Sextet? = null
+        var tzOffset: Int? = null
+
+        data class Sextet(
+            val fh: Int, val fm: Int, val th: Int, val tm: Int, val mins: Int, val on: Boolean,
+        )
+
+        override fun uploadAlarms(alarmFile: ByteArray): Boolean {
+            order.add(SyncSection.ALARMS); alarmBytes = alarmFile; return alarmsWired
+        }
+
+        override fun uploadNotificationFilter(entries: List<NotificationFilterEntry>): Boolean {
+            order.add(SyncSection.NOTIFICATION_FILTER); filterEntries = entries; return filterWired
+        }
+
+        override fun uploadButtons(buttonConfigFile: ByteArray): Boolean {
+            order.add(SyncSection.BUTTONS); buttonBytes = buttonConfigFile; return buttonsWired
+        }
+
+        override fun applyVibrationStrength(strength: Int): Boolean {
+            order.add(SyncSection.VIBRATION); vibration = strength; return settingsWired
+        }
+
+        override fun applyInactivityNudge(
+            fromHour: Int, fromMinute: Int, toHour: Int, toMinute: Int,
+            inactiveMinutes: Int, enabled: Boolean,
+        ): Boolean {
+            order.add(SyncSection.NUDGE)
+            nudge = Sextet(fromHour, fromMinute, toHour, toMinute, inactiveMinutes, enabled)
+            return settingsWired
+        }
+
+        override fun applySecondTimezone(offsetMinutes: Int): Boolean {
+            order.add(SyncSection.SECOND_TIMEZONE); tzOffset = offsetMinutes; return settingsWired
+        }
+    }
+
+    private fun watch(mac: String = "AA:00:00:00:00:01", vibe: Int = 50) =
+        WatchEntity(
+            macAddress = mac, name = "W", model = null, firmwareVersion = null,
+            batteryLevel = 0, isActive = true, vibrationStrength = vibe,
+        )
+
+    private fun alarm(slot: Int, hour: Int = 7, minute: Int = 0, days: Int = 0x3E,
+                      enabled: Boolean = true, repeating: Boolean = true) =
+        WatchAlarmEntity("AA:00:00:00:00:01", slot, hour, minute, enabled, days, repeating, null)
+
+    private fun rule(pkg: String, vibe: Int = 2, hourDeg: Int = 90, minDeg: Int = 180) =
+        NotificationRuleEntity("AA:00:00:00:00:01", pkg, vibe, hourDeg, minDeg)
+
+    private fun button(id: Int, mode: String, actions: List<String>) =
+        ButtonMappingEntity("AA:00:00:00:00:01", id, mode, ButtonActionsJson.encode(actions))
+
+    // ---- no watch -------------------------------------------------------------
+
+    @Test
+    fun noActiveWatchUploadsNothing() {
+        val up = FakeUploader()
+        val result = SyncOrchestrator.sync(SyncInput(watch = null), up)
+        assertTrue(result.isNoWatch)
+        assertTrue(up.order.isEmpty())
+        assertFalse(result.anyPerformed)
+    }
+
+    // ---- empty / partial ------------------------------------------------------
+
+    @Test
+    fun emptyConfigSkipsEverythingExceptSettings() {
+        val up = FakeUploader()
+        // No alarms/rules/buttons; settings all null → nothing uploaded.
+        val result = SyncOrchestrator.sync(
+            SyncInput(watch = watch(), settings = SyncSettings(vibrationStrength = null)), up,
+        )
+        assertTrue(up.order.isEmpty())
+        assertTrue(result.performed.isEmpty())
+        assertTrue(SyncSection.ALARMS in result.skipped)
+        assertTrue(SyncSection.NOTIFICATION_FILTER in result.skipped)
+        assertTrue(SyncSection.BUTTONS in result.skipped)
+    }
+
+    @Test
+    fun allDisabledAlarmsSkipped() {
+        val up = FakeUploader()
+        val result = SyncOrchestrator.sync(
+            SyncInput(
+                watch = watch(),
+                alarms = listOf(alarm(0, enabled = false), alarm(1, enabled = false)),
+                settings = SyncSettings(),
+            ),
+            up,
+        )
+        // Compiles to 0 bytes → skipped, not pushed empty.
+        assertFalse(SyncSection.ALARMS in up.order)
+        assertTrue(SyncSection.ALARMS in result.skipped)
+    }
+
+    // ---- order ----------------------------------------------------------------
+
+    @Test
+    fun fullSyncUploadsInDefinedOrder() {
+        val up = FakeUploader()
+        SyncOrchestrator.sync(
+            SyncInput(
+                watch = watch(vibe = 70),
+                alarms = listOf(alarm(0)),
+                rules = listOf(rule("com.whatsapp")),
+                buttons = listOf(button(ButtonSlots.TOP, ButtonModes.SINGLE_ACTION,
+                    listOf(ButtonActions.RING_PHONE))),
+                settings = SyncSettings(
+                    vibrationStrength = 70,
+                    nudgeEnabled = true, nudgeMinutes = 30,
+                    secondTimezoneOffsetMinutes = -480,
+                ),
+            ),
+            up,
+        )
+        assertEquals(
+            listOf(
+                SyncSection.ALARMS,
+                SyncSection.NOTIFICATION_FILTER,
+                SyncSection.BUTTONS,
+                SyncSection.VIBRATION,
+                SyncSection.NUDGE,
+                SyncSection.SECOND_TIMEZONE,
+            ),
+            up.order,
+        )
+    }
+
+    // ---- payloads match the golden compilers ---------------------------------
+
+    @Test
+    fun alarmBytesMatchAlarmCompiler() {
+        val up = FakeUploader()
+        val a0 = alarm(0, hour = 7, minute = 30, days = 0x3E)
+        val a16 = alarm(16, hour = 10, minute = 15, days = 0x20) // calendar
+        SyncOrchestrator.sync(
+            SyncInput(watch = watch(), alarms = listOf(a0), calendarAlarms = listOf(a16),
+                settings = SyncSettings()),
+            up,
+        )
+        val expected = AlarmCompiler.compile(
+            listOf(AlarmSlot(0, 7, 30, 0x3E, true, true, null)),
+            listOf(AlarmSlot(16, 10, 15, 0x20, true, true, null)),
+        )
+        assertArrayEquals(expected, up.alarmBytes)
+    }
+
+    @Test
+    fun filterEntriesMatchRows() {
+        val up = FakeUploader()
+        SyncOrchestrator.sync(
+            SyncInput(watch = watch(),
+                rules = listOf(rule("com.whatsapp", vibe = 2, hourDeg = 90, minDeg = 180)),
+                settings = SyncSettings()),
+            up,
+        )
+        val e = up.filterEntries!!.single()
+        assertEquals("com.whatsapp", e.packageName)
+        assertEquals(2.toByte(), e.vibe)
+        assertEquals(90.toShort(), e.hourDeg)
+        assertEquals(180.toShort(), e.minDeg)
+    }
+
+    @Test
+    fun buttonBytesMatchButtonCompilerForSingleAction() {
+        val up = FakeUploader()
+        SyncOrchestrator.sync(
+            SyncInput(watch = watch(),
+                buttons = listOf(button(ButtonSlots.TOP, ButtonModes.SINGLE_ACTION,
+                    listOf(ButtonActions.MUSIC_CONTROL))),
+                settings = SyncSettings()),
+            up,
+        )
+        val expected = ButtonConfigBuilder.build(
+            arrayOf(ButtonConfigBuilder.entryFrom(ConfigPayload.MUSIC_CONTROL)),
+            emptyArray(), emptyArray(),
+        )
+        assertArrayEquals(expected, up.buttonBytes)
+    }
+
+    @Test
+    fun customToggleMapsDialModesToSequencedEntries() {
+        val up = FakeUploader()
+        SyncOrchestrator.sync(
+            SyncInput(watch = watch(),
+                buttons = listOf(button(ButtonSlots.MIDDLE, ButtonModes.CUSTOM_TOGGLE,
+                    listOf(ButtonDialModes.TIMEZONE_2, ButtonDialModes.DATE, ButtonDialModes.ALARM))),
+                settings = SyncSettings()),
+            up,
+        )
+        val expected = ButtonConfigBuilder.build(
+            emptyArray(),
+            arrayOf(
+                ButtonConfigBuilder.entryFrom(ConfigPayload.SECOND_TIMEZONE),
+                ButtonConfigBuilder.DATE_TOGGLE_ENTRY,
+                ButtonConfigBuilder.ALARM_SEQUENCED_ENTRY,
+            ),
+            emptyArray(),
+        )
+        assertArrayEquals(expected, up.buttonBytes)
+    }
+
+    @Test
+    fun buttonsWithOnlyUnknownActionsSkipped() {
+        val up = FakeUploader()
+        val result = SyncOrchestrator.sync(
+            SyncInput(watch = watch(),
+                buttons = listOf(button(ButtonSlots.TOP, ButtonModes.SINGLE_ACTION,
+                    listOf("NOT_A_REAL_ACTION"))),
+                settings = SyncSettings()),
+            up,
+        )
+        assertFalse(SyncSection.BUTTONS in up.order)
+        assertTrue(SyncSection.BUTTONS in result.skipped)
+    }
+
+    // ---- settings -------------------------------------------------------------
+
+    @Test
+    fun settingsForwardedWithCorrectValues() {
+        val up = FakeUploader()
+        SyncOrchestrator.sync(
+            SyncInput(watch = watch(vibe = 80),
+                settings = SyncSettings(
+                    vibrationStrength = 80,
+                    nudgeEnabled = true, nudgeMinutes = 45,
+                    nudgeFromHour = 9, nudgeFromMinute = 0, nudgeToHour = 17, nudgeToMinute = 30,
+                    secondTimezoneOffsetMinutes = 330,
+                )),
+            up,
+        )
+        assertEquals(80, up.vibration)
+        assertEquals(FakeUploader.Sextet(9, 0, 17, 30, 45, true), up.nudge)
+        assertEquals(330, up.tzOffset)
+    }
+
+    @Test
+    fun nullSettingsNotApplied() {
+        val up = FakeUploader()
+        SyncOrchestrator.sync(
+            SyncInput(watch = watch(),
+                settings = SyncSettings(
+                    vibrationStrength = null, nudgeMinutes = null, secondTimezoneOffsetMinutes = null,
+                )),
+            up,
+        )
+        assertFalse(SyncSection.VIBRATION in up.order)
+        assertFalse(SyncSection.NUDGE in up.order)
+        assertFalse(SyncSection.SECOND_TIMEZONE in up.order)
+    }
+
+    // ---- 32-slot guard --------------------------------------------------------
+
+    @Test
+    fun tooManyAlarmsRecordedAsErrorAndOthersStillRun() {
+        val up = FakeUploader()
+        // 17 standard alarms is fine for AlarmCompiler ranges? No — standard slots are 0..15.
+        // Use 33 across the legal ranges to trip the 32-slot guard: 16 standard + 17 calendar.
+        val standard = (0..15).map { alarm(it) }
+        val calendar = (16..32).map { alarm(it) } // slot 32 is out of calendar range → throws
+        val result = SyncOrchestrator.sync(
+            SyncInput(watch = watch(), alarms = standard, calendarAlarms = calendar,
+                rules = listOf(rule("com.whatsapp")), settings = SyncSettings()),
+            up,
+        )
+        // Alarms errored, but the filter still uploaded.
+        assertTrue(result.errors.any { it.section == SyncSection.ALARMS })
+        assertTrue(SyncSection.NOTIFICATION_FILTER in up.order)
+    }
+
+    @Test
+    fun resultReportsPerformedVsSkipped() {
+        val up = FakeUploader(filterWired = false)
+        val result = SyncOrchestrator.sync(
+            SyncInput(watch = watch(),
+                alarms = listOf(alarm(0)),
+                rules = listOf(rule("com.whatsapp")),
+                settings = SyncSettings(vibrationStrength = 50)),
+            up,
+        )
+        assertTrue(SyncSection.ALARMS in result.performed)
+        assertTrue(SyncSection.VIBRATION in result.performed)
+        // filter uploader returned false (not wired) → classified as skipped.
+        assertTrue(SyncSection.NOTIFICATION_FILTER in result.skipped)
+    }
+}
