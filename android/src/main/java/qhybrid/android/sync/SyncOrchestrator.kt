@@ -2,6 +2,7 @@ package qhybrid.android.sync
 
 import qhybrid.android.buttons.ButtonActionsJson
 import qhybrid.android.buttons.ButtonDialModes
+import qhybrid.android.buttons.ButtonMappingRules
 import qhybrid.android.buttons.ButtonModes
 import qhybrid.android.buttons.ButtonSlots
 import qhybrid.android.db.ButtonMappingEntity
@@ -161,12 +162,22 @@ object SyncOrchestrator {
         return ButtonConfigBuilder.build(top, mid, bot)
     }
 
-    /** Resolve one mapping into its protocol [ButtonConfigBuilder.ButtonEntry] list (may be empty). */
+    /**
+     * Resolve one mapping into its protocol [ButtonConfigBuilder.ButtonEntry] list (may be empty).
+     *
+     * **WP-BTN defensive collapse:** the id list is first run through [ButtonMappingRules.normalizeIds]
+     * so a *legacy* DB row that still holds many ids for a non-toggle mode (a `SINGLE_ACTION` /
+     * `MUSIC_MULTIMODE` button) compiles to **at most one entry**, never a silent multi-entry cycle.
+     * Only [ButtonModes.CUSTOM_TOGGLE] keeps the full list (the genuine dial-mode cycle). This is
+     * the SAME rule [qhybrid.android.buttons.ButtonsViewModel.setSlot] applies before persisting,
+     * so the editor and the compiler can never disagree about cardinality.
+     */
     private fun entriesFor(mapping: ButtonMappingEntity?): Array<ButtonConfigBuilder.ButtonEntry> {
         if (mapping == null) return emptyArray()
-        val ids = ButtonActionsJson.decode(mapping.actionsJson)
+        val mode = ButtonModes.normalize(mapping.modeType)
+        val ids = ButtonMappingRules.normalizeIds(mode, ButtonActionsJson.decode(mapping.actionsJson))
         if (ids.isEmpty()) return emptyArray()
-        return if (ButtonModes.usesDialModes(ButtonModes.normalize(mapping.modeType))) {
+        return if (ButtonModes.usesDialModes(mode)) {
             ids.mapNotNull { dialEntry(it) }.toTypedArray()
         } else {
             ids.mapNotNull { actionEntry(it) }.toTypedArray()

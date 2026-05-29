@@ -164,13 +164,18 @@ open class ButtonsViewModel(
      */
     fun setSlot(buttonId: Int, modeType: String, ids: List<String>) {
         val mac = uiState.value.activeMac ?: return
+        val mode = ButtonModes.normalize(modeType)
+        // WP-BTN: enforce the cardinality contract BEFORE persisting — a non-toggle mode is
+        // collapsed to a single (music-capable, for MUSIC_MULTIMODE) id; only CUSTOM_TOGGLE keeps
+        // the full list. This guarantees the editor can never store an invalid combination.
+        val normalizedIds = ButtonMappingRules.normalizeIds(mode, ButtonActionsJson.decode(ButtonActionsJson.encode(ids)))
         coroutineScope.launch {
             repo.upsertButton(
                 ButtonMappingEntity(
                     watchMac = mac,
                     buttonId = buttonId,
-                    modeType = ButtonModes.normalize(modeType),
-                    actionsJson = ButtonActionsJson.encode(ButtonActionsJson.decode(ButtonActionsJson.encode(ids))),
+                    modeType = mode,
+                    actionsJson = ButtonActionsJson.encode(normalizedIds),
                 )
             )
         }

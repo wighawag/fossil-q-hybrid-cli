@@ -251,6 +251,68 @@ class SyncOrchestratorTest {
     }
 
     @Test
+    fun legacyMultiIdSingleActionRowCollapsesToOneEntry() {
+        // WP-BTN defensive collapse: a legacy DB row that stored MANY ids for a SINGLE_ACTION
+        // button must compile to AT MOST ONE entry (the first), NOT a silent multi-entry cycle.
+        val up = FakeUploader()
+        SyncOrchestrator.sync(
+            SyncInput(watch = watch(),
+                buttons = listOf(button(ButtonSlots.TOP, ButtonModes.SINGLE_ACTION,
+                    listOf(ButtonActions.STOPWATCH, ButtonActions.DATE, ButtonActions.RING_PHONE))),
+                settings = SyncSettings()),
+            up,
+        )
+        // Identical bytes to a clean single-action STOPWATCH button via the WP7 golden compiler.
+        val expected = ButtonConfigBuilder.build(
+            arrayOf(ButtonConfigBuilder.entryFrom(ConfigPayload.STOPWATCH)),
+            emptyArray(), emptyArray(),
+        )
+        assertArrayEquals(expected, up.buttonBytes)
+    }
+
+    @Test
+    fun legacyMultiIdMusicMultimodeRowCollapsesToOneMusicEntry() {
+        // A legacy MUSIC_MULTIMODE row with several ids (incl. a non-music one) collapses to the
+        // first music-capable id only — one entry, matching the golden compiler.
+        val up = FakeUploader()
+        SyncOrchestrator.sync(
+            SyncInput(watch = watch(),
+                buttons = listOf(button(ButtonSlots.BOTTOM, ButtonModes.MUSIC_MULTIMODE,
+                    listOf(ButtonActions.STOPWATCH, ButtonActions.MUSIC_CONTROL, ButtonActions.FORWARD_TO_PHONE_MULTI))),
+                settings = SyncSettings()),
+            up,
+        )
+        val expected = ButtonConfigBuilder.build(
+            emptyArray(), emptyArray(),
+            arrayOf(ButtonConfigBuilder.entryFrom(ConfigPayload.MUSIC_CONTROL)),
+        )
+        assertArrayEquals(expected, up.buttonBytes)
+    }
+
+    @Test
+    fun customToggleKeepsTheWholeCycleAfterCollapseGuard() {
+        // CUSTOM_TOGGLE is the genuine multi-id cycle — the defensive collapse must NOT shorten it.
+        val up = FakeUploader()
+        SyncOrchestrator.sync(
+            SyncInput(watch = watch(),
+                buttons = listOf(button(ButtonSlots.MIDDLE, ButtonModes.CUSTOM_TOGGLE,
+                    listOf(ButtonDialModes.TIMEZONE_2, ButtonDialModes.DATE, ButtonDialModes.ALARM))),
+                settings = SyncSettings()),
+            up,
+        )
+        val expected = ButtonConfigBuilder.build(
+            emptyArray(),
+            arrayOf(
+                ButtonConfigBuilder.entryFrom(ConfigPayload.SECOND_TIMEZONE),
+                ButtonConfigBuilder.DATE_TOGGLE_ENTRY,
+                ButtonConfigBuilder.ALARM_SEQUENCED_ENTRY,
+            ),
+            emptyArray(),
+        )
+        assertArrayEquals(expected, up.buttonBytes)
+    }
+
+    @Test
     fun buttonsWithOnlyUnknownActionsSkipped() {
         val up = FakeUploader()
         val result = SyncOrchestrator.sync(

@@ -275,6 +275,50 @@ class ButtonsViewModelTest : DbTestBase() {
     }
 
     @Test
+    fun setSlotCollapsesMultiIdSingleActionToOne() {
+        // WP-BTN: a SINGLE_ACTION slot can never store more than one id, even if the caller
+        // hands several (e.g. a legacy multi-checkbox selection).
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }
+        val model = vm()
+        awaitState(model.uiState) { it.hasActiveWatch }
+
+        model.setSlot(ButtonSlots.TOP, ButtonModes.SINGLE_ACTION,
+            listOf(ButtonActions.STOPWATCH, ButtonActions.DATE, ButtonActions.RING_PHONE))
+        val s = awaitState(model.uiState) { it.mappingFor(ButtonSlots.TOP) != null }
+        assertEquals(
+            listOf(ButtonActions.STOPWATCH),
+            ButtonActionsJson.decode(s.mappingFor(ButtonSlots.TOP)?.actionsJson),
+        )
+    }
+
+    @Test
+    fun setSlotMusicMultimodeKeepsOnlyOneMusicId() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }
+        val model = vm()
+        awaitState(model.uiState) { it.hasActiveWatch }
+
+        model.setSlot(ButtonSlots.BOTTOM, ButtonModes.MUSIC_MULTIMODE,
+            listOf(ButtonActions.STOPWATCH, ButtonActions.MUSIC_CONTROL, ButtonActions.FORWARD_TO_PHONE_MULTI))
+        val s = awaitState(model.uiState) { it.mappingFor(ButtonSlots.BOTTOM) != null }
+        assertEquals(
+            listOf(ButtonActions.MUSIC_CONTROL),
+            ButtonActionsJson.decode(s.mappingFor(ButtonSlots.BOTTOM)?.actionsJson),
+        )
+    }
+
+    @Test
+    fun setSlotCustomToggleKeepsTheWholeCycle() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }
+        val model = vm()
+        awaitState(model.uiState) { it.hasActiveWatch }
+
+        val cycle = listOf(ButtonDialModes.TIMEZONE_2, ButtonDialModes.DATE, ButtonDialModes.ALARM)
+        model.setSlot(ButtonSlots.MIDDLE, ButtonModes.CUSTOM_TOGGLE, cycle)
+        val s = awaitState(model.uiState) { it.mappingFor(ButtonSlots.MIDDLE) != null }
+        assertEquals(cycle, ButtonActionsJson.decode(s.mappingFor(ButtonSlots.MIDDLE)?.actionsJson))
+    }
+
+    @Test
     fun setSlotNoOpWithoutActiveWatch() {
         runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = false)) }
         val model = vm()
