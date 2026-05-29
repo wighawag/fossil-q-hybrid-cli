@@ -12,11 +12,13 @@ import qhybrid.android.WatchConnectionService
  * [WatchConnectionService.syncNow] static entry point — it adds **NO new BLE/protocol
  * behavior** (WP16c constraint).
  *
- * **DEFERRED (on-device-pending):** the *actual* filter-byte upload pipeline (compile the
- * per-app rows with WP6 [qhybrid.protocol.requests.fossil.notification.NotificationCompiler]
- * and push the 32-byte-per-entry filter file over BLE) is **WP14**. Until then "Save to
- * watch" persists to Room (done by the ViewModel intents) and pokes the service's existing
- * sync-on-connect path; the filter is NOT yet written to the device hardware.
+ * **WIRED (WP14):** the filter-byte upload pipeline is now live — "Save to watch" persists to
+ * Room (the ViewModel intents) then triggers [WatchConnectionService.syncNow], which runs the
+ * WP14 SyncOrchestrator: it compiles the per-app rows with WP6
+ * [qhybrid.protocol.requests.fossil.notification.NotificationCompiler] (32-byte-per-entry) and
+ * pushes the filter file over BLE via the WP3 service's ble-worker. [FILTER_UPLOAD_WIRED] is
+ * `true`. (The on-device BLE effect is verified-pending hardware; the compile logic is
+ * unit-tested in the `sync` package.)
  */
 interface NotificationSync {
     /**
@@ -35,14 +37,14 @@ class ServiceNotificationSync(context: Context) : NotificationSync {
     private val appContext = context.applicationContext
 
     override fun saveToWatch(): Boolean {
-        // Re-run the existing sync-on-connect operations. The dedicated notification-filter
-        // upload (WP6 compile → BLE write) is WP14 and not added here (no new wire behavior).
+        // WP14: syncNow now drives the SyncOrchestrator (WP6 compile → BLE filter-file write)
+        // on the service's ble-worker. The rows are already persisted to Room by the intents.
         WatchConnectionService.syncNow(appContext)
         return FILTER_UPLOAD_WIRED
     }
 
     companion object {
-        /** Flip to true when WP14 wires the real filter-byte upload pipeline. */
-        const val FILTER_UPLOAD_WIRED = false
+        /** WP14: the real filter-byte upload pipeline is wired (via syncNow → SyncOrchestrator). */
+        const val FILTER_UPLOAD_WIRED = true
     }
 }

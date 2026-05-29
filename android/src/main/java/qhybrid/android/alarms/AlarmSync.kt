@@ -12,11 +12,12 @@ import qhybrid.android.WatchConnectionService
  * [WatchConnectionService.syncNow] static entry point — it adds **NO new BLE/protocol
  * behavior** (WP16b constraint).
  *
- * **DEFERRED (on-device-pending):** the *actual* alarm-byte upload pipeline (compile the
- * slot-0–15 rows with WP5 [qhybrid.protocol.requests.fossil.alarm.AlarmCompiler] and push
- * the alarm file over BLE) is **WP14**. Until then "Save to watch" persists to Room (done
- * by the ViewModel intents) and pokes the service's existing sync-on-connect path; the
- * alarms are NOT yet written to the device hardware.
+ * **WIRED (WP14):** the alarm-byte upload pipeline is now live — "Save to watch" persists to
+ * Room (the ViewModel intents) then triggers [WatchConnectionService.syncNow], which runs the
+ * WP14 SyncOrchestrator: it compiles the slot-0–15 rows with WP5
+ * [qhybrid.protocol.requests.fossil.alarm.AlarmCompiler] and pushes the alarm file over BLE via
+ * the WP3 service's ble-worker. [ALARM_UPLOAD_WIRED] is `true`. (The on-device BLE effect is
+ * verified-pending hardware; the compile+order logic is unit-tested in the `sync` package.)
  */
 interface AlarmSync {
     /**
@@ -35,14 +36,14 @@ class ServiceAlarmSync(context: Context) : AlarmSync {
     private val appContext = context.applicationContext
 
     override fun saveToWatch(): Boolean {
-        // Re-run the existing sync-on-connect operations. The dedicated alarm-file upload
-        // (WP5 compile → BLE write) is WP14 and not added here (no new wire behavior).
+        // WP14: syncNow now drives the SyncOrchestrator (WP5 compile → BLE alarm-file write)
+        // on the service's ble-worker. The rows are already persisted to Room by the intents.
         WatchConnectionService.syncNow(appContext)
         return ALARM_UPLOAD_WIRED
     }
 
     companion object {
-        /** Flip to true when WP14 wires the real alarm-byte upload pipeline. */
-        const val ALARM_UPLOAD_WIRED = false
+        /** WP14: the real alarm-byte upload pipeline is wired (via syncNow → SyncOrchestrator). */
+        const val ALARM_UPLOAD_WIRED = true
     }
 }

@@ -284,6 +284,13 @@ class AlarmsViewModelTest : DbTestBase() {
         val model = vm(sync)
         val wired = model.saveToWatch()
         assertEquals(1, sync.saveCount)
-        assertFalse(wired) // byte upload deferred to WP14
+        assertFalse(wired) // the FAKE reports false; the production flag is asserted below
+    }
+
+    @Test
+    fun productionAlarmUploadIsWired() {
+        // WP14 sub-part 3: the real alarm-byte upload pipeline (compile via WP5 → BLE write
+        // through the WP3 service's SyncOrchestrator) is wired.
+        assertTrue(ServiceAlarmSync.ALARM_UPLOAD_WIRED)
     }
 }

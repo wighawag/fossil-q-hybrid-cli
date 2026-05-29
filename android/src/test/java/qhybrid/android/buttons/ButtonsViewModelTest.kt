@@ -291,6 +291,13 @@ class ButtonsViewModelTest : DbTestBase() {
         val model = vm(sync)
         val wired = model.saveToWatch()
         assertEquals(1, sync.saveCount)
-        assertFalse(wired) // button-config upload deferred to WP14
+        assertFalse(wired) // the FAKE reports false; the production flag is asserted below
+    }
+
+    @Test
+    fun productionButtonUploadIsWired() {
+        // WP14 sub-part 3: the real button-config upload pipeline (compile via WP7 → BLE write
+        // through the WP3 service's SyncOrchestrator) is wired.
+        assertTrue(ServiceButtonSync.BUTTON_UPLOAD_WIRED)
     }
 }

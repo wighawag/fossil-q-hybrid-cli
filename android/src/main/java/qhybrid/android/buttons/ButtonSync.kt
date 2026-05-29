@@ -12,12 +12,13 @@ import qhybrid.android.WatchConnectionService
  * [WatchConnectionService.syncNow] static entry point — it adds **NO new BLE/protocol
  * behavior** (WP16d constraint).
  *
- * **DEFERRED (on-device-pending):** the *actual* button-config upload pipeline (compile the
- * per-button rows with WP7 [qhybrid.protocol.requests.fossil.button.ButtonCompiler] /
- * [qhybrid.protocol.ButtonConfigBuilder] and push the SETTINGS_BUTTONS (0x0600) file over
- * BLE) is **WP14**. Until then "Save to watch" persists to Room (done by the ViewModel
- * intents) and pokes the service's existing sync-on-connect path; the button config is NOT
- * yet written to the device hardware.
+ * **WIRED (WP14):** the button-config upload pipeline is now live — "Save to watch" persists to
+ * Room (the ViewModel intents) then triggers [WatchConnectionService.syncNow], which runs the
+ * WP14 SyncOrchestrator: it compiles the per-button rows with WP7
+ * [qhybrid.protocol.requests.fossil.button.ButtonCompiler] / [qhybrid.protocol.ButtonConfigBuilder]
+ * and pushes the SETTINGS_BUTTONS (0x0600) file over BLE via the WP3 service's ble-worker.
+ * [BUTTON_UPLOAD_WIRED] is `true`. (The on-device BLE effect is verified-pending hardware; the
+ * compile + action/dial-mode mapping logic is unit-tested in the `sync` package.)
  */
 interface ButtonSync {
     /**
@@ -36,15 +37,14 @@ class ServiceButtonSync(context: Context) : ButtonSync {
     private val appContext = context.applicationContext
 
     override fun saveToWatch(): Boolean {
-        // Re-run the existing sync-on-connect operations. The dedicated button-config upload
-        // (WP7 compile → BLE write of the 0x0600 file) is WP14 and not added here (no new
-        // wire behavior).
+        // WP14: syncNow now drives the SyncOrchestrator (WP7 compile → BLE 0x0600 file write)
+        // on the service's ble-worker. The rows are already persisted to Room by the intents.
         WatchConnectionService.syncNow(appContext)
         return BUTTON_UPLOAD_WIRED
     }
 
     companion object {
-        /** Flip to true when WP14 wires the real button-config upload pipeline. */
-        const val BUTTON_UPLOAD_WIRED = false
+        /** WP14: the real button-config upload pipeline is wired (via syncNow → SyncOrchestrator). */
+        const val BUTTON_UPLOAD_WIRED = true
     }
 }
