@@ -223,6 +223,9 @@ class WatchConnectionService : Service() {
                     battery = controller.batteryLevel,
                     firmware = controller.firmwareVersion,
                     model = controller.modelNumber,
+                    // WP15: surface the negotiated MTU for the Debug Menu (read-only; no
+                    // wire change — the transport already negotiated this in connect()).
+                    mtu = transportRef.get()?.getMtu() ?: 0,
                     message = "Connected",
                 )
                 // WP3 sync-on-connect hook (WP5/6/9 fill in alarm/filter/calendar uploads).
@@ -289,12 +292,13 @@ class WatchConnectionService : Service() {
         battery: Int? = null,
         firmware: String? = null,
         model: String? = null,
+        mtu: Int? = null,
         message: String? = null,
         clearDeviceInfo: Boolean = false,
     ) {
         WatchState.update(
             link = link, mac = mac, battery = battery, firmware = firmware,
-            model = model, message = message, clearDeviceInfo = clearDeviceInfo,
+            model = model, mtu = mtu, message = message, clearDeviceInfo = clearDeviceInfo,
         )
         val s = WatchState.status.value
         val title = when (link) {

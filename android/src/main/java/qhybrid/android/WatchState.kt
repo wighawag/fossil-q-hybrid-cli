@@ -42,6 +42,8 @@ object WatchState {
         val battery: Int? = null,
         val firmware: String? = null,
         val model: String? = null,
+        /** Negotiated ATT MTU (WP15 Debug Menu surface; 0 == unknown/not yet negotiated). */
+        val mtu: Int = 0,
         /** Human-readable last event, for the notification + UI status line. */
         val message: String? = null,
     )
@@ -61,6 +63,7 @@ object WatchState {
         battery: Int? = null,
         firmware: String? = null,
         model: String? = null,
+        mtu: Int? = null,
         message: String? = null,
         clearDeviceInfo: Boolean = false,
     ) {
@@ -71,6 +74,7 @@ object WatchState {
             battery = if (clearDeviceInfo) null else (battery ?: cur.battery),
             firmware = if (clearDeviceInfo) null else (firmware ?: cur.firmware),
             model = if (clearDeviceInfo) null else (model ?: cur.model),
+            mtu = if (clearDeviceInfo) 0 else (mtu ?: cur.mtu),
             message = message ?: cur.message,
         )
     }

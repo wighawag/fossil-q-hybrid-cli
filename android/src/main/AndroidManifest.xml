@@ -45,6 +45,7 @@
         android:required="false" />
 
     <application
+        android:name=".FossilQApplication"
         android:label="Fossil Q"
         android:theme="@style/Theme.FossilQ">
 
@@ -75,6 +76,17 @@
                 <action android:name="android.companion.CompanionDeviceService" />
             </intent-filter>
         </service>
+
+        <!-- WP15: share exported log file via a content:// URI (export-to-file). -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
         <!-- WP3: reboot survival — re-arm presence + restart the service. -->
         <receiver

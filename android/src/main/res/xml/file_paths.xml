@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- WP15: exported log files live in cache/logs and are shared via FileProvider. -->
+<paths>
+    <cache-path name="logs" path="logs/" />
+</paths>

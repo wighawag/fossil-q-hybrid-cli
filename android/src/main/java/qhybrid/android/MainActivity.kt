@@ -23,19 +23,29 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material3.Button
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import qhybrid.android.debug.DebugMenu
+import qhybrid.android.debug.DebugMenuScreen
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -76,8 +86,37 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    HomeScreen()
+                    AppScaffold()
                 }
+            }
+        }
+    }
+
+    /**
+     * Hosts the home screen plus a top-right gear that opens the Debug Menu. The gear is
+     * shown ONLY in debug builds ([DebugMenu.isEnabled] == BuildConfig.DEBUG) so the
+     * developer surface never ships enabled in a release build (WP15 requirement).
+     */
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Composable
+    private fun AppScaffold() {
+        var showDebug by remember { mutableStateOf(false) }
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = { Text(if (showDebug) "Debug Menu" else "Fossil Q") },
+                    actions = {
+                        if (DebugMenu.isEnabled()) {
+                            IconButton(onClick = { showDebug = !showDebug }) {
+                                Icon(Icons.Filled.Build, contentDescription = "Debug menu")
+                            }
+                        }
+                    },
+                )
+            },
+        ) { padding ->
+            Box(modifier = Modifier.padding(padding)) {
+                if (showDebug && DebugMenu.isEnabled()) DebugMenuScreen() else HomeScreen()
             }
         }
     }

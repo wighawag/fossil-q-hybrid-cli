@@ -35,6 +35,8 @@ android {
 
     buildFeatures {
         compose true
+        // WP15: BuildConfig.DEBUG gates the Debug Menu so it never ships enabled.
+        buildConfig true
     }
 
     // WP4: Robolectric unit tests need Android resources available on the JVM.
@@ -64,6 +66,8 @@ dependencies {
     implementation 'androidx.activity:activity-compose:1.9.3'
     implementation 'androidx.compose.ui:ui'
     implementation 'androidx.compose.material3:material3'
+    // WP15: gear/build icon for the Debug Menu top-right entry.
+    implementation 'androidx.compose.material:material-icons-core'
     implementation 'androidx.core:core-ktx:1.13.1'
     // WP3: StateFlow connection-state holder + lifecycle-aware collection in Compose.
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'

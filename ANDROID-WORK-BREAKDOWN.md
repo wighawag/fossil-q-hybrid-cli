@@ -656,6 +656,104 @@ unchanged; `:android:assembleDebug` succeeds. No protocol wire bytes / `AlarmSlo
 
 ## WP15 — In-App Log Viewer + Debug Menu (level filter + export)
 
+**Status:** ✅ DONE & VERIFIED (provable core JVM-tested; UI builds; on-device behaviour
+flagged pending). Follows the proven two-layer pattern: a pure JVM-tested core + an
+Android UI layer that compiles and lint-passes.
+
+**(1) Provable core (pure Java in `:protocol`, zero Android/hardware):**
+- `qhybrid.protocol.log.LogRecord` — immutable `(timestampMillis, Level, tag, message)`.
+  `Level` {TRACE,DEBUG,INFO,WARN,ERROR} carries a stable numeric `severity()` (not enum
+  ordinal) so the level filter survives any reordering. INFO+ = friendly operational
+  lines; DEBUG/TRACE = raw hex/GATT/DB.
+- `qhybrid.protocol.log.LogRingBuffer` — bounded, thread-safe FIFO ring (DEFAULT_CAPACITY
+  2000, oldest evicted at capacity). `filter(minLevel)` returns the "≥ level" subset
+  (null = all); `export([minLevel])` produces a stable copy/share blob
+  (`"<UTC time> <LEVEL> <tag>: <message>\n"`, level padded to 5 for alignment);
+  `formatLine` renders one line; `addChangeListener` (plain `Runnable`, no coroutines)
+  lets the UI refresh; process-wide `shared()` singleton (mirrors WP3 `WatchState`).
+- **Placement justified:** the pure buffer lives in `:protocol` (not `:android/src/test`)
+  because (a) `:protocol` is the SLF4J producer both `:cli` and `:android` share, (b) it
+  has the mature JUnit5 golden-test harness the WP5–WP9 cores use, and (c) it needs zero
+  Android — keeping it out of the Robolectric/JUnit4 `:android` test set. The Android-only
+  pieces (SLF4J bridge, Compose, Debug Menu) live in `:android`.
+- **Tests:** `protocol/src/test/.../golden/Wp15LogRingBufferTest.java` (14 tests) — mixed-level
+  filtering returns the expected subset, severity ordering, ring eviction at/over capacity,
+  capacity guard, clear, a byte-stable export blob (fixed timestamps), per-level export,
+  formatLine, listener fire/remove/throw-safety, null-field normalization, singleton.
+  `:protocol:test` now **108 total (94 prior + 14)**, 0 failures.
+
+**(2) SLF4J bridge (`:android`, tees — does NOT replace logcat):**
+- `qhybrid.android.log.BufferTeeServiceProvider` is the app's single SLF4J binding
+  (`META-INF/services/org.slf4j.spi.SLF4JServiceProvider`). It instantiates slf4j-android's
+  own `ServiceProvider` internally and wraps every returned logger in `LogBufferLogger`,
+  which forwards each call UNCHANGED to slf4j-android (→ logcat) **and** appends to
+  `LogRingBuffer.shared()`. So logcat routing is preserved (the ring sits alongside it).
+  Ring capture is intentionally NOT gated by the delegate's per-level enablement — the
+  in-app console always shows DEBUG (raw hex/GATT/DB) even when logcat suppresses it;
+  arguments are substituted via SLF4J's own `MessageFormatter`. `BufferOnlyLogger`
+  (extends `LegacyAbstractLogger`) is a graceful fallback if slf4j-android can't load.
+- The APK ends up with BOTH service entries (ours + slf4j-android's), so
+  `FossilQApplication` (new `android:name`) sets `System.setProperty("slf4j.provider",
+  "…BufferTeeServiceProvider")` in a static initializer (before any logger is created) to
+  pin OUR provider deterministically (SLF4J 2.0.9 honours `slf4j.provider`).
+- **Tests:** `android/src/test/.../log/Slf4jBridgeTest.kt` (3, Robolectric) drive the bridge
+  directly (app + `:protocol` loggers): records land in the buffer at the right level,
+  `{}` args are formatted, throwable stacks are captured, and the level filter returns the
+  expected subset. (Driven directly rather than via the global binding because AGP's
+  unit-test classpath doesn't reliably select our `META-INF/services` entry; the packaged
+  APK + `slf4j.provider` pin make it live on-device.)
+
+**(3) Compose log console + Debug Menu (`:android`, build + lint green):**
+- `qhybrid.android.log.LogConsole` — terminal-style `LazyColumn` (monospace, per-level
+  colour, auto-scroll to newest), level-filter chips (ALL / DEBUG / INFO / WARN / ERROR
+  via `LogRingBuffer.filter`), **Copy** (clipboard), **Export** (writes
+  `cache/logs/fossilq-log-*.txt`, shares via `FileProvider` `ACTION_SEND`), and **Clear**.
+  `rememberLogRecords` bridges the buffer's `Runnable` change-listener into Compose state.
+- `qhybrid.android.debug.DebugMenuScreen` + `DebugTools` — the Debug Menu, **release-gated**
+  by `DebugMenu.isEnabled() == BuildConfig.DEBUG`. Reached from a **top-right gear**
+  (`Icons.Filled.Build`) in `MainActivity`'s new `Scaffold` TopAppBar, shown ONLY in debug
+  builds. Hosts the log console plus:
+    - **DB tools (WP4):** Dump DB, Seed sample, List watches, Clone from→to
+      (`WatchRepository.transferSettings`, auto-registers the target), Activate, Wipe
+      (CASCADE) — all via `WatchRepository`, each logging progress through SLF4J (so it
+      lands in the console).
+    - **BLE/protocol tools (WP3):** Connect/Sync/Disconnect via the existing
+      `WatchConnectionService` static entry points; shows Link state + **negotiated MTU**
+      (newly surfaced read-only on `WatchState.WatchStatus.mtu`, published from the
+      transport's existing `getMtu()` on INITIALIZED — NO wire change).
+    - **Misc:** Build/version (`BuildConfig`), permission state, CDM associations.
+- **Tests:** `android/src/test/.../debug/DebugToolsTest.kt` (5, Robolectric + in-memory
+  Room via the WP4 `DbTestBase`): seed/list, clone/transfer, wipe-CASCADE, set-active, and
+  DB-dump all invoke the right `WatchRepository` calls and (when the tee binding is active)
+  log to the buffer. `:android:testDebugUnitTest` **17 total (9 prior DB + 3 bridge + 5
+  debug-tools)**, 0 failures.
+
+**Manifest/build deltas:** `buildConfig true` (for `BuildConfig.DEBUG` gate);
+`material-icons-core` (gear icon); `FileProvider` + `res/xml/file_paths.xml` (export-to-file
+share); `android:name=".FossilQApplication"`; `src/main/resources/META-INF/services/
+org.slf4j.spi.SLF4JServiceProvider`.
+
+**Acceptance met:** `:protocol:test` 108 green (94 + 14); `:android:testDebugUnitTest` 17
+green; `:android:assembleDebug` + `:android:lintDebug` succeed; `./fossil-q --help`
+unchanged (zero `:cli`/protocol-wire changes). NO change to ActivityParser /
+AlarmCompiler / NotificationCompiler / ButtonCompiler / CalendarAlarmMapper /
+ActivitySummarizer / BleTransport / AndroidBleTransport.kt / WP3 service wire behaviour
+(the only service edit is read-only MTU surfacing on INITIALIZED).
+
+**On-device verification pending:** the Compose console rendering/scroll, the copy/export
+share-sheet, the top-right gear → Debug Menu navigation, and the live effect of the BLE
+Debug actions can only be confirmed on a device (the data path — buffer→filter→export and
+the DB actions — is unit-tested headlessly).
+
+**Future follow-ups:** richer Debug Menu actions (replay a canned byte sequence; hand-
+animation diagnostics §4.J); wire WP14 sync-now once it lands so "Sync now" drives a real
+upload; optional persistent log file / log level config UI; route `:cli` logs through the
+same `LogRingBuffer` for a CLI `logs` command.
+
+---
+
+### Original WP15 brief (for reference)
+
 **Goal:** Capture INFO/DEBUG logs into a ring buffer; Compose console with level filter + export. Also host the **Debug Menu** — a developer-tools surface reached from a top-right overflow/gear in the app, gated so it never ships enabled in release (e.g. `BuildConfig.DEBUG`).
 
 **Scope:**
