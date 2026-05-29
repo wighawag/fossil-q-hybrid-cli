@@ -44,6 +44,20 @@ class AndroidBleTransport(private val context: Context) : BleTransport {
         private const val CONNECT_TIMEOUT_MS = 20_000L
         private val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
         private const val DEFAULT_MTU = 23
+
+        // The six Fossil characteristics that the protocol layer expects to be
+        // receiving notifications/indications on. The protocol (FossilQAdapter)
+        // assumes the transport enabled these during connect() — the CLI's
+        // BluezTransport does exactly this. Without them, the auth handshake's
+        // response on 3dda0005 never arrives and init stalls until timeout.
+        private val FOSSIL_NOTIFY_UUIDS: List<UUID> = listOf(
+            UUID.fromString("3dda0002-957f-7d4a-34a6-74696673696d"),
+            UUID.fromString("3dda0003-957f-7d4a-34a6-74696673696d"),
+            UUID.fromString("3dda0004-957f-7d4a-34a6-74696673696d"),
+            UUID.fromString("3dda0005-957f-7d4a-34a6-74696673696d"),
+            UUID.fromString("3dda0006-957f-7d4a-34a6-74696673696d"),
+            UUID.fromString("3dda0007-957f-7d4a-34a6-74696673696d"),
+        )
     }
 
     private var gatt: BluetoothGatt? = null
@@ -119,6 +133,7 @@ class AndroidBleTransport(private val context: Context) : BleTransport {
         override fun onCharacteristicChanged(
             g: BluetoothGatt, ch: BluetoothGattCharacteristic, value: ByteArray
         ) {
+            Log.d(TAG, "NOTIFY ${ch.uuid} <- ${value.toHex()}")
             notificationCallback?.accept(ch.uuid, value)
         }
 
@@ -170,6 +185,20 @@ class AndroidBleTransport(private val context: Context) : BleTransport {
             disconnect()
             return false
         }
+
+        // Enable notifications BEFORE reporting connected, so the protocol layer's
+        // auth handshake (and all later indications) are actually delivered.
+        // synchronized(opLock) is reentrant, so calling enableNotifications()
+        // here — while still holding the lock — is safe.
+        for (uuid in FOSSIL_NOTIFY_UUIDS) {
+            try {
+                enableNotifications(uuid)
+            } catch (e: Exception) {
+                Log.w(TAG, "enableNotifications failed for $uuid", e)
+            }
+        }
+        Log.i(TAG, "Enabled notifications on ${FOSSIL_NOTIFY_UUIDS.size} characteristics")
+
         connectionCallback?.accept(true)
         return true
     }
@@ -204,6 +233,7 @@ class AndroidBleTransport(private val context: Context) : BleTransport {
             val ch = findCharacteristic(uuid) ?: run {
                 Log.e(TAG, "write: characteristic not found $uuid"); return
             }
+            Log.d(TAG, "WRITE $uuid -> ${data.toHex()}")
             writeLatch = CountDownLatch(1)
             writeSuccess = false
             val writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
@@ -247,7 +277,19 @@ class AndroidBleTransport(private val context: Context) : BleTransport {
             }
             writeLatch = CountDownLatch(1)
             writeSuccess = false
-            val enable = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+            // CRITICAL: Fossil uses INDICATE on 3dda0003 / 3dda0005 (write+indicate)
+            // and NOTIFY on the rest. The CCCD value differs — writing the notify
+            // value to an indicate-only characteristic means the watch never sends
+            // on it, so the file header (3dda0003) and auth response (3dda0005)
+            // never arrive. Pick the right value from the characteristic properties.
+            val isIndicate =
+                (ch.properties and BluetoothGattCharacteristic.PROPERTY_INDICATE) != 0
+            val enable = if (isIndicate) {
+                BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
+            } else {
+                BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+            }
+            Log.d(TAG, "enableNotifications $uuid (${if (isIndicate) "INDICATE" else "NOTIFY"})")
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 g.writeDescriptor(cccd, enable)
             } else {
@@ -303,3 +345,6 @@ class AndroidBleTransport(private val context: Context) : BleTransport {
 
 // BluetoothDevice.TRANSPORT_LE = 2; named here to keep the import list minimal.
 private const val BluetoothDevice_TRANSPORT_LE = 2
+
+private fun ByteArray.toHex(): String =
+    joinToString(" ") { "%02x".format(it) }

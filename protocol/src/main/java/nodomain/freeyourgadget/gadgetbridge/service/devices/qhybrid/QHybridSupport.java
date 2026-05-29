@@ -33,7 +33,8 @@ public class QHybridSupport {
     }
 
     public BluetoothGattCharacteristic getCharacteristic(UUID uuid) {
-        return new BluetoothGattCharacteristic(uuid);
+        // 3-arg form resolves identically against the JVM stub and real Android.
+        return new BluetoothGattCharacteristic(uuid, 0, 0);
     }
 
     public boolean isConnected() {

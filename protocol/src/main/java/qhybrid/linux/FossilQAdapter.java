@@ -104,6 +104,11 @@ public class FossilQAdapter {
     private Runnable onInitialized;
     private java.util.function.Consumer<byte[]> onActivityData;
     private java.util.function.Consumer<String> onEventJson;
+    // Fired exactly when the watch is asked to authorize (i.e. the moment it
+    // vibrates and the user must confirm with the TOP button / cancel with the
+    // BOTTOM button). NOT fired when the watch is already authorized. Lets a UI
+    // show the confirm/cancel prompt ONLY when it is actually needed.
+    private Runnable onAuthRequired;
 
     public FossilQAdapter(BleTransport transport) {
         this.transport = transport;
@@ -1314,6 +1319,15 @@ public class FossilQAdapter {
         this.onEventJson = callback;
     }
 
+    /**
+     * Set a callback fired only when the watch actively requests authorization
+     * (it vibrates; user must hold the TOP button to confirm or BOTTOM to cancel).
+     * Not fired when the watch is already authorized.
+     */
+    public void setOnAuthRequired(Runnable callback) {
+        this.onAuthRequired = callback;
+    }
+
     // ========== Device info ==========
 
     public String getFirmwareVersion() { return firmwareVersion; }
@@ -1472,6 +1486,9 @@ public class FossilQAdapter {
 
         LOG.info("Authorization required (status=0x{}) — requesting user confirmation",
                 String.format("%02X", authStatus));
+        if (onAuthRequired != null) {
+            try { onAuthRequired.run(); } catch (Exception e) { LOG.warn("onAuthRequired callback failed", e); }
+        }
 
         // Step 2: Request user authorization
         // 02 06 = SET + PROCESS_USER_AUTHORIZATION_V2
@@ -1897,7 +1914,11 @@ public class FossilQAdapter {
         }
 
         boolean requestFinished;
-        BluetoothGattCharacteristic characteristic = new BluetoothGattCharacteristic(uuid);
+        // Use the 3-arg constructor (UUID, properties, permissions) so this resolves
+        // identically against the JVM stub and the REAL Android BluetoothGattCharacteristic.
+        // (Real Android has no 1-arg UUID constructor.) The request handlers only call
+        // characteristic.getUuid(), so properties/permissions are irrelevant here.
+        BluetoothGattCharacteristic characteristic = new BluetoothGattCharacteristic(uuid, 0, 0);
         try {
             if (uuidStr.equals("3dda0003-957f-7d4a-34a6-74696673696d")) {
                 byte requestType = (byte) (value[0] & 0x0F);

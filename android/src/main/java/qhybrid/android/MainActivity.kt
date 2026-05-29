@@ -63,7 +63,12 @@ class MainActivity : ComponentActivity() {
     private fun WalkingSkeletonScreen() {
         val context = LocalContext.current
         var mac by remember { mutableStateOf(DEFAULT_MAC) }
-        var status by remember { mutableStateOf("Idle. Grant permission, then Connect.") }
+        var status by remember {
+            mutableStateOf(
+                if (hasPermissions()) "Permissions granted. Ready to Connect."
+                else "Grant Bluetooth permission, then Connect."
+            )
+        }
         var busy by remember { mutableStateOf(false) }
 
         val permissionLauncher = rememberLauncherForActivityResult(
@@ -130,10 +135,17 @@ class MainActivity : ComponentActivity() {
                     post(onUpdate, "❌ Failed to connect to $mac (out of range / BT off?)")
                     return@thread
                 }
-                post(onUpdate, "Connected. Initializing protocol…")
+                post(onUpdate, "Connected. Initializing…")
 
                 val adapter = FossilQAdapter(transport)
-                adapter.initialize(false) // minimal init: auth + file versions
+                // Only prompt for the button when the watch ACTUALLY requests
+                // authorization (it vibrates). If it is already authorized, init
+                // proceeds straight to reading info with no prompt.
+                adapter.setOnAuthRequired {
+                    post(onUpdate, "⌚ Authorization requested — the watch is vibrating.\n\n" +
+                        "Hold the TOP button to CONFIRM, or the BOTTOM button to CANCEL (within 30s).")
+                }
+                adapter.initialize(false) // minimal init: file versions + auth
                 if (adapter.isFossilProtocol()) {
                     // 60s allows time for the auth button press on first bond.
                     if (!adapter.waitForInit(60_000)) {
