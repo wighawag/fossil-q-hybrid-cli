@@ -18,11 +18,24 @@ Working prototype on real hardware. See TODO.md for feature details.
 
 ## Phase 2: Shared Protocol Library
 
+> **✅ DONE — and superseded in approach.** The shared library exists as the
+> `:protocol` module, but it is **no longer** "vendored GB + shims." The
+> PROTOCOL-REOWN-WP re-owned the protocol as clean, platform-neutral Java in
+> package **`qhybrid.protocol.*`** (deps: slf4j only; no Android, no vendored tree,
+> no shims, no `sync.sh`, no `androidStrippedJar`). The single platform seam is
+> `qhybrid.protocol.BleTransport`; the entry point is the
+> `qhybrid.protocol.FossilController` façade. Both `:cli` and `:android` use a
+> plain `project(':protocol')`. The "Shim Strategy" subsection below is **historical**.
+> See `PROTOCOL-REOWN-WP.md` and `PROTOCOL-PROVENANCE.md`.
+
 **Goal:** Extract the protocol logic into a reusable library that both the CLI and the Android app can share.
 
 ### Key Insight
 
-The vendored GadgetBridge request classes + our shim layer ARE the protocol library. The transport layer (BLE read/write/notify) is the only platform-specific part.
+*(Historical — pre-re-own.)* Originally the vendored GadgetBridge request classes +
+a shim layer formed the protocol library. After the re-own, the protocol classes
+are **owned** (`qhybrid.protocol.*`) and platform-neutral; the transport layer
+(BLE read/write/notify, behind `BleTransport`) remains the only platform-specific part.
 
 ### Architecture
 

@@ -29,7 +29,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import qhybrid.linux.FossilQAdapter
+import qhybrid.protocol.FossilQAdapter
 import kotlin.concurrent.thread
 
 /**

@@ -1,4 +1,4 @@
-package qhybrid.linux;
+package qhybrid.protocol;
 
 import qhybrid.protocol.buttonconfig.ConfigPayload;
 

@@ -1,4 +1,4 @@
-package qhybrid.linux;
+package qhybrid.protocol;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;

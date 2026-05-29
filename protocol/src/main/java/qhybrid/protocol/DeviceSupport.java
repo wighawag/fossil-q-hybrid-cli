@@ -1,7 +1,7 @@
 // This file is part of fossil-q-hybrid, licensed AGPLv3.
 package qhybrid.protocol;
 
-import qhybrid.linux.BleTransport;
+import qhybrid.protocol.BleTransport;
 
 import java.util.UUID;
 

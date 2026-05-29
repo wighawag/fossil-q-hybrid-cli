@@ -1,5 +1,7 @@
 package qhybrid.linux;
 
+import qhybrid.protocol.BleTransport;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

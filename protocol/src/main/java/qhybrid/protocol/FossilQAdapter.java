@@ -1,4 +1,4 @@
-package qhybrid.linux;
+package qhybrid.protocol;
 
 
 import qhybrid.protocol.model.DeviceState;
@@ -290,26 +290,6 @@ public class FossilQAdapter {
     }
 
     /**
-     * Upload a multi-entry notification filter from a NotificationConfig.
-     * Each configured type gets its own filter entry with a unique CRC
-     * derived from "qhybrid.linux.<name>". The watch matches the play file's
-     * CRC to the filter entry to determine hand position + vibe pattern.
-     */
-    public void uploadNotificationFilter(NotificationConfig config) {
-        var types = config.getTypes();
-        if (types.isEmpty()) {
-            LOG.warn("No notification types configured — skipping filter upload");
-            return;
-        }
-        java.util.List<qhybrid.protocol.model.NotificationFilterEntry> entries = new java.util.ArrayList<>();
-        for (var type : types) {
-            entries.add(new qhybrid.protocol.model.NotificationFilterEntry(
-                    type.packageName(), (byte) type.vibe,
-                    (short) type.hourDeg, (short) type.minDeg));
-        }
-        uploadNotificationFilterEntries(entries);
-    }
-
     /**
      * Upload a multi-entry notification filter from platform-neutral entries.
      * Byte-identical to the former NotificationConfig path; this is the form the
@@ -1599,21 +1579,13 @@ public class FossilQAdapter {
 
     private void syncConfiguration() {
         // Resolve settings: prefer caller-injected (FossilController / CLI), else
-        // fall back to disk-loading for backward compatibility.
-        String mac = transport.getConnectedMac();
-        int stepGoal;
-        byte vibrationStrength;
-        Integer secondTz;
-        if (syncSettings != null) {
-            stepGoal = syncSettings.stepGoal != null ? syncSettings.stepGoal : 10000;
-            vibrationStrength = (byte) (syncSettings.vibrationStrength != null ? syncSettings.vibrationStrength : 100);
-            secondTz = syncSettings.secondTimezone;
-        } else {
-            DeviceConfig deviceConfig = (mac != null) ? DeviceConfig.load(mac) : new DeviceConfig("");
-            stepGoal = deviceConfig.getStepGoal();
-            vibrationStrength = (byte) deviceConfig.getVibrationStrength();
-            secondTz = deviceConfig.getSecondTimezone();
-        }
+        // Settings are supplied by the caller (FossilController / CLI) via
+        // setSyncSettings(). The protocol layer never reads config from disk.
+        qhybrid.protocol.model.SyncSettings s = (syncSettings != null)
+                ? syncSettings : new qhybrid.protocol.model.SyncSettings();
+        int stepGoal = s.stepGoal != null ? s.stepGoal : 10000;
+        byte vibrationStrength = (byte) (s.vibrationStrength != null ? s.vibrationStrength : 100);
+        Integer secondTz = s.secondTimezone;
 
         // Do NOT send TimezoneOffsetConfigItem (0x0011) here — that's the SECOND
         // timezone, not primary. The watch gets primary TZ from TimeConfigItem
@@ -1743,21 +1715,15 @@ public class FossilQAdapter {
 
     private void syncNotificationSettings() {
         LOG.info("Syncing notification filter...");
-        // Prefer caller-injected settings (FossilController / CLI). Only fall back
-        // to disk-loading if no settings were provided, for backward compatibility.
-        if (syncSettings != null) {
-            var entries = syncSettings.notificationFilter();
-            if (entries.isEmpty()) {
-                LOG.warn("No notification filter entries supplied — skipping filter upload");
-                return;
-            }
-            uploadNotificationFilterEntries(entries);
+        // Filter entries are supplied by the caller (FossilController / CLI) via
+        // setSyncSettings(). The protocol layer never reads config from disk.
+        var entries = (syncSettings != null)
+                ? syncSettings.notificationFilter() : java.util.Collections.<qhybrid.protocol.model.NotificationFilterEntry>emptyList();
+        if (entries.isEmpty()) {
+            LOG.warn("No notification filter entries supplied — skipping filter upload");
             return;
         }
-        // Load notification config from disk (device-specific or defaults)
-        String mac = transport.getConnectedMac();
-        NotificationConfig config = (mac != null) ? NotificationConfig.load(mac) : NotificationConfig.load();
-        uploadNotificationFilter(config);
+        uploadNotificationFilterEntries(entries);
     }
 
     // ========== Misfit protocol init ==========

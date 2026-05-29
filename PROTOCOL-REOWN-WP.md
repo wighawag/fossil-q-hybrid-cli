@@ -1,7 +1,16 @@
 # WP-REOWN — Re-own the Protocol Layer (Phase 2, done properly)
 
-> **Status:** 📝 DRAFT FOR REVIEW — not started. This supersedes the "vendored
-> GadgetBridge, never modified + `sync.sh`" approach for the protocol layer.
+> **Status:** ✅ DONE & HARDWARE-VERIFIED. The protocol layer is now owned,
+> platform-neutral Java in `qhybrid.protocol.*` (deps: slf4j only). The vendored
+> GadgetBridge tree, the `android/`/`androidx/`/`nodomain/` shims, `sync.sh`, and
+> the `androidStrippedJar`/`androidApi` Gradle machinery are all removed. Both
+> `:cli` and `:android` use a plain `project(':protocol')`. WP1
+> (`FossilController` façade + `FakeBleTransport` + golden tests) delivered as a
+> byproduct. Disk config moved to `:cli`; settings are passed in via
+> `qhybrid.protocol.model.{SyncSettings, NotificationFilterEntry}`. Provenance:
+> `PROTOCOL-PROVENANCE.md` + `NOTICE` (GadgetBridge GPLv3 @ `f5b5416`). All 4
+> acceptance gates pass; CLI verified on a Q Commuter across all command clusters.
+> This superseded the "vendored GadgetBridge, never modified + `sync.sh`" approach.
 
 ## Why (the decision)
 

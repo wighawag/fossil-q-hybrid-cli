@@ -1,6 +1,10 @@
 package qhybrid.linux;
 
 import qhybrid.protocol.buttonconfig.ConfigPayload;
+import qhybrid.protocol.FossilQAdapter;
+import qhybrid.protocol.BleTransport;
+import qhybrid.protocol.ButtonConfigBuilder;
+import qhybrid.protocol.ActivityParser;
 import qhybrid.protocol.requests.fossil.alarm.Alarm;
 import qhybrid.protocol.requests.misfit.PlayNotificationRequest.VibrationType;
 import org.slf4j.Logger;
@@ -189,6 +193,27 @@ public class Main implements Runnable {
             }
         }
 
+        // The :protocol layer no longer reads ~/.config from disk; the CLI loads its
+        // settings and passes them in. Only needed for full init (config + filter sync).
+        if (fullInit && mac != null) {
+            adapter.setSyncSettings(buildSyncSettings(mac));
+            // Clear the on-disk syncNeeded flag once the watch confirms the config put
+            // (the adapter used to do this itself before the re-own decoupling).
+            final String syncMac = mac;
+            adapter.setOnConfigSynced(() -> {
+                try {
+                    DeviceConfig dc = DeviceConfig.load(syncMac);
+                    if (dc.isSyncNeeded()) {
+                        dc.setSyncNeeded(false);
+                        dc.save();
+                        LOG.info("Cleared syncNeeded flag for {}", syncMac);
+                    }
+                } catch (Exception e) {
+                    LOG.warn("Failed to clear syncNeeded: {}", e.getMessage());
+                }
+            });
+        }
+
         adapter.initialize(fullInit);
         adapter.initialize(fullInit);
 
@@ -211,6 +236,35 @@ public class Main implements Runnable {
         }
 
         return adapter;
+    }
+
+    /**
+     * Build the protocol-layer {@link qhybrid.protocol.model.SyncSettings} from this
+     * device's on-disk config. The :protocol layer is platform-neutral and no longer
+     * reads ~/.config itself; the CLI owns persistence and passes values in.
+     */
+    static qhybrid.protocol.model.SyncSettings buildSyncSettings(String mac) {
+        DeviceConfig dc = DeviceConfig.load(mac);
+        qhybrid.protocol.model.SyncSettings s = new qhybrid.protocol.model.SyncSettings()
+                .stepGoal(dc.getStepGoal())
+                .vibrationStrength(dc.getVibrationStrength())
+                .secondTimezone(dc.getSecondTimezone());
+        for (var e : notificationFilterEntries(NotificationConfig.load(mac))) {
+            s.addFilterEntry(e);
+        }
+        return s;
+    }
+
+    /** Convert a {@link NotificationConfig} into platform-neutral filter entries. */
+    static java.util.List<qhybrid.protocol.model.NotificationFilterEntry> notificationFilterEntries(
+            NotificationConfig config) {
+        java.util.List<qhybrid.protocol.model.NotificationFilterEntry> entries = new java.util.ArrayList<>();
+        for (var type : config.getTypes()) {
+            entries.add(new qhybrid.protocol.model.NotificationFilterEntry(
+                    type.packageName(), (byte) type.vibe,
+                    (short) type.hourDeg, (short) type.minDeg));
+        }
+        return entries;
     }
 
     /**
@@ -508,7 +562,7 @@ public class Main implements Runnable {
             sleep(500);
 
             // Upload all configured filters (so the watch knows about all types)
-            adapter.uploadNotificationFilter(config);
+            adapter.uploadNotificationFilterEntries(notificationFilterEntries(config));
             // Play the specific type by its package name
             adapter.playNotificationByPackageName(type.packageName());
 
@@ -1774,7 +1828,7 @@ public class Main implements Runnable {
                 }
                 FossilQAdapter adapter = connectAndInit(parent.requireMac(), parent.useSubprocess);
                 sleep(3000);
-                adapter.uploadNotificationFilter(config);
+                adapter.uploadNotificationFilterEntries(notificationFilterEntries(config));
                 System.out.printf("Uploaded %d notification type(s) to watch.%n", config.getTypes().size());
                 sleep(2000);
                 adapter.shutdown();

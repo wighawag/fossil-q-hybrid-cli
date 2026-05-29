@@ -10,7 +10,7 @@ import android.bluetooth.BluetoothProfile
 import android.content.Context
 import android.os.Build
 import android.util.Log
-import qhybrid.linux.BleTransport
+import qhybrid.protocol.BleTransport
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
@@ -22,7 +22,7 @@ import java.util.function.Consumer
 /**
  * WP0.5 first-pass [BleTransport] over Android's native [BluetoothGatt].
  *
- * The protocol layer ([qhybrid.linux.FossilQAdapter]) drives this through the
+ * The protocol layer ([qhybrid.protocol.FossilQAdapter]) drives this through the
  * SYNCHRONOUS/blocking BleTransport contract: connect() blocks until ready,
  * readCharacteristic() returns bytes directly, etc. Android's GATT API is the
  * opposite — fully async and callback-driven, and only ONE GATT operation may

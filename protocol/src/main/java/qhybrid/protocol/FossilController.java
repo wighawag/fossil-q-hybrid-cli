@@ -1,8 +1,8 @@
 // This file is part of fossil-q-hybrid, licensed AGPLv3.
 package qhybrid.protocol;
 
-import qhybrid.linux.BleTransport;
-import qhybrid.linux.FossilQAdapter;
+import qhybrid.protocol.BleTransport;
+import qhybrid.protocol.FossilQAdapter;
 import qhybrid.protocol.model.NotificationFilterEntry;
 import qhybrid.protocol.model.SyncSettings;
 

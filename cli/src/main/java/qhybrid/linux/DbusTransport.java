@@ -1,5 +1,7 @@
 package qhybrid.linux;
 
+import qhybrid.protocol.BleTransport;
+
 import com.github.hypfvieh.bluetooth.DeviceManager;
 import com.github.hypfvieh.bluetooth.wrapper.BluetoothAdapter;
 import com.github.hypfvieh.bluetooth.wrapper.BluetoothDevice;

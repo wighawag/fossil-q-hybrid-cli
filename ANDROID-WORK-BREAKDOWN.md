@@ -38,19 +38,55 @@ This document breaks **[ANDROID-PLAN.md](ANDROID-PLAN.md)** into discrete work p
    └─► WP16 Compose UI screens (dashboard, alarms, notif, buttons, calibration, sleep, settings)  [on-device]
 ```
 
-**Key idea:** WP5–WP9 are *pure byte/logic packages* that only depend on the vendored protocol classes and produce `byte[]` / domain objects. They can each be built and unit-tested in complete isolation against the documented wire formats in `FINDINGS.md`, with zero Android and zero hardware. They are the safest, highest-leverage work to parallelize.
+**Key idea:** WP5–WP9 are *pure byte/logic packages* that only depend on the owned protocol classes (`qhybrid.protocol.*`) and produce `byte[]` / domain objects. They can each be built and unit-tested in complete isolation against the documented wire formats in `FINDINGS.md`, with zero Android and zero hardware. They are the safest, highest-leverage work to parallelize.
+
+> **⚠️ POST-RE-OWN STATUS (read this first).** The PROTOCOL-REOWN-WP is **DONE**
+> (see `PROTOCOL-REOWN-WP.md`, `PROTOCOL-PROVENANCE.md`). Several assumptions below
+> were written *before* the re-own and are now **OBSOLETE** — ignore them:
+> - There is **no vendored GadgetBridge tree, no shims, no `sync.sh`, no
+>   `androidStrippedJar`/`androidApi`** anymore. The protocol is **owned**, pure,
+>   platform-neutral Java in package **`qhybrid.protocol.*`** (deps: slf4j only).
+> - The request classes are **ours to edit** — the old "vendored code is never
+>   modified" rule no longer applies.
+> - The canonical entry point is the **`qhybrid.protocol.FossilController`** façade
+>   with settings **passed in** via `qhybrid.protocol.model.{SyncSettings,
+>   NotificationFilterEntry}`. Do NOT `new FossilQAdapter(...)` + disk-load.
+> - Class locations now: `qhybrid.protocol.FossilQAdapter`,
+>   `qhybrid.protocol.BleTransport`, `qhybrid.protocol.ButtonConfigBuilder`,
+>   `qhybrid.protocol.ActivityParser`; `ButtonGestureDetector` is nested in the
+>   adapter. Disk config (`DeviceConfig`/`GlobalConfig`/`NotificationConfig`) moved
+>   to **`:cli`**. `:cli` and `:android` both use plain `project(':protocol')`.
+> - Byte builders for WP5–WP9 are owned and partly static:
+>   `FossilQAdapter.buildNotificationFilterFile(...)` (WP6),
+>   `AlarmsSetRequest.createFileFromAlarms(...)` + `Alarm` (WP5),
+>   `ButtonConfigBuilder`/`buttonconfig.ConfigFileBuilder` (WP7),
+>   `ActivityParser` (WP8). Unit-test against the golden tests in
+>   `protocol/src/test` (`FakeBleTransport` + golden bytes already exist).
+> - Runtime gotcha: the Fossil Q is single-link; CLI `le-connection-abort-by-local`
+>   just means the phone is still connected — disconnect it first (transport issue,
+>   not protocol).
 
 ---
 
 > **Companion document:** This breakdown is meant to be read **alongside [ANDROID-PLAN.md](ANDROID-PLAN.md)**. The plan describes *what* the app does and *why* (architecture, schema, feature behavior); this document describes *how to slice the work* into isolated, testable pieces. Each WP names the exact `ANDROID-PLAN.md` sections it implements. Hand a fresh context **both files** + the WP's named reference files.
 
-> **Vendored code is never modified.** Every WP that "extracts pure helpers" only touches OUR code (`src/main/java/qhybrid/linux/**`, e.g. `FossilQAdapter`). The vendored `gadgetbridge/app/src/main/java/**` tree stays byte-for-byte identical and `sync.sh`-managed. The helper functions being extracted (`buildNotificationFilterData`, `buildOfficialNotificationFile`, button-compile logic) already live in our `FossilQAdapter`, NOT in the vendored tree.
+> **~~Vendored code is never modified.~~ (OBSOLETE after the re-own.)** The protocol
+> is now **owned** under `qhybrid.protocol.*` and is ours to edit. The former
+> vendored `gadgetbridge/` tree, the `android/`/`androidx/`/`nodomain/` shims, and
+> `sync.sh` have all been **deleted**. Provenance is recorded in
+> `PROTOCOL-PROVENANCE.md` + `NOTICE`. The helper builders (notification filter,
+> button config, etc.) live in `qhybrid.protocol.*` (some as static methods).
 
-> **What we reuse from Gadgetbridge (important):** We reuse GB's **protocol layer** (the Fossil Q request classes — real, vendored, untouched) at ~100%. We do **NOT** reuse GB's real Android BLE engine (`BtLEQueue`, `DeviceCommunicationService`, `ControlCenterv2`), because it was never vendored into this repo — it was deliberately replaced by tiny stubs (`TransactionBuilder`, `AbstractBTLEDeviceSupport`, `GBDevice`, `BluetoothGattCharacteristic`). `AndroidBleTransport` is therefore NEW code implementing the same `BleTransport` seam the CLI uses ("Option A" — thin transport). See ANDROID-PLAN.md §1.
+> **What we derive from Gadgetbridge:** the **protocol layer** (Fossil Q request
+> classes, file transfer, encoders, auth) was derived from GB and re-owned as clean
+> platform-neutral Java. We do **NOT** use GB's Android BLE engine (`BtLEQueue`,
+> `DeviceCommunicationService`, `ControlCenterv2`). `AndroidBleTransport` is NEW
+> code implementing the same `qhybrid.protocol.BleTransport` seam the CLI uses
+> ("Option A" — thin transport). See ANDROID-PLAN.md §1.
 
 ### Architecture decision: thin transport (Option A) vs. vendor GB's real BLE stack (Option B)
 
-**Option A (recommended; the repo is already shaped for it):** Reuse GB's protocol classes (vendored, untouched); write a NEW `AndroidBleTransport` implementing the `BleTransport` seam; write our own lightweight foreground service + `CompanionDeviceManager` reconnect + Compose permission carousel. Keeps the app lightweight and Compose-native (the whole reason for not just using GB).
+**Option A (chosen and now fully realised):** Use our owned `qhybrid.protocol.*` classes; write a NEW `AndroidBleTransport` implementing the `BleTransport` seam; write our own lightweight foreground service + `CompanionDeviceManager` reconnect + Compose permission carousel. Keeps the app lightweight and Compose-native. (The protocol re-own removed the last reason this was ever in tension with the build.)
 
 **Option B:** Vendor GB's REAL Android BLE engine (`BtLEQueue`, `DeviceCommunicationService`, `ControlCenterv2`, permission activities, coordinators). Maximizes reuse of GB's battle-tested service/permission code but pulls in dozens of deeply-coupled classes (`GBApplication`, greenDAO, prefs) that this repo deliberately stubbed out — large, messy, and fights the "lightweight" goal. Would also bloat the `BleTransport` seam the CLI depends on.
 
@@ -73,18 +109,18 @@ Two full reference trees exist locally and should be consulted by the relevant W
 
 ## WP0 — Gradle Multi-Module Split
 
-**Status:** ✅ DONE. Multi-module split (`:protocol` / `:cli` / `:android`) complete; all four acceptance tests pass; `sync.sh` updated to `protocol/gadgetbridge/` and verified; CLI behaves identically (run via `./fossil-q`). Note: per the deferred "Option A" compromise, `DeviceConfig`/`GlobalConfig`/`NotificationConfig` temporarily live in `:protocol` (cleaned up in WP1). One cosmetic constant (`VIBE_PATTERN_NAMES`) moved from `Main` into `NotificationConfig` to break a `:protocol`→`:cli` back-reference.
+**Status:** ✅ DONE. Multi-module split (`:protocol` / `:cli` / `:android`) complete; CLI behaves identically (run via `./fossil-q`). *(Historical note: the original split used a vendored `protocol/gadgetbridge/` tree + `sync.sh` + shim-stripped jar. The PROTOCOL-REOWN-WP later **removed all of that** — protocol is now owned `qhybrid.protocol.*`. `DeviceConfig`/`GlobalConfig`/`NotificationConfig` now live in `:cli`.)*
 
 **Goal:** `:protocol` (pure Java) + `:cli` (Java app) + `:android` (Android app) in one tree. CLI stays 100% working.
 
 **Scope:**
 - `settings.gradle`: include `:protocol`, `:cli`, `:android`.
-- Move vendored `gadgetbridge/` + our shared classes (`FossilQAdapter`, `BleTransport`, `ButtonConfigBuilder`, `ActivityParser`, `ButtonGestureDetector`, the `android/`/`androidx/`/`nodomain/` shims) into `:protocol`.
+- ~~Move vendored `gadgetbridge/` + shims into `:protocol`.~~ *(Superseded: the protocol was later re-owned as `qhybrid.protocol.*`; the vendored tree + shims were deleted.)*
 - `:cli` depends on `:protocol`; keeps `Main.java`, `DbusTransport`, `BluezTransport`, JLine, JSON config.
 - `:android` skeleton only (empty `Activity`, `srcDirs` reuse pattern from the plan), depends on `:protocol`.
-- Keep `sync.sh` working.
+- ~~Keep `sync.sh` working.~~ *(`sync.sh` has since been removed.)*
 
-**Reference files:** `build.gradle`, `settings.gradle`, `sync.sh`, `ROADMAP.md` (Phase 2), `ANDROID-PLAN.md` §1.
+**Reference files:** `build.gradle`, `settings.gradle`, `ROADMAP.md` (Phase 2), `ANDROID-PLAN.md` §1.
 
 **Isolated test (no hardware):**
 - `./gradlew :protocol:compileJava` succeeds.
@@ -100,7 +136,7 @@ Two full reference trees exist locally and should be consulted by the relevant W
 
 **Status:** ✅ DONE — FULLY VERIFIED ON HARDWARE. On a real phone the APK: connects → downloads supported file versions (full file-transfer over 3dda0003/0004) → runs the complete Fossil auth handshake (status `03 07 00` → request → watch VIBRATES → user presses TOP button → `03 06 00 01` ACCEPTED) → Android creates the BLE bond → reads live device info (Model `HW.0.0`, Firmware `HW0.0.2.9r.v3`, Battery `22%`, Protocol `Fossil 2.x`). This exercises far more of the protocol than the WP0.5 minimum.
 
-Implemented: real `AndroidBleTransport` (Kotlin) bridging async `BluetoothGatt` to the blocking `BleTransport` contract; a Compose screen (editable MAC field prefilled `D9:20:71:11:74:2A`, permission button, Connect button) driving `FossilQAdapter` off the main thread; slf4j→logcat logging (`slf4j-android`). Also implemented ROADMAP Phase 2 "Shim Strategy" Option 2: `:android` consumes a SHIM-STRIPPED `:protocol` artifact (`androidApi` config / `androidStrippedJar`) excluding `android/*`+`androidx/*` stubs so the REAL Android SDK classes resolve. CLI unaffected.
+Implemented: real `AndroidBleTransport` (Kotlin) bridging async `BluetoothGatt` to the blocking `BleTransport` contract; a Compose screen (editable MAC field prefilled `D9:20:71:11:74:2A`, permission button, Connect button) driving `FossilQAdapter` off the main thread; slf4j→logcat logging (`slf4j-android`). *(Historical: WP0.5 used a SHIM-STRIPPED `:protocol` artifact (`androidApi`/`androidStrippedJar`) so the real Android SDK resolved. The PROTOCOL-REOWN-WP **removed** that machinery — `:android` now uses a plain `project(':protocol')` because the protocol has no Android stubs at all.)*
 
 **Critical bugs found & fixed during on-device bring-up (the shim-strip exposed real Android-API mismatches):**
 1. `new BluetoothGattCharacteristic(uuid)` (1-arg) existed on our JVM stub but NOT on real Android → `NoSuchMethodError`/crash. Fixed: use the real 3-arg constructor `(UUID, properties, permissions)` in `FossilQAdapter` + `QHybridSupport`, and add that constructor to the stub so both targets compile.
@@ -131,7 +167,13 @@ NOTE: this skeleton calls `FossilQAdapter` directly — the `FossilController` f
 
 ## WP1 — Protocol Headless Façade + FakeBleTransport
 
-**Status:** ⏳ NOT STARTED.
+**Status:** ✅ DONE (delivered by the PROTOCOL-REOWN-WP). `qhybrid.protocol.FossilController`
+is the façade; `qhybrid.protocol.FakeBleTransport` (+ `FileTransferResponder` /
+`FileGetResponder`) is the test fake. 22 JVM tests in `protocol/src/test` lock the
+wire bytes (golden alarms/config/notif-filter/activity + full file-put + auth
+handshake). Settings are passed in via `qhybrid.protocol.model.{SyncSettings,
+NotificationFilterEntry}` (no disk loading in :protocol). Callbacks: `onActivityData`,
+`onEventJson`, `onAuthRequired`, `onConfigSynced`.
 
 **Goal:** A clean, platform-agnostic entry point into the protocol that both Android and tests drive, plus an in-memory fake transport for unit testing the request/response queue without any BLE.
 
@@ -140,7 +182,7 @@ NOTE: this skeleton calls `FossilQAdapter` directly — the `FossilController` f
 - Implement `FakeBleTransport implements BleTransport`: records writes, lets a test inject notification frames (e.g. canned auth `03 07 01`, file-put acceptance type 3, CRC confirm type 8, close type 4).
 - No new protocol behavior — just expose + make testable what `FossilQAdapter` already does.
 
-**Reference files:** `src/main/java/qhybrid/linux/FossilQAdapter.java`, `BleTransport.java`, `FINDINGS.md` (#8 file transfer flow, #14 auth, #5 MTU).
+**Reference files:** `protocol/src/main/java/qhybrid/protocol/FossilQAdapter.java`, `qhybrid/protocol/FossilController.java`, `qhybrid/protocol/BleTransport.java`, `FINDINGS.md` (#8 file transfer flow, #14 auth, #5 MTU). **STATUS: DONE** — `FossilController` façade + `FakeBleTransport` + golden tests delivered by the PROTOCOL-REOWN-WP; settings are passed in via `SyncSettings`.
 
 **Isolated test (no hardware):**
 - Drive `FakeBleTransport` through a full init sequence and assert the exact write byte sequences (animation → MTU handled locally → device info → config → buttons → INITIALIZED).

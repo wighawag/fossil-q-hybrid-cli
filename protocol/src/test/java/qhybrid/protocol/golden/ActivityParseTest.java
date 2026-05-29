@@ -1,7 +1,7 @@
 // This file is part of fossil-q-hybrid, licensed AGPLv3.
 package qhybrid.protocol.golden;
 
-import qhybrid.linux.ActivityParser;
+import qhybrid.protocol.ActivityParser;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;

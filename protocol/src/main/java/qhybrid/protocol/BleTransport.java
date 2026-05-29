@@ -1,4 +1,4 @@
-package qhybrid.linux;
+package qhybrid.protocol;
 
 import java.util.UUID;
 import java.util.function.BiConsumer;

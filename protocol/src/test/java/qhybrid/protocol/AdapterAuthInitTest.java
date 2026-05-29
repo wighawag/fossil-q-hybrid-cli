@@ -1,8 +1,6 @@
 // This file is part of fossil-q-hybrid, licensed AGPLv3.
-package qhybrid.linux;
+package qhybrid.protocol;
 
-import qhybrid.protocol.FakeBleTransport;
-import qhybrid.protocol.FileGetResponder;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
