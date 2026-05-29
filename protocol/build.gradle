@@ -15,6 +15,19 @@ dependencies {
     // slf4j-api is used by the shared adapters/config classes and is exposed
     // on the compile classpath of consumers (:cli, :android), hence `api`.
     api 'org.slf4j:slf4j-api:2.0.9'
+
+    // --- Test harness (JVM-only; locks protocol wire behavior before the re-own) ---
+    testImplementation platform('org.junit:junit-bom:5.10.2')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    // Route protocol slf4j logs somewhere visible during tests.
+    testRuntimeOnly 'org.slf4j:slf4j-simple:2.0.9'
+}
+
+test {
+    useJUnitPlatform()
+    // activity*.bin fixtures live at the repo root; expose the path to tests.
+    systemProperty 'fossilq.repoRoot', rootDir.absolutePath
 }
 
 sourceSets {

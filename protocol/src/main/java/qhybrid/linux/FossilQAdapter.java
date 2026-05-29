@@ -109,6 +109,26 @@ public class FossilQAdapter {
     // BOTTOM button). NOT fired when the watch is already authorized. Lets a UI
     // show the confirm/cancel prompt ONLY when it is actually needed.
     private Runnable onAuthRequired;
+    // Optional hook fired after a successful full-init config sync (lets the CLI
+    // clear its on-disk syncNeeded flag without coupling the adapter to DeviceConfig).
+    private Runnable onConfigSynced;
+    // Caller-supplied settings for full init (replaces adapter disk-loading).
+    private qhybrid.protocol.model.SyncSettings syncSettings;
+
+    /**
+     * Provide the settings used during full init (step goal, vibration strength,
+     * second timezone, notification filter entries). When set, the adapter does
+     * NOT read ~/.config/fossil-q from disk. The FossilController façade / CLI
+     * populates this.
+     */
+    public void setSyncSettings(qhybrid.protocol.model.SyncSettings settings) {
+        this.syncSettings = settings;
+    }
+
+    /** Hook fired once after a successful full-init config sync. */
+    public void setOnConfigSynced(Runnable callback) {
+        this.onConfigSynced = callback;
+    }
 
     public FossilQAdapter(BleTransport transport) {
         this.transport = transport;
@@ -274,39 +294,50 @@ public class FossilQAdapter {
      * CRC to the filter entry to determine hand position + vibe pattern.
      */
     public void uploadNotificationFilter(NotificationConfig config) {
-        if (!useFossilProtocol) {
-            LOG.warn("Notification filter not supported on Misfit protocol");
-            return;
-        }
         var types = config.getTypes();
         if (types.isEmpty()) {
             LOG.warn("No notification types configured — skipping filter upload");
             return;
         }
-
-        // Build concatenated filter data (one 32-byte entry per type)
-        java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(types.size() * 32);
-        buf.order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        java.util.List<qhybrid.protocol.model.NotificationFilterEntry> entries = new java.util.ArrayList<>();
         for (var type : types) {
-            byte[] entry = buildNotificationFilterData(
+            entries.add(new qhybrid.protocol.model.NotificationFilterEntry(
                     type.packageName(), (byte) type.vibe,
-                    (short) type.hourDeg, (short) type.minDeg);
-            buf.put(entry);
+                    (short) type.hourDeg, (short) type.minDeg));
         }
-        byte[] filter = buf.array();
+        uploadNotificationFilterEntries(entries);
+    }
 
+    /**
+     * Upload a multi-entry notification filter from platform-neutral entries.
+     * Byte-identical to the former NotificationConfig path; this is the form the
+     * FossilController façade and decoupled init use (no disk loading).
+     */
+    public void uploadNotificationFilterEntries(
+            java.util.List<qhybrid.protocol.model.NotificationFilterEntry> entries) {
+        if (!useFossilProtocol) {
+            LOG.warn("Notification filter not supported on Misfit protocol");
+            return;
+        }
+        if (entries.isEmpty()) {
+            LOG.warn("No notification filter entries — skipping filter upload");
+            return;
+        }
+
+        byte[] filter = buildNotificationFilterFile(entries);
         LOG.info("Uploading notification filter with {} entries ({} bytes)",
-                types.size(), filter.length);
-        for (var type : types) {
-            LOG.info("  {} → CRC=0x{}", type,
-                    String.format("%08X", computeNullTerminatedCrc(type.packageName())));
+                entries.size(), filter.length);
+        for (var e : entries) {
+            LOG.info("  {} → CRC=0x{}", e,
+                    String.format("%08X", computeNullTerminatedCrc(e.packageName)));
         }
 
+        final int count = entries.size();
         queueWrite(new FilePutRequest(FileHandle.NOTIFICATION_FILTER, filter, shimAdapter) {
             @Override
             public void onFilePut(boolean success) {
                 LOG.info("Notification filter ({} entries) sync: {}",
-                        types.size(), success ? "success" : "FAILED");
+                        count, success ? "success" : "FAILED");
             }
         }, false);
     }
@@ -855,7 +886,20 @@ public class FossilQAdapter {
             return;
         }
         ConfigFileBuilder builder = new ConfigFileBuilder(payloads);
-        queueWrite(new FilePutRequest(FileHandle.SETTINGS_BUTTONS, builder.build(true), shimAdapter) {
+        setButtonsRaw(builder.build(true));
+    }
+
+    /**
+     * Upload a prebuilt button-config file (SETTINGS_BUTTONS, 0x0600). The caller
+     * (CLI / FossilController) builds the bytes via ConfigFileBuilder /
+     * ButtonConfigBuilder; this just performs the file put.
+     */
+    public void setButtonsRaw(byte[] buttonConfigFile) {
+        if (!useFossilProtocol) {
+            LOG.warn("Button config not supported on Misfit protocol firmware");
+            return;
+        }
+        queueWrite(new FilePutRequest(FileHandle.SETTINGS_BUTTONS, buttonConfigFile, shimAdapter) {
             @Override
             public void onFilePut(boolean success) {
                 LOG.info("Button config: {}", success ? "success" : "FAILED");
@@ -1552,11 +1596,22 @@ public class FossilQAdapter {
     }
 
     private void syncConfiguration() {
-        // Load per-device config (step goal, vibration strength, second timezone)
+        // Resolve settings: prefer caller-injected (FossilController / CLI), else
+        // fall back to disk-loading for backward compatibility.
         String mac = transport.getConnectedMac();
-        DeviceConfig deviceConfig = (mac != null) ? DeviceConfig.load(mac) : new DeviceConfig("");
-        int stepGoal = deviceConfig.getStepGoal();
-        byte vibrationStrength = (byte) deviceConfig.getVibrationStrength();
+        int stepGoal;
+        byte vibrationStrength;
+        Integer secondTz;
+        if (syncSettings != null) {
+            stepGoal = syncSettings.stepGoal != null ? syncSettings.stepGoal : 10000;
+            vibrationStrength = (byte) (syncSettings.vibrationStrength != null ? syncSettings.vibrationStrength : 100);
+            secondTz = syncSettings.secondTimezone;
+        } else {
+            DeviceConfig deviceConfig = (mac != null) ? DeviceConfig.load(mac) : new DeviceConfig("");
+            stepGoal = deviceConfig.getStepGoal();
+            vibrationStrength = (byte) deviceConfig.getVibrationStrength();
+            secondTz = deviceConfig.getSecondTimezone();
+        }
 
         // Do NOT send TimezoneOffsetConfigItem (0x0011) here — that's the SECOND
         // timezone, not primary. The watch gets primary TZ from TimeConfigItem
@@ -1568,11 +1623,12 @@ public class FossilQAdapter {
         items.add(generateTimeConfigItem());
 
         // Sync second timezone if configured
-        Integer secondTz = deviceConfig.getSecondTimezone();
         if (secondTz != null) {
             items.add(new ConfigurationPutRequest.TimezoneOffsetConfigItem(secondTz.shortValue()));
         }
 
+        final int fStepGoal = stepGoal;
+        final byte fVibe = vibrationStrength;
         LOG.info("Syncing config: stepGoal={}, vibeStrength={}, secondTz={}",
                 stepGoal, vibrationStrength & 0xFF,
                 secondTz != null ? secondTz : "disabled");
@@ -1581,19 +1637,11 @@ public class FossilQAdapter {
             @Override
             public void onFilePut(boolean success) {
                 LOG.info("Config sync (stepGoal={}, vibeStrength={}): {}",
-                        stepGoal, vibrationStrength & 0xFF,
+                        fStepGoal, fVibe & 0xFF,
                         success ? "success" : "FAILED");
-                if (success && mac != null) {
-                    try {
-                        DeviceConfig dc = DeviceConfig.load(mac);
-                        if (dc.isSyncNeeded()) {
-                            dc.setSyncNeeded(false);
-                            dc.save();
-                            LOG.info("Cleared syncNeeded flag for {}", mac);
-                        }
-                    } catch (Exception e) {
-                        LOG.warn("Failed to clear syncNeeded: {}", e.getMessage());
-                    }
+                if (success && onConfigSynced != null) {
+                    try { onConfigSynced.run(); }
+                    catch (Exception e) { LOG.warn("onConfigSynced callback failed: {}", e.getMessage()); }
                 }
             }
         }, false);
@@ -1610,7 +1658,7 @@ public class FossilQAdapter {
      * The vendored GB code computes CRC without null terminator, which may cause
      * the watch firmware to not match the filter entry.
      */
-    private int computeNullTerminatedCrc(String packageName) {
+    static int computeNullTerminatedCrc(String packageName) {
         byte[] nameBytes = packageName.getBytes(java.nio.charset.StandardCharsets.UTF_8);
         byte[] withNull = new byte[nameBytes.length + 1];
         System.arraycopy(nameBytes, 0, withNull, 0, nameBytes.length);
@@ -1618,6 +1666,21 @@ public class FossilQAdapter {
         java.util.zip.CRC32 crc = new java.util.zip.CRC32();
         crc.update(withNull);
         return (int) crc.getValue();
+    }
+
+    /**
+     * Build the full multi-entry notification filter file (one 32-byte entry per
+     * spec) — the platform-neutral entry point used by FossilController and the CLI
+     * so callers can construct the bytes without disk-loading config.
+     * Byte-identical to the per-entry builder used during init.
+     */
+    public static byte[] buildNotificationFilterFile(java.util.List<qhybrid.protocol.model.NotificationFilterEntry> entries) {
+        java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(entries.size() * 32);
+        buf.order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        for (qhybrid.protocol.model.NotificationFilterEntry e : entries) {
+            buf.put(buildNotificationFilterData(e.packageName, e.vibe, e.hourDeg, e.minDeg));
+        }
+        return buf.array();
     }
 
     /**
@@ -1633,7 +1696,7 @@ public class FossilQAdapter {
      * - DISPLAY_CONFIG (0xC4) = present (value 0)
      * - Uses null-terminated CRC
      */
-    private byte[] buildNotificationFilterData(String packageName, byte vibePattern,
+    static byte[] buildNotificationFilterData(String packageName, byte vibePattern,
                                                 short hourDeg, short minDeg) {
         int crc = computeNullTerminatedCrc(packageName);
         LOG.info("Filter CRC for '{}': 0x{}", packageName, String.format("%08X", crc));
@@ -1678,6 +1741,17 @@ public class FossilQAdapter {
 
     private void syncNotificationSettings() {
         LOG.info("Syncing notification filter...");
+        // Prefer caller-injected settings (FossilController / CLI). Only fall back
+        // to disk-loading if no settings were provided, for backward compatibility.
+        if (syncSettings != null) {
+            var entries = syncSettings.notificationFilter();
+            if (entries.isEmpty()) {
+                LOG.warn("No notification filter entries supplied — skipping filter upload");
+                return;
+            }
+            uploadNotificationFilterEntries(entries);
+            return;
+        }
         // Load notification config from disk (device-specific or defaults)
         String mac = transport.getConnectedMac();
         NotificationConfig config = (mac != null) ? NotificationConfig.load(mac) : NotificationConfig.load();
