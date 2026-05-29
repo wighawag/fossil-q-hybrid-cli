@@ -1,0 +1,89 @@
+package qhybrid.android.settings
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * WP16g — constants sanity + range/normalization tolerance (clamp out-of-range, tolerate unknown).
+ * Pure JVM (no Android deps), so no Robolectric needed here.
+ */
+class SettingsVocabularyTest {
+
+    // ---- vibration strength --------------------------------------------------
+
+    @Test
+    fun vibrationConstantsAndClamp() {
+        assertEquals(0, SettingsVocabulary.VIBE_MIN)
+        assertEquals(100, SettingsVocabulary.VIBE_MAX)
+        assertEquals(50, SettingsVocabulary.VIBE_DEFAULT)
+        // In-range passes through.
+        assertEquals(73, SettingsVocabulary.normalizeVibration(73))
+        // Out-of-range clamps.
+        assertEquals(0, SettingsVocabulary.normalizeVibration(-20))
+        assertEquals(100, SettingsVocabulary.normalizeVibration(250))
+    }
+
+    // ---- inactivity nudge ----------------------------------------------------
+
+    @Test
+    fun nudgeConstantsAndClamp() {
+        assertEquals(1, SettingsVocabulary.NUDGE_MIN_MINUTES)
+        assertEquals(255, SettingsVocabulary.NUDGE_MAX_MINUTES)
+        assertEquals(30, SettingsVocabulary.NUDGE_DEFAULT_MINUTES)
+        assertEquals(15, SettingsVocabulary.NUDGE_STEP_MINUTES)
+        assertFalse(SettingsVocabulary.NUDGE_DEFAULT_ENABLED)
+        // In-range passes through; out-of-range clamps to the 1-byte range.
+        assertEquals(60, SettingsVocabulary.normalizeNudgeMinutes(60))
+        assertEquals(1, SettingsVocabulary.normalizeNudgeMinutes(0))
+        assertEquals(1, SettingsVocabulary.normalizeNudgeMinutes(-5))
+        assertEquals(255, SettingsVocabulary.normalizeNudgeMinutes(9999))
+    }
+
+    // ---- second timezone -----------------------------------------------------
+
+    @Test
+    fun timezoneRangeAndClamp() {
+        assertEquals(-12 * 60, SettingsVocabulary.TZ_MIN_OFFSET_MINUTES)
+        assertEquals(14 * 60, SettingsVocabulary.TZ_MAX_OFFSET_MINUTES)
+        assertEquals(0, SettingsVocabulary.TZ_DEFAULT_OFFSET_MINUTES)
+        // Clamp out-of-range to the valid UTC-12..UTC+14 window.
+        assertEquals(-720, SettingsVocabulary.normalizeTzOffset(-9999))
+        assertEquals(840, SettingsVocabulary.normalizeTzOffset(9999))
+        assertEquals(330, SettingsVocabulary.normalizeTzOffset(330)) // India +5:30 passes through
+    }
+
+    @Test
+    fun timezoneOptionsSpanFullRange() {
+        val opts = SettingsVocabulary.TZ_OFFSET_OPTIONS_MINUTES
+        assertEquals(SettingsVocabulary.TZ_MIN_OFFSET_MINUTES, opts.first())
+        assertEquals(SettingsVocabulary.TZ_MAX_OFFSET_MINUTES, opts.last())
+        // Monotonically increasing, 30-minute steps.
+        for (i in 1 until opts.size) {
+            assertEquals(30, opts[i] - opts[i - 1])
+        }
+        assertTrue(opts.contains(0)) // UTC present
+    }
+
+    @Test
+    fun timezoneLabels() {
+        assertEquals("UTC", SettingsVocabulary.tzOffsetLabel(0))
+        assertEquals("UTC+05:30", SettingsVocabulary.tzOffsetLabel(330))
+        assertEquals("UTC-08:00", SettingsVocabulary.tzOffsetLabel(-480))
+        assertEquals("UTC+14:00", SettingsVocabulary.tzOffsetLabel(840))
+        // Out-of-range still formats (clamped first).
+        assertEquals("UTC+14:00", SettingsVocabulary.tzOffsetLabel(9999))
+    }
+
+    // ---- preferred music app -------------------------------------------------
+
+    @Test
+    fun musicAppNormalization() {
+        assertEquals(SettingsVocabulary.MUSIC_APP_NONE, SettingsVocabulary.normalizeMusicApp(null))
+        assertEquals(SettingsVocabulary.MUSIC_APP_NONE, SettingsVocabulary.normalizeMusicApp(""))
+        assertEquals(SettingsVocabulary.MUSIC_APP_NONE, SettingsVocabulary.normalizeMusicApp("   "))
+        assertEquals("com.spotify.music", SettingsVocabulary.normalizeMusicApp("com.spotify.music"))
+        assertEquals("com.spotify.music", SettingsVocabulary.normalizeMusicApp("  com.spotify.music  "))
+    }
+}

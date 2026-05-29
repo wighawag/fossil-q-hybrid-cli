@@ -1304,6 +1304,129 @@ same `LogRingBuffer` for a CLI `logs` command.
 > timezone, preferred music app, settings transfer (WP4), log viewer (WP15)) — same
 > ViewModel+StateFlow / fake-backed-test pattern.
 
+> **WP16g STATUS:** ✅ DONE & VERIFIED (provable core JVM/Robolectric-tested; UI builds +
+> lint-passes; the LIVE settings commands flagged on-device-pending / deferred to WP14). The
+> **seventh and LAST** user-facing screen — **WP16g completes the user-facing screen set
+> (WP16a–g).** A per-active-watch **Settings** screen lives in `qhybrid.android.settings.*`.
+> Mirrors the proven WP16a–f two-layer pattern's active-watch half exactly
+> (`combine(observeActiveWatch(), …)` + `stateIn(WhileSubscribed)`; injectable seams with a
+> `SETTINGS_WIRED=false` deferral flag for the live commands; centralized model-agnostic
+> constants; a stateless `*Content`; a production `factory`; Robolectric + in-memory Room tests
+> via `DbTestBase` with a real `CoroutineScope` + bounded `awaitState` polling).
+>
+> **PER-SETTING DATA-SOURCE DECISIONS (this drove the whole design — stated per setting):**
+> - **Vibration strength = (a) PERSISTED per-watch.** It is ALREADY a WP4
+>   `WatchEntity.vibrationStrength` field (default 50), so it round-trips through
+>   `WatchRepository.upsertWatch` — **NO new Room field/entity/DAO added** (the breakdown does NOT
+>   give WP16g a new DB field; we reuse the existing one). Applying it LIVE to the watch is a
+>   deferred command (see below).
+> - **Inactivity nudge (enabled + 1–255 min) = (b) APP PREF + (c) deferred LIVE command.** No
+>   `WatchEntity` field exists and the breakdown does not give WP16g one, so the value is persisted
+>   app-side via the injectable `SettingsPrefs` seam (production = a tiny `fossilq_settings`
+>   SharedPreferences blob, the same isolated style as WP3 `CompanionManager`, swappable for
+>   DataStore later). Applying it live is deferred.
+> - **Second timezone (offset minutes, UTC−12..UTC+14) = (b) APP PREF + (c) deferred LIVE
+>   command.** Same treatment as nudge (persisted via `SettingsPrefs`; live apply deferred).
+> - **Preferred music app = (b) PURE APP PREF (never sent to the watch).** A phone-side pref for
+>   the music-control fallback (ANDROID-PLAN §4.E); persisted via `SettingsPrefs`. The picker
+>   **REUSES the WP16c `InstalledAppsProvider`** (launcher-intent query, no special permission) —
+>   no second app-picker built.
+> - **Settings transfer = REUSE the WP4 surface.** Wired straight to
+>   `WatchRepository.transferSettings(from, to)` (the same clone op the WP15 Debug Menu uses) — not
+>   reinvented; no-op for a blank/identical MAC pair.
+> - **Log viewer = REUSE the WP15 viewer.** The Settings "View logs" entry opens the existing
+>   `qhybrid.android.log.LogConsole` (the WP15 log viewer) as an overlay surface — **NO second log
+>   viewer built**; and it is reachable in release builds too (the Debug Menu itself stays
+>   release-gated by `DebugMenu.isEnabled()`).
+>
+> **DEFERRED — the LIVE settings commands (WP14, no invented bytes).** Vibration strength /
+> inactivity nudge / second timezone are ALSO live watch commands. The protocol helpers ALREADY
+> exist and are golden-tested (`FossilController.setVibrationStrength` / `setInactivityNudge` /
+> `setSecondTimezone` → `ConfigurationPutRequest` items 0x0A / 0x09 / 0x11), but they are NOT yet
+> exposed via the WP3 `WatchConnectionService` static entry points. Wiring those through the
+> foreground service as new BLE actions is **WP14** (the same WP that wires the alarm/notification/
+> button uploads). Until then the injectable `SettingsSync` seam ONLY pokes the existing `syncNow`
+> (no new wire bytes, none invented) and reports `ServiceSettingsSync.SETTINGS_WIRED = false`, so
+> the UI flags the live apply as on-device-pending. **Persisted values are saved regardless**, so
+> flipping `SETTINGS_WIRED` later just applies the already-stored prefs/row.
+>
+> **(1) Provable core (`qhybrid.android.settings`, Robolectric + in-memory Room):**
+> - `SettingsViewModel` + `SettingsUiState` — `combine(observeActiveWatch(), appSettings,
+>   installedApps)` into one immutable UiState via `stateIn(WhileSubscribed)`. The active-watch
+>   half supplies the **persisted** `vibrationStrength` (from the WP4 row, normalized) +
+>   `hasActiveWatch`/`canEditWatchSettings` (per-watch controls disable when none). The app-level
+>   prefs (nudge / second timezone / preferred music app) stay editable regardless. Intents:
+>   `setVibrationStrength` (persist to the WP4 row **and** deferred live apply),
+>   `setNudge`/`setSecondTimezoneOffset` (persist to `SettingsPrefs` **and**, when a watch is
+>   active, deferred live apply), `setPreferredMusicApp` (pure app pref), `loadInstalledApps`
+>   (reuses WP16c), and `transferSettings` (→ WP4 `transferSettings`). Every value is clamped/
+>   normalized via `SettingsVocabulary`.
+> - `SettingsVocabulary` — centralized, **model-agnostic** vocabulary/ranges/defaults
+>   (discipline like `VibePatterns`/`CalibrationHands`/`SleepQuality`): vibration 0–100 (default
+>   50, mirroring the `WatchEntity` field); nudge 1–255 min (1-byte range, 15-min step, off by
+>   default); second-timezone offsets UTC−12..UTC+14 at 30-min granularity + `UTC±HH:MM` labels;
+>   the music-app `NONE` sentinel. All `normalize*` clamp out-of-range and tolerate null/blank.
+> - `SettingsPrefs` (interface) + `SharedPreferencesSettingsPrefs` (production) — the injectable
+>   app-pref seam (nudge / second timezone / music app) so the VM is testable with an in-memory
+>   fake. NOT per-watch-keyed (these are user-level prefs); per-watch state stays in Room.
+> - `SettingsSync` (interface) + `ServiceSettingsSync` (production) — the injectable LIVE-command
+>   seam (mirrors `AlarmSync`/`NotificationSync`/`ButtonSync`/`CalibrationSync`/`ActivitySource`).
+>   Production pokes `syncNow` and reports `SETTINGS_WIRED=false` (deferred to WP14; no invented
+>   bytes). Music app + settings-transfer are intentionally NOT here (phone-side / WP4 DB op).
+> - Tests (`SettingsViewModelTest` 11, `SettingsVocabularyTest` 6 = 11 Robolectric + Room + pure
+>   JVM constants): UiState reflects the active watch's persisted vibration strength + **disables**
+>   when none; vibration strength **round-trips through the WP4 repo** (asserted in the DB) + hits
+>   the `SettingsSync` fake reporting `SETTINGS_WIRED` pending; nudge/timezone **round-trip through
+>   the prefs fake** + hit the sync fake (and persist-but-don't-sync without an active watch);
+>   preferred music app round-trips and **never** fires a live command; `loadInstalledApps` reuses
+>   the WP16c provider; **settings-transfer hits the WP4 `transferSettings` surface** (rows copied
+>   onto target, source untouched) and is a no-op for a blank/identical pair; clamp out-of-range +
+>   empty/partial tolerance (no crash with no watch / empty DB / missing prefs).
+>   `:android:testDebugUnitTest` = **139 green** (128 prior + 11 new), 0 failures.
+>
+> **(2) UI layer (`SettingsScreen.kt`, builds + lint-passes; behavior on-device-pending):**
+> - Stateless `SettingsContent(state, intents…)` (preview-/UI-testable with fake state, no
+>   VM/Room/BLE) + a thin `SettingsScreen(onOpenLogs)` wiring the production VM via
+>   `SettingsViewModel.factory(context)`. Grouped Material3 cards — **Vibration strength**
+>   (`Slider`), **Inactivity nudge** (`Switch` + ± steppers), **Second timezone**
+>   (`ExposedDropdownMenuBox`), **Preferred music app** (`ExposedDropdownMenuBox` over the WP16c
+>   app list), **Settings transfer** (from/to MAC + `Button` → WP4 clone), and a **Logs** card
+>   (`View logs` → the WP15 `LogConsole`). Standard Material3 controls only — **no new
+>   dependency** (verified). Each per-watch/live setting is clearly marked **on-device-pending
+>   (WP14)**; persisted prefs + settings-transfer are real.
+> - Reachable via a **7th bottom-nav tab** added to `MainActivity` (Dashboard / Alarms /
+>   Notifications / Buttons / Calibration / Sleep / **Settings**). Settings tab icon =
+>   `Icons.Filled.Info` (verified on the material-icons-core classpath the WP16e/f way —
+>   enumerated the jar's `filled/*Kt.class` entries; extended icons are NOT on the classpath).
+>   **GEAR vs TAB decision:** the top-right **Settings gear stays the WP3 Setup flow**
+>   (permissions / CDM associate / battery exemption — first-run pairing belongs there, not in the
+>   per-watch Settings tab); the new **Settings tab is the per-active-watch settings**. They do
+>   not conflict. The WP15 **Debug gear stays present + release-gated**; WP16a–f still work.
+>
+> **Did NOT touch** protocol wire bytes / `FossilController`/`FossilQAdapter` settings helpers /
+> `BleTransport` / `AndroidBleTransport.kt` / WP3 service wire behavior (only calls the existing
+> `syncNow`) / existing WP4 repository semantics (**added NO DB entity/DAO/repo method — vibration
+> strength reuses the existing `WatchEntity.vibrationStrength`; nudge/timezone/music are app
+> prefs**) / WP15 Debug Menu gating (the log viewer is REUSED). `:protocol:test` stays at **108
+> green**; `./fossil-q --help` unchanged; `:android:assembleDebug` + `:android:lintDebug` succeed.
+>
+> **On-device verification pending:** the Compose Settings rendering/controls, the live settings
+> apply effect, the music picker, the settings-transfer effect, the log-viewer overlay, and the
+> 7-tab bottom-nav switching can only be confirmed on a device. The headless half (active-watch +
+> prefs combination, the persist round-trips, the deferred sync intents, the WP4 transfer call,
+> the constants/normalization) is unit-tested.
+>
+> **Deferred / follow-ups + REMAINING MILESTONES.** WP16g completes WP16a–g (all seven
+> user-facing screens). The remaining work is **non-UI**: the live settings commands are
+> **WP14** (flip `SETTINGS_WIRED` true once the `ConfigurationPutRequest` items are wired through
+> the WP3 service — alongside the alarm/notification/button uploads); **WP14** also covers the
+> WorkManager/sync-on-connect orchestration; the **activity-file fetch WP** (BLE read → WP8
+> parse → `ServiceActivitySource`, also feeds `DashboardUiState.steps`); the
+> `NotificationListenerService` interception + `MediaSessionManager` music control; and **WP13**
+> (calendar provider read → WP9 calendar-alarm mapping for slots 16–31). The protocol/CLI
+> follow-ups (routing the CLI `alarm`/`notify`/`button` commands through the shared WP5/6/7
+> helpers) also remain.
+
 > **WP16d PREP — concrete vocabulary (scanned from code, for the Buttons screen).** This is a
 > reference for the WP16d implementer so the constants are NOT rediscovered. **Design decision:
 > the WP16d UI is MODEL-AGNOSTIC** — it allows ALL buttons/modes/actions and does NOT gate by

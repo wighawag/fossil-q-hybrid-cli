@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
@@ -56,7 +57,9 @@ import androidx.compose.runtime.setValue
 import qhybrid.android.alarms.AlarmsScreen
 import qhybrid.android.buttons.ButtonsScreen
 import qhybrid.android.calibration.CalibrationScreen
+import qhybrid.android.settings.SettingsScreen
 import qhybrid.android.sleep.SleepActivityScreen
+import qhybrid.android.log.LogConsole
 import qhybrid.android.dashboard.DashboardScreen
 import qhybrid.android.notifications.NotificationsScreen
 import qhybrid.android.debug.DebugMenu
@@ -114,9 +117,10 @@ class MainActivity : ComponentActivity() {
      */
     /**
      * WP16: the bottom-nav home tabs (Dashboard = WP16a, Alarms = WP16b,
-     * Notifications = WP16c, Buttons = WP16d, Calibration = WP16e, Sleep = WP16f).
+     * Notifications = WP16c, Buttons = WP16d, Calibration = WP16e, Sleep = WP16f,
+     * Settings = WP16g — the seventh and last user-facing screen).
      */
-    private enum class HomeTab { DASHBOARD, ALARMS, NOTIFICATIONS, BUTTONS, CALIBRATION, SLEEP }
+    private enum class HomeTab { DASHBOARD, ALARMS, NOTIFICATIONS, BUTTONS, CALIBRATION, SLEEP, SETTINGS }
 
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
@@ -126,18 +130,24 @@ class MainActivity : ComponentActivity() {
         // CDM associate / battery exemption) moves behind a top-right gear so it stays
         // reachable for first-run pairing without cluttering the dashboard.
         var showSetup by remember { mutableStateOf(false) }
+        // WP16g: the per-watch Settings tab (WP16g) has a "View logs" entry that opens the
+        // existing WP15 log viewer (LogConsole) as an overlay surface — NOT a second viewer,
+        // and reachable in release builds too (the Debug Menu stays release-gated).
+        var showLogs by remember { mutableStateOf(false) }
         // WP16b: bottom-nav between the Dashboard and the Alarms screen. The Setup/Debug
         // gears overlay on top of whichever home tab is selected.
         var tab by remember { mutableStateOf(HomeTab.DASHBOARD) }
-        val onHome = !showDebug && !showSetup
+        val onHome = !showDebug && !showSetup && !showLogs
         val title = when {
             showDebug -> "Debug Menu"
             showSetup -> "Setup"
+            showLogs -> "Logs"
             tab == HomeTab.ALARMS -> "Alarms"
             tab == HomeTab.NOTIFICATIONS -> "Notifications"
             tab == HomeTab.BUTTONS -> "Buttons"
             tab == HomeTab.CALIBRATION -> "Calibration"
             tab == HomeTab.SLEEP -> "Sleep & Activity"
+            tab == HomeTab.SETTINGS -> "Settings"
             else -> "Fossil Q"
         }
         Scaffold(
@@ -145,11 +155,11 @@ class MainActivity : ComponentActivity() {
                 TopAppBar(
                     title = { Text(title) },
                     actions = {
-                        IconButton(onClick = { showSetup = !showSetup; showDebug = false }) {
+                        IconButton(onClick = { showSetup = !showSetup; showDebug = false; showLogs = false }) {
                             Icon(Icons.Filled.Settings, contentDescription = "Setup")
                         }
                         if (DebugMenu.isEnabled()) {
-                            IconButton(onClick = { showDebug = !showDebug; showSetup = false }) {
+                            IconButton(onClick = { showDebug = !showDebug; showSetup = false; showLogs = false }) {
                                 Icon(Icons.Filled.Build, contentDescription = "Debug menu")
                             }
                         }
@@ -196,6 +206,12 @@ class MainActivity : ComponentActivity() {
                             icon = { Icon(Icons.Filled.DateRange, contentDescription = "Sleep & Activity") },
                             label = { Text("Sleep") },
                         )
+                        NavigationBarItem(
+                            selected = tab == HomeTab.SETTINGS,
+                            onClick = { tab = HomeTab.SETTINGS },
+                            icon = { Icon(Icons.Filled.Info, contentDescription = "Settings") },
+                            label = { Text("Settings") },
+                        )
                     }
                 }
             },
@@ -204,11 +220,13 @@ class MainActivity : ComponentActivity() {
                 when {
                     showDebug && DebugMenu.isEnabled() -> DebugMenuScreen()
                     showSetup -> HomeScreen()
+                    showLogs -> LogConsole()
                     tab == HomeTab.ALARMS -> AlarmsScreen()
                     tab == HomeTab.NOTIFICATIONS -> NotificationsScreen()
                     tab == HomeTab.BUTTONS -> ButtonsScreen()
                     tab == HomeTab.CALIBRATION -> CalibrationScreen()
                     tab == HomeTab.SLEEP -> SleepActivityScreen()
+                    tab == HomeTab.SETTINGS -> SettingsScreen(onOpenLogs = { showLogs = true })
                     else -> DashboardScreen()
                 }
             }
