@@ -253,6 +253,44 @@ protocol/wire-byte changes):**
 
 ## WP3 — Foreground Service + Companion Reconnect
 
+**Status:** ✅ DONE — HARDWARE-VERIFIED. A foreground `WatchConnectionService`
+(`START_STICKY`, `FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE`, persistent notification) now
+OWNS the `FossilController` + `AndroidBleTransport` for the session (ownership moved out of
+`MainActivity`), driving all blocking transport work on a single `ble-worker` thread.
+Reconnect is event-driven via `CompanionDeviceManager` — NO continuous scanning. Verified
+on a real phone (API 31+):
+- **Associate** (CDM chooser) → persist MAC → arm `startObservingDevicePresence` →
+  auto-connect → fresh bond (TOP button → `03 06 00 01` → `createBond`) → INITIALIZED.
+- **Close app** → service keeps the link; persistent notification stays (Connected · NN%).
+- **Out of range** (battery pulled) → GATT timeout (status 8) → DISCONNECTED, presence
+  re-armed; **back in range** → system CDM `onDeviceAppeared` wakes the service →
+  bonded fast-path `03 07 01` → INITIALIZED in ~1s, **without opening the app**.
+- **Reboot** → `BootReceiver` (BOOT_COMPLETED allow-list) re-arms presence + starts the
+  service → CDM wake → reconnected hands-free (confirmed via `dumpsys`: FGS foreground,
+  LE-encrypted bonded link, `WatchPresenceService` bound by system uid 1000).
+- No `startScan` anywhere in the logs; no ANRs; clean teardown on every drop.
+
+`:android:assembleDebug` + `:android:lintDebug` clean; `:protocol:test` (22) stays green;
+`./fossil-q --help` unchanged; `AndroidBleTransport.kt` / `FossilController` / `BleTransport`
+/ wire bytes untouched.
+
+**New files** (all `qhybrid.android`): `WatchState.kt` (process-wide `StateFlow<WatchStatus>`),
+`WatchConnectionService.kt` (FGS, owns controller/transport, static `connectNow/syncNow/
+disconnect/onDeviceAppeared/stop`), `WatchPresenceService.kt` (`CompanionDeviceService`,
+API 31+ presence callbacks), `CompanionManager.kt` (associate / observe / MAC persistence in
+SharedPreferences — isolated so WP4 can swap to Room / battery-opt prompt), `BootReceiver.kt`,
+`ReconnectFallback.kt` (minimal one-shot MAC-filtered scan for API 26–30; no-op on 31+).
+`MainActivity.kt` rewritten as a thin client (observe StateFlow + Associate/Connect/Sync/
+Disconnect/Battery-exempt buttons; reuses WP2 auth-prompt-only-when-needed via AUTH_REQUIRED).
+The `runOnConnectSync` hook is a deliberate no-op placeholder for WP5/6/9; WP14 calls `syncNow`.
+
+**Manifest deltas:** `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_CONNECTED_DEVICE`,
+`RECEIVE_BOOT_COMPLETED`, `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`,
+`REQUEST_OBSERVE_COMPANION_DEVICE_PRESENCE` (31+), `POST_NOTIFICATIONS` (33+),
+`ACCESS_COARSE_LOCATION` (≤30 lint fix); the service, the CDM presence service
+(`BIND_COMPANION_DEVICE_SERVICE` + `android.companion.CompanionDeviceService` intent-filter),
+and the boot receiver; `companion_device_setup` feature.
+
 **Goal:** Keep the link alive in the background and auto-reconnect when the watch reappears.
 
 **Scope:**

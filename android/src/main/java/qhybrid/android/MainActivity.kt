@@ -1,13 +1,17 @@
 package qhybrid.android
 
 import android.Manifest
+import android.content.IntentSender
 import android.content.pm.PackageManager
+import android.companion.CompanionDeviceManager
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -16,7 +20,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -30,71 +33,83 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import qhybrid.protocol.FossilController
-import java.util.concurrent.atomic.AtomicReference
-import kotlin.concurrent.thread
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 /**
- * WP2 transport-bring-up harness.
+ * WP3 thin client.
  *
- * Drives the protocol through the platform-agnostic [FossilController] façade
- * (NOT the raw FossilQAdapter) over the hardened [AndroidBleTransport]. Proves the
- * whole stack on real hardware: connect → auth (button press on fresh bond, or the
- * 03 07 01 fast-path when already bonded) → read battery/firmware → INITIALIZED,
- * reliably across connect/disconnect/reconnect.
- *
- * Still deliberately UI-light (no DB, no features) — that is WP3+/WP16.
+ * Ownership of the FossilController/transport has moved into [WatchConnectionService];
+ * this Activity now only:
+ *   - requests Bluetooth permission,
+ *   - drives CompanionDeviceManager association (the one-time pairing entry point),
+ *   - offers a battery-optimization exemption prompt,
+ *   - fires "connect now" / "sync now" / "disconnect" service actions,
+ *   - observes [WatchState.status] (StateFlow) and renders link/battery/firmware,
+ * reusing WP2's "auth prompt only when the watch requests it" behaviour (now surfaced
+ * as the AUTH_REQUIRED link state, also shown in the persistent notification).
  */
 class MainActivity : ComponentActivity() {
 
     companion object {
-        private const val TAG = "FossilQ-WP2"
-        // Prefilled default for convenience; editable on screen.
+        private const val TAG = "FossilQ-WP3"
         private const val DEFAULT_MAC = "D9:20:71:11:74:2A"
     }
 
-    // The live controller/transport for the current session (so Disconnect can act).
-    private val controllerRef = AtomicReference<FossilController?>(null)
+    // Registered before STARTED (field init runs during onCreate before super) so it is
+    // valid to launch from onCreate.
+    private val notifPermLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Android 13+: the foreground-service notification needs runtime POST_NOTIFICATIONS.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    HarnessScreen()
+                    HomeScreen()
                 }
             }
         }
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
-        // Make sure we never leak a live GATT connection across activity teardown.
-        controllerRef.getAndSet(null)?.let { c ->
-            thread(name = "ble-teardown") { runCatching { c.disconnect() } }
-        }
-    }
-
     @Composable
-    private fun HarnessScreen() {
-        var mac by remember { mutableStateOf(DEFAULT_MAC) }
-        var status by remember {
+    private fun HomeScreen() {
+        val status by WatchState.status.collectAsStateWithLifecycle()
+        var mac by remember {
+            mutableStateOf(CompanionManager.getAssociatedMac(this) ?: DEFAULT_MAC)
+        }
+        var permMsg by remember {
             mutableStateOf(
-                if (hasPermissions()) "Permissions granted. Ready to Connect."
-                else "Grant Bluetooth permission, then Connect."
+                if (hasPermissions()) "Permissions granted."
+                else "Grant Bluetooth permission first."
             )
         }
-        // Live connection-state line, updated from the transport's connection callback.
-        var link by remember { mutableStateOf("Disconnected") }
-        var busy by remember { mutableStateOf(false) }
-        var connected by remember { mutableStateOf(false) }
 
         val permissionLauncher = rememberLauncherForActivityResult(
             ActivityResultContracts.RequestMultiplePermissions()
         ) { result ->
-            val granted = result.values.all { it }
-            status = if (granted) "Permissions granted. Ready to Connect."
-            else "Permissions DENIED — Connect will fail."
+            permMsg = if (result.values.all { it }) "Permissions granted."
+            else "Permissions DENIED — connect will fail."
+        }
+
+        // Fires the CDM chooser IntentSender; on success we persist the chosen MAC,
+        // arm presence, and connect.
+        val associateLauncher = rememberLauncherForActivityResult(
+            ActivityResultContracts.StartIntentSenderForResult()
+        ) { result ->
+            val chosenMac = extractChosenMac(result.data)
+            if (chosenMac != null) {
+                Log.i(TAG, "Associated with $chosenMac")
+                mac = chosenMac
+                onAssociated(chosenMac)
+            } else {
+                Log.w(TAG, "Association cancelled / no device (resultCode=${result.resultCode})")
+            }
         }
 
         Column(
@@ -102,152 +117,144 @@ class MainActivity : ComponentActivity() {
                 .fillMaxSize()
                 .padding(24.dp)
                 .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            Text("Fossil Q — Transport Harness (WP2)", style = MaterialTheme.typography.titleLarge)
+            Text("Fossil Q — Background Link (WP3)", style = MaterialTheme.typography.titleLarge)
 
-            Text("Link: $link", style = MaterialTheme.typography.labelLarge)
+            Text("Link: ${status.link}", style = MaterialTheme.typography.labelLarge)
+            status.message?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+            Text(
+                buildString {
+                    append("Model: ").append(status.model ?: "—").append("   ")
+                    append("FW: ").append(status.firmware ?: "—").append("   ")
+                    append("Batt: ").append(status.battery?.let { "$it%" } ?: "—")
+                },
+                style = MaterialTheme.typography.bodySmall
+            )
 
             OutlinedTextField(
                 value = mac,
                 onValueChange = { mac = it },
                 label = { Text("Watch MAC") },
                 singleLine = true,
-                enabled = !busy && !connected,
                 modifier = Modifier.fillMaxWidth()
             )
 
             Button(
                 onClick = { permissionLauncher.launch(requiredPermissions()) },
-                enabled = !busy,
                 modifier = Modifier.fillMaxWidth()
             ) { Text("Request Bluetooth permission") }
+            Text(permMsg, style = MaterialTheme.typography.bodySmall)
+
+            Button(
+                onClick = { startAssociate(mac.trim(), associateLauncher::launch) },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Associate watch (CompanionDeviceManager)") }
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Button(
-                    enabled = !busy && !connected,
                     modifier = Modifier.fillMaxWidth(0.5f),
                     onClick = {
                         if (!hasPermissions()) {
-                            status = "Missing Bluetooth permission — tap 'Request' first."
+                            permMsg = "Missing Bluetooth permission — tap 'Request' first."
                             return@Button
                         }
-                        busy = true
-                        status = "Connecting to $mac…"
-                        connectAndInit(
-                            mac.trim(),
-                            onStatus = { status = it },
-                            onLink = { up -> link = if (up) "Connected" else "Disconnected"; connected = up },
-                            onDone = { busy = false }
-                        )
+                        WatchConnectionService.connectNow(this@MainActivity, mac.trim())
                     }
-                ) { Text(if (busy && !connected) "Connecting…" else "Connect") }
+                ) { Text("Connect now") }
 
                 OutlinedButton(
-                    enabled = connected && !busy,
                     modifier = Modifier.fillMaxWidth(),
-                    onClick = {
-                        busy = true
-                        status = "Disconnecting…"
-                        disconnect(
-                            onStatus = { status = it },
-                            onDone = { busy = false }
-                        )
-                    }
+                    onClick = { WatchConnectionService.disconnect(this@MainActivity) }
                 ) { Text("Disconnect") }
             }
 
-            Text(status, style = MaterialTheme.typography.bodyLarge)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                OutlinedButton(
+                    modifier = Modifier.fillMaxWidth(0.5f),
+                    onClick = { WatchConnectionService.syncNow(this@MainActivity) }
+                ) { Text("Sync now") }
+
+                OutlinedButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = { CompanionManager.requestIgnoreBatteryOptimizations(this@MainActivity) }
+                ) { Text("Battery exempt") }
+            }
+
+            Text(
+                if (CompanionManager.isIgnoringBatteryOptimizations(this@MainActivity))
+                    "Battery optimization: exempt ✅"
+                else "Battery optimization: NOT exempt — Doze may kill the link",
+                style = MaterialTheme.typography.bodySmall
+            )
         }
     }
 
-    /** Runs the blocking BLE connect + FossilController init off the main thread. */
-    private fun connectAndInit(
-        mac: String,
-        onStatus: (String) -> Unit,
-        onLink: (Boolean) -> Unit,
-        onDone: () -> Unit
-    ) {
-        thread(name = "ble-connect") {
-            val transport = AndroidBleTransport(applicationContext)
-            val controller = FossilController(transport)
-            controllerRef.set(controller)
-            try {
-                // Reflect link state changes (including unexpected out-of-range drops)
-                // straight to the UI.
-                transport.setConnectionCallback { up -> runOnUiThread { onLink(up) } }
-
-                // Show the confirm prompt ONLY when the watch actively requests
-                // authorization (it vibrates). On the already-bonded fast-path
-                // (03 07 01) this never fires and init proceeds silently.
-                controller.onAuthRequired {
-                    post(onStatus,
-                        "⌚ Authorization requested — the watch is vibrating.\n\n" +
-                            "Hold the TOP button to CONFIRM (within 30s).")
-                }
-                controller.onConfigSynced {
-                    Log.i(TAG, "Config synced")
-                }
-
-                if (!controller.connect(mac)) {
-                    post(onStatus, "❌ Failed to connect to $mac (out of range / BT off / phone-still-bonded?)")
-                    controllerRef.compareAndSet(controller, null)
-                    return@thread
-                }
-                post(onStatus, "Connected. Initializing…")
-
-                // Minimal init: file versions + auth. FossilController.init(false)
-                // is the auth-only path (no config/filter upload).
-                controller.init(false)
-                if (controller.isFossilProtocol()) {
-                    // 60s allows time for the auth button press on a fresh bond.
-                    if (!controller.waitForInit(60_000)) {
-                        Log.w(TAG, "init may not have completed fully")
+    /** Begin CDM association; the chooser IntentSender is fired via [launch]. */
+    private fun startAssociate(mac: String, launch: (IntentSenderRequest) -> Unit) {
+        if (!hasPermissions()) {
+            Log.w(TAG, "associate: missing Bluetooth permission")
+        }
+        val filterMac = mac.takeIf { android.bluetooth.BluetoothAdapter.checkBluetoothAddress(it) }
+        CompanionManager.associate(
+            context = this,
+            mac = filterMac,
+            callback = object : CompanionDeviceManager.Callback() {
+                override fun onDeviceFound(chooserLauncher: IntentSender) {
+                    // May arrive on a binder thread — bounce to main to fire the launcher.
+                    runOnUiThread {
+                        launch(IntentSenderRequest.Builder(chooserLauncher).build())
                     }
                 }
 
-                val initialized = controller.isFossilProtocol()
-                val info = buildString {
-                    append(if (initialized) "✅ INITIALIZED — " else "⚠️ connected (not Fossil 2.x) — ")
-                    append(mac).append("\n")
-                    append("Model:    ").append(controller.modelNumber ?: "?").append("\n")
-                    append("Firmware: ").append(controller.firmwareVersion ?: "?").append("\n")
-                    append("Battery:  ").append(controller.batteryLevel).append("%\n")
-                    append("Protocol: ")
-                        .append(if (initialized) "Fossil (2.x)" else "Misfit")
+                override fun onFailure(error: CharSequence?) {
+                    Log.e(TAG, "CDM association failed: $error")
                 }
-                Log.i(TAG, info)
-                post(onStatus, info)
-                // Stay connected so reconnect/teardown can be exercised via Disconnect.
-            } catch (e: Exception) {
-                Log.e(TAG, "connect/init failed", e)
-                post(onStatus, "❌ Error: ${e.message}")
-                runCatching { controller.disconnect() }
-                controllerRef.compareAndSet(controller, null)
-            } finally {
-                runOnUiThread { onDone() }
+            },
+            onAlreadyAssociated = { existing ->
+                runOnUiThread { onAssociated(existing) }
             }
-        }
+        )
     }
 
-    private fun disconnect(onStatus: (String) -> Unit, onDone: () -> Unit) {
-        thread(name = "ble-disconnect") {
-            try {
-                controllerRef.getAndSet(null)?.disconnect()
-                post(onStatus, "Disconnected. Ready to Connect.")
-            } catch (e: Exception) {
-                Log.w(TAG, "disconnect failed", e)
-                post(onStatus, "Disconnect error: ${e.message}")
-            } finally {
-                runOnUiThread { onDone() }
-            }
-        }
+    private fun onAssociated(mac: String) {
+        CompanionManager.setAssociatedMac(this, mac)
+        CompanionManager.startObserving(this, mac)
+        ReconnectFallback.arm(this, mac)
+        WatchConnectionService.connectNow(this, mac)
     }
 
-    private fun post(cb: (String) -> Unit, msg: String) = runOnUiThread { cb(msg) }
+    /** Pull the chosen device's MAC from the chooser result, across API variants. */
+    private fun extractChosenMac(data: android.content.Intent?): String? {
+        data ?: return null
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val assoc = data.getParcelableExtra(
+                    CompanionDeviceManager.EXTRA_ASSOCIATION,
+                    android.companion.AssociationInfo::class.java
+                )
+                assoc?.deviceMacAddress?.toString()?.uppercase()
+            } else {
+                @Suppress("DEPRECATION")
+                when (val extra = data.getParcelableExtra<android.os.Parcelable>(
+                    CompanionDeviceManager.EXTRA_DEVICE
+                )) {
+                    is android.bluetooth.BluetoothDevice -> extra.address?.uppercase()
+                    is android.bluetooth.le.ScanResult -> extra.device?.address?.uppercase()
+                    else -> null
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "extractChosenMac failed", e)
+            null
+        }
+    }
 
     private fun requiredPermissions(): Array<String> =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {

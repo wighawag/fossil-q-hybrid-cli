@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- Android 12+ (API 31+): explicit connect/scan permissions. -->
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
@@ -17,10 +18,31 @@
     <uses-permission
         android:name="android.permission.ACCESS_FINE_LOCATION"
         android:maxSdkVersion="30" />
+    <uses-permission
+        android:name="android.permission.ACCESS_COARSE_LOCATION"
+        android:maxSdkVersion="30" />
+
+    <!-- WP3: foreground service keeping the watch link alive in the background. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <!-- WP3: restart the service + reconnect after reboot. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- WP3: ask the user to exempt us from Doze so the background GATT link survives. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- WP3: CompanionDeviceManager event-driven presence observation (API 31+). -->
+    <uses-permission
+        android:name="android.permission.REQUEST_OBSERVE_COMPANION_DEVICE_PRESENCE"
+        tools:targetApi="31" />
+    <!-- WP3: show the persistent foreground-service notification on Android 13+. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <uses-feature
         android:name="android.hardware.bluetooth_le"
         android:required="true" />
+    <!-- WP3: CompanionDeviceManager (event-driven reconnect, no continuous scan). -->
+    <uses-feature
+        android:name="android.software.companion_device_setup"
+        android:required="false" />
 
     <application
         android:label="Fossil Q"
@@ -34,5 +56,34 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- WP3: owns the FossilController/transport for the session. -->
+        <service
+            android:name=".WatchConnectionService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+
+        <!-- WP3: CompanionDeviceManager presence callbacks (API 31+). The system binds
+             this with BIND_COMPANION_DEVICE_SERVICE and wakes it when the associated
+             watch appears — no scanning on our side. -->
+        <service
+            android:name=".WatchPresenceService"
+            android:exported="true"
+            android:permission="android.permission.BIND_COMPANION_DEVICE_SERVICE"
+            tools:targetApi="31">
+            <intent-filter>
+                <action android:name="android.companion.CompanionDeviceService" />
+            </intent-filter>
+        </service>
+
+        <!-- WP3: reboot survival — re-arm presence + restart the service. -->
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>
