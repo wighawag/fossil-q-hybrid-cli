@@ -31,6 +31,17 @@ public class NotificationConfig {
     private static final Logger LOG = LoggerFactory.getLogger(NotificationConfig.class);
     private static final String CONFIG_FILE = "notifications.json";
 
+    /**
+     * Human-readable names for the 0-9 vibration patterns. Single source of truth
+     * shared by the CLI (Main) and NotifType.toString(). Lives here in :protocol
+     * so the protocol module has no back-dependency on the :cli module.
+     */
+    public static final String[] VIBE_PATTERN_NAMES = {
+            "AUTO", "CALL", "TEXT", "EMAIL", "DEFAULT_OTHER_APPS",
+            "ONE_SHORT_VIBE", "TWO_SHORT_VIBES", "THREE_SHORT_VIBES",
+            "ONE_LONG_VIBE", "NO_VIBE"
+    };
+
     private final List<NotifType> types = new ArrayList<>();
 
     /** A single notification type definition. */
@@ -56,8 +67,8 @@ public class NotificationConfig {
 
         @Override
         public String toString() {
-            String vibeName = (vibe >= 0 && vibe < Main.VIBE_PATTERN_NAMES.length)
-                    ? Main.VIBE_PATTERN_NAMES[vibe] : "UNKNOWN";
+            String vibeName = (vibe >= 0 && vibe < VIBE_PATTERN_NAMES.length)
+                    ? VIBE_PATTERN_NAMES[vibe] : "UNKNOWN";
             return String.format("%s: hands=%d°/%d°, vibe=%d (%s)",
                     name, hourDeg, minDeg, vibe, vibeName);
         }

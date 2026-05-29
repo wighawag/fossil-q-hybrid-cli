@@ -124,13 +124,9 @@ public abstract class FileGetRawRequest extends FossilRequest {
                 this.handleFileRawData(this.fileData);
             }
         }else if(characteristic.getUuid().toString().equals("3dda0004-957f-7d4a-34a6-74696673696d")){
-            if (fileBuffer != null) {
-                fileBuffer.put(value, 1, value.length - 1);
-                if((first & 0x80) == 0x80){
-                    this.fileData = fileBuffer.array();
-                }
-            } else {
-                System.err.println("Warning: received file data on 3dda0004 but fileBuffer is null");
+            fileBuffer.put(value, 1, value.length - 1);
+            if((first & 0x80) == 0x80){
+                this.fileData = fileBuffer.array();
             }
         }
     }

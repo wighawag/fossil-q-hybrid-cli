@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Convenience launcher for the Fossil Q Hybrid CLI.
+#
+# Runs the shadowJar produced by the :cli module. Builds it first if missing.
+# Usage:
+#   ./fossil-q -d D0:1C:60:70:7C:60 info
+#   ./fossil-q --help
+#
+# Works regardless of the current working directory.
+set -euo pipefail
+
+# Resolve the directory this script lives in (the repo root).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+JAR="$SCRIPT_DIR/cli/build/libs/fossil-q.jar"
+
+# Build the jar on first run (or if it was cleaned away).
+if [[ ! -f "$JAR" ]]; then
+    echo "fossil-q jar not found — building (:cli:shadowJar)..." >&2
+    "$SCRIPT_DIR/gradlew" -p "$SCRIPT_DIR" :cli:shadowJar
+fi
+
+exec java -jar "$JAR" "$@"

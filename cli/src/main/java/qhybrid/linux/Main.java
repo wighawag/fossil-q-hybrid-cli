@@ -275,11 +275,10 @@ public class Main implements Runnable {
     //   7 = THREE_SHORT_VIBES → strong triple vibration
     //   8 = ONE_LONG_VIBE  → long vibration
     //   9 = NO_VIBE        → no vibration (silent)
-    static final String[] VIBE_PATTERN_NAMES = {
-            "AUTO", "CALL", "TEXT", "EMAIL", "DEFAULT_OTHER_APPS",
-            "ONE_SHORT_VIBE", "TWO_SHORT_VIBES", "THREE_SHORT_VIBES",
-            "ONE_LONG_VIBE", "NO_VIBE"
-    };
+    // Single source of truth lives in :protocol (NotificationConfig) so the
+    // protocol module has no back-dependency on :cli. Aliased here for the
+    // many existing CLI references below.
+    static final String[] VIBE_PATTERN_NAMES = NotificationConfig.VIBE_PATTERN_NAMES;
 
     /**
      * Parse a vibration pattern from name or number (0-9).

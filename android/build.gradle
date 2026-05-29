@@ -1,0 +1,52 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+    id 'org.jetbrains.kotlin.plugin.compose'
+}
+
+android {
+    namespace 'qhybrid.android'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'qhybrid.android'
+        minSdk 26          // Android 8.0 — BLE companion mode, notification access (ANDROID-PLAN §5)
+        targetSdk 34
+        versionCode 1
+        versionName '0.1.0'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+
+    buildFeatures {
+        compose true
+    }
+}
+
+dependencies {
+    // Shared protocol library (vendored GB tree + FossilQAdapter + BleTransport).
+    // For the WP0 skeleton we consume :protocol as a plain project dependency to
+    // prove classpath wiring. The srcDirs-reuse-of-GB pattern (ANDROID-PLAN §1) is
+    // introduced later (WP0.5 / WP2) once AndroidBleTransport needs to compile the
+    // vendored classes against real Android BLE types.
+    implementation project(':protocol')
+
+    implementation platform('androidx.compose:compose-bom:2024.09.03')
+    implementation 'androidx.activity:activity-compose:1.9.3'
+    implementation 'androidx.compose.ui:ui'
+    implementation 'androidx.compose.material3:material3'
+    implementation 'androidx.core:core-ktx:1.13.1'
+}

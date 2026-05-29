@@ -18,6 +18,9 @@ build/
 .gradletasknamecache
 gradle-app.setting
 
+# Android — machine-specific SDK location
+local.properties
+
 # Crucial: Whitelist the wrapper AFTER ignoring general jars
 !gradle/wrapper/gradle-wrapper.jar
 !gradle-wrapper.jar

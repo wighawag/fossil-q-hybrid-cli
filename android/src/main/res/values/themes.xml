@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Minimal app theme for the WP0 Compose skeleton. Compose draws its own
+      Material3 UI, so the Android XML theme just needs to be a no-action-bar
+      base from the platform (android:Theme.Material.*), avoiding any dependency
+      on the Material Components XML library.
+    -->
+    <style name="Theme.FossilQ" parent="@android:style/Theme.Material.Light.NoActionBar" />
+</resources>
