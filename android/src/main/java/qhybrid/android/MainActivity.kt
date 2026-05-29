@@ -28,12 +28,16 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -45,6 +49,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import qhybrid.android.alarms.AlarmsScreen
 import qhybrid.android.dashboard.DashboardScreen
 import qhybrid.android.debug.DebugMenu
 import qhybrid.android.debug.DebugMenuScreen
@@ -99,6 +104,9 @@ class MainActivity : ComponentActivity() {
      * shown ONLY in debug builds ([DebugMenu.isEnabled] == BuildConfig.DEBUG) so the
      * developer surface never ships enabled in a release build (WP15 requirement).
      */
+    /** WP16: the bottom-nav home tabs (Dashboard = WP16a, Alarms = WP16b). */
+    private enum class HomeTab { DASHBOARD, ALARMS }
+
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     private fun AppScaffold() {
@@ -107,9 +115,14 @@ class MainActivity : ComponentActivity() {
         // CDM associate / battery exemption) moves behind a top-right gear so it stays
         // reachable for first-run pairing without cluttering the dashboard.
         var showSetup by remember { mutableStateOf(false) }
+        // WP16b: bottom-nav between the Dashboard and the Alarms screen. The Setup/Debug
+        // gears overlay on top of whichever home tab is selected.
+        var tab by remember { mutableStateOf(HomeTab.DASHBOARD) }
+        val onHome = !showDebug && !showSetup
         val title = when {
             showDebug -> "Debug Menu"
             showSetup -> "Setup"
+            tab == HomeTab.ALARMS -> "Alarms"
             else -> "Fossil Q"
         }
         Scaffold(
@@ -128,11 +141,31 @@ class MainActivity : ComponentActivity() {
                     },
                 )
             },
+            bottomBar = {
+                // Only show the home tabs while on the home surface (not Setup/Debug).
+                if (onHome) {
+                    NavigationBar {
+                        NavigationBarItem(
+                            selected = tab == HomeTab.DASHBOARD,
+                            onClick = { tab = HomeTab.DASHBOARD },
+                            icon = { Icon(Icons.Filled.Home, contentDescription = "Dashboard") },
+                            label = { Text("Dashboard") },
+                        )
+                        NavigationBarItem(
+                            selected = tab == HomeTab.ALARMS,
+                            onClick = { tab = HomeTab.ALARMS },
+                            icon = { Icon(Icons.Filled.Notifications, contentDescription = "Alarms") },
+                            label = { Text("Alarms") },
+                        )
+                    }
+                }
+            },
         ) { padding ->
             Box(modifier = Modifier.padding(padding)) {
                 when {
                     showDebug && DebugMenu.isEnabled() -> DebugMenuScreen()
                     showSetup -> HomeScreen()
+                    tab == HomeTab.ALARMS -> AlarmsScreen()
                     else -> DashboardScreen()
                 }
             }

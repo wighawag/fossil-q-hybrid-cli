@@ -849,6 +849,70 @@ same `LogRingBuffer` for a CLI `logs` command.
 > **WP16e** (calibration), **WP16f** (sleep/activity charts), **WP16g** (settings) follow the
 > same ViewModel+StateFlow / fake-backed-test pattern.
 
+> **WP16b STATUS:** ✅ DONE & VERIFIED (provable core JVM/Robolectric-tested; UI builds +
+> lint-passes; list/picker rendering + the real alarm-byte upload flagged on-device-pending /
+> deferred to WP14). Mirrors the proven WP16a two-layer pattern: a unit-tested state holder +
+> an Android UI layer that compiles and lint-passes. **Scope = user slots 0–15 only** (calendar
+> slots 16–31 are WP9/WP13, out of scope).
+>
+> **(1) Provable core (`qhybrid.android.alarms`, Robolectric + in-memory Room):**
+> - `AlarmsViewModel` + `AlarmsUiState` — observes the WP4 `WatchRepository.observeActiveWatch()`
+>   and (per active watch) `observeAlarms(mac)`, **filtered to slots 0–15 and sorted by slotId**,
+>   into one immutable `AlarmsUiState` via `flatMapLatest` + `stateIn(WhileSubscribed)`. Derived
+>   helpers: `activeMac`, `hasActiveWatch`, `isFull` (≥16), `nextFreeSlot` (lowest free in 0..15).
+> - Intents: `addAlarm` (picks the **lowest free slot**; **16-slot user cap** — no-op when full or
+>   no active watch), `updateAlarm`/`setDays`/`toggleDay` (→ `upsertAlarm`), `deleteAlarm`
+>   (→ `deleteAlarmSlot`), `toggleEnabled`, and `setWeekdays`/`setWeekend`/`setEveryday` shortcuts.
+> - `AlarmDays` — centralized day-bit constants shared by VM + tests + UI so they cannot drift:
+>   `SUN..SAT` (bit0=Sun … **bit3=Wed, bit4=Thu** … bit6=Sat), `WEEKDAY=0x3E`, `WEEKEND=0x41`,
+>   `EVERYDAY=0x7F`, plus `toggle`/`summary` helpers. **This IS the WP5 wire convention 1:1** —
+>   `daysMask` is read/written straight through to `WatchAlarmEntity` and on to `AlarmCompiler`;
+>   NO bit-order translation is invented.
+> - `AlarmSync` interface + `ServiceAlarmSync` production impl: "Save to watch" forwards to the
+>   existing WP3 `WatchConnectionService.syncNow` (the rows are already persisted to Room by the
+>   intents). **No new BLE/protocol behavior.** `saveToWatch()` returns `ALARM_UPLOAD_WIRED=false`
+>   to surface that the **actual alarm-byte upload pipeline (WP5 compile → BLE write) is DEFERRED
+>   to WP14**; the UI shows an "on-device-pending" note until then.
+> - **Tests:** `android/src/test/.../alarms/AlarmsViewModelTest.kt` (13, Robolectric + `DbTestBase`
+>   in-memory Room): day constants match the wire convention; only slots 0–15 combine, sorted (a
+>   slot-16 row is excluded); empty/no-active-watch; add picks the lowest free slot; 16-slot cap;
+>   add no-op without an active watch; weekday/weekend/everyday shortcuts produce 0x3E/0x41/0x7F
+>   (and force repeating); `toggleDay` flips a single bit; toggleEnabled/delete/update/setDays hit
+>   the right repo rows; save delegates to the fake and reports the WP14-pending flag. (Same
+>   REAL-`CoroutineScope` + bounded `awaitState` polling as WP16a, since Room Flows re-emit on
+>   Room's executor.) `:android:testDebugUnitTest` now **37 total (24 prior + 13)**, 0 failures.
+>
+> **(2) UI layer (`qhybrid.android.alarms.AlarmsScreen`, build + lint green):**
+> - `AlarmsScreen()` hosts the production VM via `viewModel(factory = …)` and renders a stateless
+>   `AlarmsContent(state, intents…)` (pure function of `AlarmsUiState` + lambdas → preview/UI-testable
+>   with fake state). A `LazyColumn` of slot-0–15 alarms (time, day summary, enabled `Switch`,
+>   delete), an **Add alarm** FAB (hidden at the cap), and a **Save to watch** button (with the
+>   WP14-pending note). The add/edit `AlertDialog` has a `TimePicker`, day-of-week `FilterChip`s,
+>   the **Weekdays/Weekend/Every day** shortcuts, a **one-shot vs repeating** switch, and an
+>   optional label field.
+> - Reachable via a new **bottom `NavigationBar`** in `MainActivity` (Dashboard ⇄ Alarms). The
+>   nav only shows on the home surface; the **top-right Setup gear** and the **WP15 Debug gear
+>   (still release-gated** by `DebugMenu.isEnabled()`) overlay on top, and the WP16a Dashboard tab
+>   is unchanged. (Alarms tab icon uses `Notifications` from `material-icons-core`.)
+>
+> **Acceptance met:** `:protocol:test` 108 green (unchanged); `:android:testDebugUnitTest` 37 green
+> (24 + 13); `:android:assembleDebug` + `:android:lintDebug` succeed; `./fossil-q --help` unchanged.
+> NO change to protocol wire bytes / `BleTransport` / `AndroidBleTransport.kt` / WP3
+> `WatchConnectionService` wire behavior (only calls the existing `syncNow` entry point) /
+> `AlarmCompiler`/`AlarmSlot` output / WP4 repository semantics / WP15 Debug Menu gating; WP16a
+> Dashboard still works.
+>
+> **On-device verification pending:** the Compose Alarms list/scroll, the time picker + day-chip
+> interaction, the shortcuts, the enabled-switch/delete/save effects, and the bottom-nav switching
+> can only be confirmed on a device. The headless half (state combination + intents → right
+> repo/fake calls + correct daysMask) is unit-tested.
+>
+> **Deferred / follow-ups:** the **actual alarm-byte upload to the watch is WP14** (compile slots
+> 0–15 via WP5 `AlarmCompiler` → BLE alarm-file write); `ServiceAlarmSync.ALARM_UPLOAD_WIRED` flips
+> to true then. Calendar slots 16–31 (WP9/WP13) remain out of scope. Remaining screens **WP16c**
+> (notifications), **WP16d** (buttons), **WP16e** (calibration), **WP16f** (sleep/activity charts),
+> **WP16g** (settings) follow the same ViewModel+StateFlow / fake-backed-test pattern.
+
 **Goal:** The user-facing screens, each backed by a ViewModel reading WP4 + WP8 and writing via the service.
 
 **Sub-parts (each independently buildable with fake data/preview):**
