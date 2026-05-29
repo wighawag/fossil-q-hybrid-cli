@@ -39,8 +39,9 @@ import qhybrid.android.WatchState
 import qhybrid.android.db.WatchEntity
 
 /**
- * WP16a — the app's home Dashboard. Connection status + battery + steps/goal (steps is a
- * clearly-marked WP16f placeholder), an active-watch selector (from WP4 observeWatches),
+ * WP16a — the app's home Dashboard. Connection status + battery + steps/goal (steps is now
+ * LIVE from the WP-ACTIVITY fetch; — shown until the first fetch completes), an active-watch
+ * selector (from WP4 observeWatches),
  * Connect / Disconnect / Sync buttons, and a Find Watch button.
  *
  * State comes from [DashboardViewModel] (WP3 live status combined with the WP4 active-watch
@@ -143,14 +144,15 @@ private fun StepsCard(state: DashboardUiState) {
             Text("Steps", style = MaterialTheme.typography.titleMedium)
             val steps = state.steps
             if (steps == null) {
-                // WP16f-pending: live activity data (WP8 parsing → DB) is not wired yet.
+                // WP-ACTIVITY: steps are wired, but no activity file has been fetched yet
+                // (connect or refresh on the Sleep screen populates this).
                 Text(
                     "— / ${state.stepGoal}",
                     style = MaterialTheme.typography.headlineSmall,
                 )
                 LinearProgressIndicator(progress = { 0f }, modifier = Modifier.fillMaxWidth())
                 Text(
-                    "Step data not wired yet (WP16f — activity sync pending).",
+                    "No activity data fetched yet — connect or refresh to pull it.",
                     style = MaterialTheme.typography.labelSmall,
                 )
             } else {

@@ -14,15 +14,17 @@ import kotlinx.coroutines.launch
 import qhybrid.android.WatchState
 import qhybrid.android.db.WatchEntity
 import qhybrid.android.db.WatchRepository
+import qhybrid.android.sleep.ActivityState
 
 /**
  * WP16a — the Dashboard's immutable UI state. A pure function of (live link status from
  * WP3 [WatchState]) + (the WP4 active-watch row & registry). The Composable renders this;
  * the ViewModel owns combining the two reactive sources into it.
  *
- * Steps/goal are STUBBED here: live activity data is WP16f (WP8 parsing → DB), so [steps]
- * is null until then and the UI shows a clearly-marked placeholder. [stepGoal] comes from
- * the active watch row (WP4) and is real.
+ * WP-ACTIVITY: [steps] is now LIVE — it is the published step total from the in-memory
+ * [ActivityState] holder (parsed from the watch's activity file via WP8). It is `null` only until
+ * the first fetch completes (the UI shows a placeholder then). [stepGoal] comes from the active
+ * watch row (WP4).
  */
 data class DashboardUiState(
     val link: WatchState.LinkState = WatchState.LinkState.IDLE,
@@ -42,6 +44,8 @@ data class DashboardUiState(
     val steps: Int? = null,
     /** Step goal from the active watch row (WP4), default 10000. */
     val stepGoal: Int = 10000,
+    /** Epoch-millis of the last activity fetch (0 == never), for an optional "last updated" hint. */
+    val activityUpdatedMillis: Long = 0L,
 ) {
     /** True once the live link is fully up. */
     val isConnected: Boolean get() = link == WatchState.LinkState.INITIALIZED
@@ -69,6 +73,9 @@ open class DashboardViewModel(
     private val repo: WatchRepository,
     private val actions: WatchActions,
     private val watchStatus: Flow<WatchState.WatchStatus> = WatchState.status,
+    // WP-ACTIVITY: the live parsed-activity holder (injectable for tests; production = the
+    // process-wide [ActivityState] the WP3 service publishes into).
+    private val activityStatus: Flow<ActivityState.ActivityStatus> = ActivityState.status,
     // Tests inject a TestScope; production passes null → uses [viewModelScope].
     scope: CoroutineScope? = null,
 ) : ViewModel() {
@@ -80,7 +87,8 @@ open class DashboardViewModel(
             watchStatus,
             repo.observeActiveWatch(),
             repo.observeWatches(),
-        ) { status, active, watches ->
+            activityStatus,
+        ) { status, active, watches, activity ->
             DashboardUiState(
                 link = status.link,
                 statusMessage = status.message,
@@ -92,8 +100,11 @@ open class DashboardViewModel(
                 connectedMac = status.mac,
                 activeWatch = active,
                 watches = watches,
-                steps = null, // WP16f: live steps not wired yet.
+                // WP-ACTIVITY: live step total from the parsed activity file (null until the first
+                // fetch completes; only meaningful when a watch is active).
+                steps = if (active == null) null else activity.steps,
                 stepGoal = active?.stepGoal ?: 10000,
+                activityUpdatedMillis = activity.lastUpdatedMillis,
             )
         }.stateIn(coroutineScope, SharingStarted.WhileSubscribed(5_000), DashboardUiState())
 

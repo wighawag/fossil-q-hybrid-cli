@@ -171,6 +171,12 @@ class SleepActivityViewModelTest : DbTestBase() {
     }
 
     @Test
+    fun productionActivitySourceIsWired() {
+        // WP-ACTIVITY: the real fetch→parse→publish pipeline is wired now.
+        assertTrue(ServiceActivitySource.ACTIVITY_WIRED)
+    }
+
+    @Test
     fun refreshReportsWiredWhenSeamIsWired() {
         runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }
         val source = FakeActivitySource(wired = true)

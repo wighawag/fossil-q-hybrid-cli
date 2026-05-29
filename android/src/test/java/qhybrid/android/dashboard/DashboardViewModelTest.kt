@@ -18,6 +18,9 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import qhybrid.android.WatchState
 import qhybrid.android.db.DbTestBase
+import qhybrid.android.sleep.ActivityChartData
+import qhybrid.android.sleep.ActivityState
+import qhybrid.android.sleep.DaySummary
 
 /**
  * WP16a — headless tests for the Dashboard state holder. Reuses the WP4 [DbTestBase]
@@ -62,7 +65,17 @@ class DashboardViewModelTest : DbTestBase() {
     private fun vm(
         statusFlow: MutableStateFlow<WatchState.WatchStatus>,
         actions: WatchActions = FakeWatchActions(),
-    ) = DashboardViewModel(repo, actions, statusFlow, vmScope)
+        activityFlow: MutableStateFlow<ActivityState.ActivityStatus> =
+            MutableStateFlow(ActivityState.ActivityStatus()),
+    ) = DashboardViewModel(repo, actions, statusFlow, activityFlow, vmScope)
+
+    private fun activityStatus(steps: Int, updated: Long = 1L) = ActivityState.ActivityStatus(
+        data = ActivityChartData(
+            days = listOf(DaySummary("2024-01-01", steps = steps, calories = 0, activeMinutes = 0, recordCount = 1)),
+        ),
+        lastUpdatedMillis = updated,
+        hasFetched = true,
+    )
 
     /** Poll the combined StateFlow until [predicate] holds (or fail after a real timeout). */
     private fun awaitState(
@@ -101,7 +114,36 @@ class DashboardViewModelTest : DbTestBase() {
         assertEquals("BB:00:00:00:00:02", s.activeWatch?.macAddress)
         assertEquals("BB:00:00:00:00:02", s.selectedMac)
         assertEquals(10000, s.stepGoal)
-        // Steps are WP16f-pending: not wired yet.
+        // WP-ACTIVITY: steps are null until the first activity fetch publishes (none here).
+        assertNull(s.steps)
+    }
+
+    @Test
+    fun liveStepsComeFromActivityState() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", name = "One", active = true)) }
+        val flow = MutableStateFlow(status(link = WatchState.LinkState.INITIALIZED, mac = "AA:00:00:00:00:01"))
+        val activity = MutableStateFlow(ActivityState.ActivityStatus())
+        val model = vm(flow, activityFlow = activity)
+
+        // No fetch yet → steps null (placeholder).
+        val pending = awaitState(model.uiState) { it.activeWatch != null }
+        assertNull(pending.steps)
+
+        // Publish a parsed activity total → the Dashboard steps go live.
+        activity.value = activityStatus(steps = 7421, updated = 999L)
+        val s = awaitState(model.uiState) { it.steps != null }
+        assertEquals(7421, s.steps)
+        assertEquals(999L, s.activityUpdatedMillis)
+    }
+
+    @Test
+    fun liveStepsAreNullWithoutActiveWatch() {
+        // Steps only make sense for the active watch; with none, stay null even if a fetch happened.
+        val flow = MutableStateFlow(status(link = WatchState.LinkState.INITIALIZED))
+        val activity = MutableStateFlow(activityStatus(steps = 5000))
+        val model = vm(flow, activityFlow = activity)
+        val s = awaitState(model.uiState) { it.watches.isEmpty() && it.link == WatchState.LinkState.INITIALIZED }
+        assertNull(s.activeWatch)
         assertNull(s.steps)
     }
 

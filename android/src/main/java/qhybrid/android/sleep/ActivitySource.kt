@@ -2,8 +2,6 @@ package qhybrid.android.sleep
 
 import android.content.Context
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import qhybrid.android.WatchConnectionService
 
 /**
@@ -22,13 +20,14 @@ import qhybrid.android.WatchConnectionService
  * activity file → `ActivityParser.parse` → [SleepActivityAdapter]) is **deferred** behind the
  * [ServiceActivitySource.ACTIVITY_WIRED] = `false` flag.
  *
- * **DEFERRED (on-device-pending).** Reading the activity file off the watch and parsing it is its
- * own work package: it needs the WP3 [WatchConnectionService] to expose an activity-file read
- * action (and likely a small store/cache for the parsed result). The protocol parser already
- * exists (`ActivityParser` / `ActivitySummarizer`, WP8) — only the *fetch* is missing. Until that
- * lands, [ServiceActivitySource] emits an empty [ActivityChartData] and reports
- * [ServiceActivitySource.ACTIVITY_WIRED] = `false` so the UI flags the data as not-yet-fetched and
- * `refresh()` is a no-op poke (no invented wire bytes).
+ * **WP-ACTIVITY — NOW WIRED.** The fetch→parse pipeline is implemented: the WP3
+ * [WatchConnectionService] exposes a `requestActivity` action (BLE read on the ble-worker), parses
+ * the delivered file via the pure WP8-backed [ActivityFetcher], and publishes the result into the
+ * process-wide in-memory [ActivityState] holder (the cache decision: in-memory like `WatchState`,
+ * NO Room schema). [ServiceActivitySource] now observes [ActivityState] and its `refresh()` drives
+ * the real `requestActivity` action, so [ServiceActivitySource.ACTIVITY_WIRED] = `true`. The actual
+ * BLE file transfer + its effect on a real watch are on-device-pending; the fetch→parse→publish
+ * logic is unit-tested against the fixtures + a fake byte source.
  */
 interface ActivitySource {
     /** The current parsed activity/sleep data for the active watch (empty until fetched). */
@@ -43,32 +42,30 @@ interface ActivitySource {
 }
 
 /**
- * Production [ActivitySource] — pokes the WP3 service's existing `syncNow` entry point on refresh
- * and (for now) emits an empty [ActivityChartData].
+ * Production [ActivitySource] — observes the process-wide [ActivityState] holder (populated by the
+ * WP3 service after a fetch+parse) and drives the WP3 `requestActivity` BLE-read action on refresh.
  *
- * It deliberately adds **NO new BLE/protocol behavior** and **NO DB**: reading the watch's
- * activity file + parsing it (then optionally caching the result) is a later WP. Until then this
- * seam only pokes the existing service path; no activity bytes are read/written, none invented.
+ * Reuses the SAME fetch path the CLI `activity` command drives (`FossilController.requestActivity`
+ * → `onActivityData`); invents **NO wire bytes** and adds **NO DB** (the parsed result is cached
+ * in-memory in [ActivityState], the cache decision stated there). The actual BLE file transfer is
+ * on-device-pending; the headless fetch→parse→publish logic is unit-tested.
  */
 class ServiceActivitySource(context: Context) : ActivitySource {
     private val appContext = context.applicationContext
 
-    // Until the fetch→parse pipeline is wired, the data is always empty. Kept as a StateFlow so
-    // the wiring WP can simply push real parsed data here without touching the ViewModel.
-    private val _data = MutableStateFlow(ActivityChartData.EMPTY)
-    override val data: Flow<ActivityChartData> = _data.asStateFlow()
+    /** Live parsed data from the process-wide holder the service publishes into. */
+    override val data: Flow<ActivityChartData> = ActivityState.data
 
     override fun refresh(): Boolean {
-        // Poke the existing sync-on-connect path. The dedicated activity-file read + parse
-        // (BLE read of the activity file → ActivityParser.parse → SleepActivityAdapter, then
-        // push into [_data]) is a later WP and not added here (no new wire behavior, no invented
-        // bytes, no DB).
-        WatchConnectionService.syncNow(appContext)
+        // WP-ACTIVITY: drive the real activity-file read on the WP3 service's ble-worker. The
+        // result is parsed via [ActivityFetcher] and published into [ActivityState], which [data]
+        // observes (so the UI updates when the transfer completes). No invented wire bytes.
+        WatchConnectionService.requestActivity(appContext, keep = false)
         return ACTIVITY_WIRED
     }
 
     companion object {
-        /** Flip to true when the activity-file read→parse pipeline is wired (later WP). */
-        const val ACTIVITY_WIRED = false
+        /** WP-ACTIVITY: the activity-file read→parse→publish pipeline is now wired. */
+        const val ACTIVITY_WIRED = true
     }
 }
