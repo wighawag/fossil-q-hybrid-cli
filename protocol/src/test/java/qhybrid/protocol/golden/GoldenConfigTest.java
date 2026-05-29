@@ -1,7 +1,7 @@
 // This file is part of fossil-q-hybrid, licensed AGPLv3.
 package qhybrid.protocol.golden;
 
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.configuration.ConfigurationPutRequest.*;
+import qhybrid.protocol.requests.fossil.configuration.ConfigurationPutRequest.*;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;

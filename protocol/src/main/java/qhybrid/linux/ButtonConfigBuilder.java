@@ -1,6 +1,6 @@
 package qhybrid.linux;
 
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.buttonconfig.ConfigPayload;
+import qhybrid.protocol.buttonconfig.ConfigPayload;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;

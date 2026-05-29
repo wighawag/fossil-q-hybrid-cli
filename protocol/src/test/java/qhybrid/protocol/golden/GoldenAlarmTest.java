@@ -1,8 +1,8 @@
 // This file is part of fossil-q-hybrid, licensed AGPLv3.
 package qhybrid.protocol.golden;
 
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.alarm.Alarm;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.alarm.AlarmsSetRequest;
+import qhybrid.protocol.requests.fossil.alarm.Alarm;
+import qhybrid.protocol.requests.fossil.alarm.AlarmsSetRequest;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;

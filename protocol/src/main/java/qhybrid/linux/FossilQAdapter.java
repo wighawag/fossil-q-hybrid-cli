@@ -1,46 +1,46 @@
 package qhybrid.linux;
 
-import android.bluetooth.BluetoothGattCharacteristic;
-import nodomain.freeyourgadget.gadgetbridge.impl.GBDevice;
-import nodomain.freeyourgadget.gadgetbridge.model.GenericItem;
-import nodomain.freeyourgadget.gadgetbridge.service.btle.TransactionBuilder;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.QHybridSupport;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.adapter.fossil.FossilWatchAdapter;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.buttonconfig.ConfigFileBuilder;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.buttonconfig.ConfigPayload;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.file.FileHandle;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.Request;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.FossilRequest;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.RequestMtuRequest;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.SetDeviceStateRequest;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.alarm.Alarm;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.alarm.AlarmsSetRequest;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.configuration.ConfigurationPutRequest;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.device_info.DeviceInfo;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.device_info.DeviceSecurityVersionInfo;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.device_info.GetDeviceInfoRequest;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.device_info.SupportedFileVersionsInfo;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.file.FileDeleteRequest;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.file.FileLookupAndGetRequest;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.file.FilePutRequest;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.file.FilePutRawRequest;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.notification.NotificationFilterPutRequest;
-import nodomain.freeyourgadget.gadgetbridge.devices.qhybrid.NotificationConfiguration;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.misfit.AnimationRequest;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.misfit.GetCurrentStepCountRequest;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.misfit.GetStepGoalRequest;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.misfit.GetVibrationStrengthRequest;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.misfit.MoveHandsRequest;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.misfit.PlayNotificationRequest;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.misfit.ReleaseHandsControlRequest;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.misfit.RequestHandControlRequest;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.misfit.SaveCalibrationRequest;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.misfit.SetStepGoalRequest;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.misfit.SetTimeRequest;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.misfit.SetVibrationStrengthRequest;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.misfit.ActivityPointGetRequest;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.misfit.SetCurrentStepCountRequest;
-import nodomain.freeyourgadget.gadgetbridge.util.GB;
+
+import qhybrid.protocol.model.DeviceState;
+import qhybrid.protocol.model.DeviceInfoItem;
+
+
+import qhybrid.protocol.FossilWatchAdapter;
+import qhybrid.protocol.buttonconfig.ConfigFileBuilder;
+import qhybrid.protocol.buttonconfig.ConfigPayload;
+import qhybrid.protocol.file.FileHandle;
+import qhybrid.protocol.requests.Request;
+import qhybrid.protocol.requests.fossil.FossilRequest;
+import qhybrid.protocol.requests.fossil.RequestMtuRequest;
+import qhybrid.protocol.requests.fossil.SetDeviceStateRequest;
+import qhybrid.protocol.requests.fossil.alarm.Alarm;
+import qhybrid.protocol.requests.fossil.alarm.AlarmsSetRequest;
+import qhybrid.protocol.requests.fossil.configuration.ConfigurationPutRequest;
+import qhybrid.protocol.requests.fossil.device_info.DeviceInfo;
+import qhybrid.protocol.requests.fossil.device_info.DeviceSecurityVersionInfo;
+import qhybrid.protocol.requests.fossil.device_info.GetDeviceInfoRequest;
+import qhybrid.protocol.requests.fossil.device_info.SupportedFileVersionsInfo;
+import qhybrid.protocol.requests.fossil.file.FileDeleteRequest;
+import qhybrid.protocol.requests.fossil.file.FileLookupAndGetRequest;
+import qhybrid.protocol.requests.fossil.file.FilePutRequest;
+import qhybrid.protocol.requests.fossil.file.FilePutRawRequest;
+import qhybrid.protocol.requests.fossil.notification.NotificationFilterPutRequest;
+import qhybrid.protocol.requests.fossil.notification.NotificationConfiguration;
+import qhybrid.protocol.requests.misfit.AnimationRequest;
+import qhybrid.protocol.requests.misfit.GetCurrentStepCountRequest;
+import qhybrid.protocol.requests.misfit.GetStepGoalRequest;
+import qhybrid.protocol.requests.misfit.GetVibrationStrengthRequest;
+import qhybrid.protocol.requests.misfit.MoveHandsRequest;
+import qhybrid.protocol.requests.misfit.PlayNotificationRequest;
+import qhybrid.protocol.requests.misfit.ReleaseHandsControlRequest;
+import qhybrid.protocol.requests.misfit.RequestHandControlRequest;
+import qhybrid.protocol.requests.misfit.SaveCalibrationRequest;
+import qhybrid.protocol.requests.misfit.SetStepGoalRequest;
+import qhybrid.protocol.requests.misfit.SetTimeRequest;
+import qhybrid.protocol.requests.misfit.SetVibrationStrengthRequest;
+import qhybrid.protocol.requests.misfit.ActivityPointGetRequest;
+import qhybrid.protocol.requests.misfit.SetCurrentStepCountRequest;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -68,9 +68,15 @@ public class FossilQAdapter {
     private static final UUID UUID_MODEL          = UUID.fromString("00002a24-0000-1000-8000-00805f9b34fb");
 
     private final BleTransport transport;
-    private final GBDevice device;
-    private final QHybridSupport shimSupport;
-    private final FossilWatchAdapter shimAdapter;
+    // Owned lightweight device state (replaces the former GBDevice shim).
+    private volatile DeviceState deviceState = DeviceState.NOT_CONNECTED;
+    private final java.util.Map<String, String> deviceInfos = new java.util.concurrent.ConcurrentHashMap<>();
+    private void setDeviceState(DeviceState s) { this.deviceState = s; }
+    public DeviceState getDeviceState() { return deviceState; }
+    private void addDeviceInfo(DeviceInfoItem item) { deviceInfos.put(item.getName(), item.getDetails()); }
+    public String getDeviceInfo(String key) { return deviceInfos.get(key); }
+    
+    private final FossilWatchAdapter fossilAdapter;
 
     private boolean useFossilProtocol = false;
     private String firmwareVersion;
@@ -132,13 +138,11 @@ public class FossilQAdapter {
 
     public FossilQAdapter(BleTransport transport) {
         this.transport = transport;
-        this.device = new GBDevice();
-        this.shimSupport = new QHybridSupport(transport, device);
-        this.shimAdapter = new FossilWatchAdapter(shimSupport);
+                        this.fossilAdapter = new FossilWatchAdapter(transport);
 
         // Wire up queueWrite delegate: vendored request classes call
         // adapter.queueWrite(FossilRequest, boolean) which hits this
-        this.shimAdapter.setQueueWriteDelegate(this::queueWrite);
+        this.fossilAdapter.setQueueWriteDelegate(this::queueWrite);
 
         // Set up BLE notification callback
         transport.setNotificationCallback(this::onCharacteristicChanged);
@@ -180,14 +184,12 @@ public class FossilQAdapter {
         byte[] batteryData = transport.readCharacteristic(UUID_BATTERY);
         if (batteryData != null && batteryData.length > 0) {
             batteryLevel = batteryData[0] & 0xFF;
-            device.setBatteryLevel(batteryLevel);
             LOG.info("Battery: {}%", batteryLevel);
         }
 
         byte[] fwData = transport.readCharacteristic(UUID_FIRMWARE);
         if (fwData != null) {
             firmwareVersion = new String(fwData).trim();
-            device.setFirmwareVersion(firmwareVersion);
             LOG.info("Firmware: {}", firmwareVersion);
         }
 
@@ -228,7 +230,7 @@ public class FossilQAdapter {
 
     public void syncTime() {
         if (useFossilProtocol) {
-            queueWrite(new ConfigurationPutRequest(generateTimeConfigItem(), shimAdapter), false);
+            queueWrite(new ConfigurationPutRequest(generateTimeConfigItem(), fossilAdapter), false);
         } else {
             sendMisfitRequest(prepareSetTimeRequest());
         }
@@ -249,7 +251,7 @@ public class FossilQAdapter {
                 (short) minDeg, (short) hourDeg, (short) -1, vibration);
         config.setPackageName(packageName);
         queueWrite(new NotificationFilterPutRequest(
-                new NotificationConfiguration[]{config}, shimAdapter), false);
+                new NotificationConfiguration[]{config}, fossilAdapter), false);
     }
 
     /**
@@ -278,7 +280,7 @@ public class FossilQAdapter {
         byte[] filter = buildNotificationFilterData(packageName, vibePattern, hourDeg, minDeg);
         LOG.info("Uploading notification filter: vibe={} (0x{}), hands={}°/{}°",
                 vibePattern, String.format("%02X", vibePattern), hourDeg, minDeg);
-        queueWrite(new FilePutRequest(FileHandle.NOTIFICATION_FILTER, filter, shimAdapter) {
+        queueWrite(new FilePutRequest(FileHandle.NOTIFICATION_FILTER, filter, fossilAdapter) {
             @Override
             public void onFilePut(boolean success) {
                 LOG.info("Notification filter (vibe={}, hands={}°/{}°) sync: {}",
@@ -333,7 +335,7 @@ public class FossilQAdapter {
         }
 
         final int count = entries.size();
-        queueWrite(new FilePutRequest(FileHandle.NOTIFICATION_FILTER, filter, shimAdapter) {
+        queueWrite(new FilePutRequest(FileHandle.NOTIFICATION_FILTER, filter, fossilAdapter) {
             @Override
             public void onFilePut(boolean success) {
                 LOG.info("Notification filter ({} entries) sync: {}",
@@ -356,7 +358,7 @@ public class FossilQAdapter {
         byte[] notifData = buildOfficialNotificationFile(
                 "Notification", "fossil-q", "Notification", packageName);
         queueWrite(new FilePutRequest(
-                FileHandle.NOTIFICATION_PLAY, notifData, shimAdapter), false);
+                FileHandle.NOTIFICATION_PLAY, notifData, fossilAdapter), false);
     }
 
     /**
@@ -435,7 +437,7 @@ public class FossilQAdapter {
             byte[] notifData = buildOfficialNotificationFile(
                     "Notification", "fossil-q", "Notification");
             queueWrite(new FilePutRequest(
-                    FileHandle.NOTIFICATION_PLAY, notifData, shimAdapter), false);
+                    FileHandle.NOTIFICATION_PLAY, notifData, fossilAdapter), false);
 
             // Note: if auth handshake was completed during init, the lbl=12 file
             // above is sufficient — the watch will vibrate AND move hands per the
@@ -478,7 +480,7 @@ public class FossilQAdapter {
         byte[] notifData = buildOfficialNotificationFile(
                 "Notification", "fossil-q", "Notification");
         queueWrite(new FilePutRequest(
-                FileHandle.NOTIFICATION_PLAY, notifData, shimAdapter), false);
+                FileHandle.NOTIFICATION_PLAY, notifData, fossilAdapter), false);
     }
 
     private long getVibrationDuration(PlayNotificationRequest.VibrationType vibration) {
@@ -507,7 +509,7 @@ public class FossilQAdapter {
             LOG.warn("Alarms not supported on Misfit protocol firmware");
             return;
         }
-        queueWrite(new AlarmsSetRequest(alarms, shimAdapter) {
+        queueWrite(new AlarmsSetRequest(alarms, fossilAdapter) {
             @Override
             public void onFilePut(boolean success) {
                 super.onFilePut(success);
@@ -527,7 +529,7 @@ public class FossilQAdapter {
             return;
         }
         LOG.info("Setting {} alarm(s), file size {} bytes", alarms.length, alarms.length * 3);
-        queueWrite(new AlarmsSetRequest(alarms, shimAdapter) {
+        queueWrite(new AlarmsSetRequest(alarms, fossilAdapter) {
             private boolean errorOccurred = false;
 
             @Override
@@ -538,9 +540,9 @@ public class FossilQAdapter {
             }
 
             @Override
-            public void handleResponse(BluetoothGattCharacteristic characteristic, byte[] value) {
+            public void handleResponse(java.util.UUID uuid, byte[] value) {
                 try {
-                    super.handleResponse(characteristic, value);
+                    super.handleResponse(uuid, value);
                 } catch (RuntimeException e) {
                     LOG.warn("Alarm upload error: {}", e.getMessage());
                     errorOccurred = true;
@@ -567,7 +569,7 @@ public class FossilQAdapter {
             result.complete(new Alarm[0]);
             return;
         }
-        queueWrite(new FileLookupAndGetRequest(FileHandle.ALARMS, shimAdapter) {
+        queueWrite(new FileLookupAndGetRequest(FileHandle.ALARMS, fossilAdapter) {
             private boolean errorOccurred = false;
 
             @Override
@@ -608,9 +610,9 @@ public class FossilQAdapter {
             }
 
             @Override
-            public void handleResponse(BluetoothGattCharacteristic characteristic, byte[] value) {
+            public void handleResponse(java.util.UUID uuid, byte[] value) {
                 try {
-                    super.handleResponse(characteristic, value);
+                    super.handleResponse(uuid, value);
                 } catch (RuntimeException e) {
                     LOG.warn("Alarm read failed: {}", e.getMessage());
                     errorOccurred = true;
@@ -637,7 +639,7 @@ public class FossilQAdapter {
             return;
         }
         LOG.info("Setting raw alarm data: {} bytes (hex: {})", rawAlarmData.length, bytesToHex(rawAlarmData));
-        queueWrite(new FilePutRequest(FileHandle.ALARMS, rawAlarmData, shimAdapter) {
+        queueWrite(new FilePutRequest(FileHandle.ALARMS, rawAlarmData, fossilAdapter) {
             private boolean errorOccurred = false;
 
             @Override
@@ -648,9 +650,9 @@ public class FossilQAdapter {
             }
 
             @Override
-            public void handleResponse(BluetoothGattCharacteristic characteristic, byte[] value) {
+            public void handleResponse(java.util.UUID uuid, byte[] value) {
                 try {
-                    super.handleResponse(characteristic, value);
+                    super.handleResponse(uuid, value);
                 } catch (RuntimeException e) {
                     LOG.warn("Raw alarm upload error: {}", e.getMessage());
                     errorOccurred = true;
@@ -689,7 +691,7 @@ public class FossilQAdapter {
             return;
         }
 
-        queueWrite(new FileLookupAndGetRequest(FileHandle.ACTIVITY_FILE, shimAdapter) {
+        queueWrite(new FileLookupAndGetRequest(FileHandle.ACTIVITY_FILE, fossilAdapter) {
             @Override
             public void handleFileData(byte[] fileData) {
                 LOG.info("Received activity data: {} bytes", fileData.length);
@@ -721,7 +723,7 @@ public class FossilQAdapter {
     public void setStepGoal(int steps) {
         if (useFossilProtocol) {
             queueWrite(new ConfigurationPutRequest(
-                    new ConfigurationPutRequest.DailyStepGoalConfigItem(steps), shimAdapter) {
+                    new ConfigurationPutRequest.DailyStepGoalConfigItem(steps), fossilAdapter) {
                 @Override
                 public void onFilePut(boolean success) {
                     LOG.info("Step goal set to {}: {}", steps, success ? "success" : "FAILED");
@@ -762,7 +764,7 @@ public class FossilQAdapter {
     public void setStepCount(int steps) {
         if (useFossilProtocol) {
             queueWrite(new ConfigurationPutRequest(
-                    new ConfigurationPutRequest.CurrentStepCountConfigItem(steps), shimAdapter) {
+                    new ConfigurationPutRequest.CurrentStepCountConfigItem(steps), fossilAdapter) {
                 @Override
                 public void onFilePut(boolean success) {
                     LOG.info("Step count set to {}: {}", steps, success ? "success" : "FAILED");
@@ -776,7 +778,7 @@ public class FossilQAdapter {
     public void setVibrationStrength(short strength) {
         if (useFossilProtocol) {
             queueWrite(new ConfigurationPutRequest(
-                    new ConfigurationPutRequest.VibrationStrengthConfigItem((byte) strength), shimAdapter), false);
+                    new ConfigurationPutRequest.VibrationStrengthConfigItem((byte) strength), fossilAdapter), false);
         } else {
             sendMisfitRequest(new SetVibrationStrengthRequest(strength));
         }
@@ -796,7 +798,7 @@ public class FossilQAdapter {
                         (int) (millis / 1000),
                         (short) (millis % 1000),
                         minutes),
-                shimAdapter), false);
+                fossilAdapter), false);
     }
 
     /**
@@ -818,7 +820,7 @@ public class FossilQAdapter {
                 new ConfigurationPutRequest.GenericConfigItem<>((short) 0x17, target),
                 new ConfigurationPutRequest.GenericConfigItem<>((short) 0x18, current)
         };
-        queueWrite(new ConfigurationPutRequest(items, shimAdapter) {
+        queueWrite(new ConfigurationPutRequest(items, fossilAdapter) {
             @Override
             public void onFilePut(boolean success) {
                 LOG.info("Goal config (target={}, current={}): {}", target, current, success ? "success" : "FAILED");
@@ -842,7 +844,7 @@ public class FossilQAdapter {
         }
         queueWrite(new ConfigurationPutRequest(
                 new ConfigurationPutRequest.TimezoneOffsetConfigItem(offsetMinutes),
-                shimAdapter), false);
+                fossilAdapter), false);
     }
 
     /**
@@ -866,7 +868,7 @@ public class FossilQAdapter {
         queueWrite(new ConfigurationPutRequest(
                 new ConfigurationPutRequest.InactivityWarningItem(
                         fromHour, fromMinute, toHour, toMinute, inactiveMinutes, enabled),
-                shimAdapter) {
+                fossilAdapter) {
             @Override
             public void onFilePut(boolean success) {
                 if (enabled) {
@@ -899,7 +901,7 @@ public class FossilQAdapter {
             LOG.warn("Button config not supported on Misfit protocol firmware");
             return;
         }
-        queueWrite(new FilePutRequest(FileHandle.SETTINGS_BUTTONS, buttonConfigFile, shimAdapter) {
+        queueWrite(new FilePutRequest(FileHandle.SETTINGS_BUTTONS, buttonConfigFile, fossilAdapter) {
             @Override
             public void onFilePut(boolean success) {
                 LOG.info("Button config: {}", success ? "success" : "FAILED");
@@ -927,7 +929,7 @@ public class FossilQAdapter {
         byte[] file = ButtonConfigBuilder.build(topEntries, midEntries, botEntries);
         LOG.info("Button config file: {} bytes (multi-entry: top={}, mid={}, bot={})",
                 file.length, topEntries.length, midEntries.length, botEntries.length);
-        queueWrite(new FilePutRequest(FileHandle.SETTINGS_BUTTONS, file, shimAdapter) {
+        queueWrite(new FilePutRequest(FileHandle.SETTINGS_BUTTONS, file, fossilAdapter) {
             @Override
             public void onFilePut(boolean success) {
                 LOG.info("Button config (multi-entry): {}", success ? "success" : "FAILED");
@@ -985,7 +987,7 @@ public class FossilQAdapter {
         byte[] payload = buf.array();
         LOG.info("Hand animation payload: {} bytes, {} command bytes", payload.length, commands.length);
 
-        queueWrite(new FilePutRequest(FileHandle.HAND_ACTIONS, payload, shimAdapter) {
+        queueWrite(new FilePutRequest(FileHandle.HAND_ACTIONS, payload, fossilAdapter) {
             @Override
             public void onFilePut(boolean success) {
                 LOG.info("Hand animation: {}", success ? "success" : "FAILED");
@@ -1021,7 +1023,7 @@ public class FossilQAdapter {
     public void findDevice() {
         // Use call vibration characteristic
         try {
-            shimSupport.createTransactionBuilder("vibrate call")
+            fossilAdapter.getDeviceSupport().createWriteBatch("vibrate call")
                     .write(UUID_CHAR_CALL,
                             (byte) 0x01, (byte) 0x04, (byte) 0x30, (byte) 0x75,
                             (byte) 0x00, (byte) 0x00)
@@ -1033,7 +1035,7 @@ public class FossilQAdapter {
 
     public void stopFindDevice() {
         try {
-            shimSupport.createTransactionBuilder("stop call vibration")
+            fossilAdapter.getDeviceSupport().createWriteBatch("stop call vibration")
                     .write(UUID_CHAR_CALL,
                             (byte) 0x02, (byte) 0x05, (byte) 0x04)
                     .queue();
@@ -1069,7 +1071,7 @@ public class FossilQAdapter {
         // instead of ConfigurationGetRequest (type 0x01, direct file get).
         // Direct file get returns INVALID_OPERATION_DATA on HW.0.0 firmware.
         // File lookup works (same approach as activity fetch).
-        queueWrite(new FileLookupAndGetRequest(FileHandle.CONFIGURATION, shimAdapter) {
+        queueWrite(new FileLookupAndGetRequest(FileHandle.CONFIGURATION, fossilAdapter) {
             private boolean errorOccurred = false;
 
             @Override
@@ -1104,9 +1106,9 @@ public class FossilQAdapter {
             }
 
             @Override
-            public void handleResponse(BluetoothGattCharacteristic characteristic, byte[] value) {
+            public void handleResponse(java.util.UUID uuid, byte[] value) {
                 try {
-                    super.handleResponse(characteristic, value);
+                    super.handleResponse(uuid, value);
                 } catch (RuntimeException e) {
                     LOG.warn("Config read failed: {}", e.getMessage());
                     errorOccurred = true;
@@ -1406,7 +1408,7 @@ public class FossilQAdapter {
 
     private void initFossilProtocol() {
         LOG.info("Initializing Fossil protocol ({})...", fullInit ? "full" : "minimal");
-        device.setState(GBDevice.State.INITIALIZING);
+        setDeviceState(DeviceState.INITIALIZING);
 
         // 1. Pairing animation (full init only — cosmetic)
         if (fullInit) {
@@ -1417,20 +1419,20 @@ public class FossilQAdapter {
         queueWrite(new RequestMtuRequest(512), false);
 
         // 3. Get device info (file versions, security version)
-        queueWrite(new GetDeviceInfoRequest(shimAdapter) {
+        queueWrite(new GetDeviceInfoRequest(fossilAdapter) {
             @Override
             public void handleDeviceInfos(DeviceInfo[] deviceInfos) {
                 for (DeviceInfo info : deviceInfos) {
                     if (info instanceof SupportedFileVersionsInfo) {
                         SupportedFileVersionsInfo supportedVersions = (SupportedFileVersionsInfo) info;
-                        // Store all supported file versions in shimAdapter
+                        // Store all supported file versions in fossilAdapter
                         // so FilePutRequest/FileGetRequest use correct versions
                         for (FileHandle fh : FileHandle.values()) {
                             try {
                                 short version = supportedVersions.getSupportedFileVersion(fh);
                                 LOG.debug("File handle {} (0x{}) → version {}", fh, String.format("%02X", fh.getMajorHandle() & 0xFF), version);
                                 if (version != 0) {
-                                    shimAdapter.setSupportedFileVersion(fh.getMajorHandle(), version);
+                                    fossilAdapter.setSupportedFileVersion(fh.getMajorHandle(), version);
                                 }
                             } catch (NullPointerException e) {
                                 // Handle not in supported versions map — skip
@@ -1439,7 +1441,7 @@ public class FossilQAdapter {
                         }
                         LOG.info("Got supported file versions");
                     } else if (info instanceof DeviceSecurityVersionInfo) {
-                        device.addDeviceInfo(new GenericItem("DEVICE_SECURITY_VERSION", info.toString()));
+                        addDeviceInfo(new DeviceInfoItem("DEVICE_SECURITY_VERSION", info.toString()));
                     }
                 }
 
@@ -1459,7 +1461,7 @@ public class FossilQAdapter {
                         }
 
                         // 7. Set initialized
-                        device.setState(GBDevice.State.INITIALIZED);
+                        setDeviceState(DeviceState.INITIALIZED);
                         LOG.info("Watch initialized (Fossil protocol)");
                         if (onInitialized != null) onInitialized.run();
                     } catch (Exception e) {
@@ -1633,7 +1635,7 @@ public class FossilQAdapter {
                 stepGoal, vibrationStrength & 0xFF,
                 secondTz != null ? secondTz : "disabled");
         queueWrite(new ConfigurationPutRequest(
-                items.toArray(new ConfigurationPutRequest.ConfigItem[0]), shimAdapter) {
+                items.toArray(new ConfigurationPutRequest.ConfigItem[0]), fossilAdapter) {
             @Override
             public void onFilePut(boolean success) {
                 LOG.info("Config sync (stepGoal={}, vibeStrength={}): {}",
@@ -1762,7 +1764,7 @@ public class FossilQAdapter {
 
     private void initMisfitProtocol() {
         LOG.info("Initializing Misfit protocol...");
-        device.setState(GBDevice.State.INITIALIZING);
+        setDeviceState(DeviceState.INITIALIZING);
 
         // Misfit protocol: queue requests, then trigger the queue by sending a request
         // that expects a response
@@ -1774,7 +1776,7 @@ public class FossilQAdapter {
         sendMisfitRequest(new SetCurrentStepCountRequest(0));
         sendMisfitRequest(new GetCurrentStepCountRequest());
 
-        device.setState(GBDevice.State.INITIALIZED);
+        setDeviceState(DeviceState.INITIALIZED);
         LOG.info("Watch initialized (Misfit protocol)");
         if (onInitialized != null) onInitialized.run();
     }
@@ -1817,7 +1819,7 @@ public class FossilQAdapter {
     // ========== Misfit protocol: simple request send ==========
 
     private void sendMisfitRequest(Request request) {
-        shimSupport.createTransactionBuilder(request.getClass().getSimpleName())
+        fossilAdapter.getDeviceSupport().createWriteBatch(request.getClass().getSimpleName())
                 .write(request.getRequestUUID(), request.getRequestData())
                 .queue();
     }
@@ -1826,7 +1828,7 @@ public class FossilQAdapter {
 
     /**
      * Queue a FossilRequest. This is also the delegate target for
-     * shimAdapter.queueWrite(FossilRequest, boolean).
+     * fossilAdapter.queueWrite(FossilRequest, boolean).
      */
     public void queueWrite(FossilRequest request, boolean prioritise) {
         if (!transport.isConnected()) {
@@ -1846,7 +1848,7 @@ public class FossilQAdapter {
             }
             LOG.debug("Handling RequestMtuRequest (BlueZ auto-negotiates)");
             mtu = transport.getMtu();
-            shimAdapter.setMTU(mtu);
+            fossilAdapter.setMTU(mtu);
             ((RequestMtuRequest) request).setFinished(true);
             LOG.debug("MTU set to {}", mtu);
             queueNextRequest();
@@ -1855,9 +1857,9 @@ public class FossilQAdapter {
 
         // Special handling for SetDeviceStateRequest — no BLE write needed
         if (request instanceof SetDeviceStateRequest) {
-            GBDevice.State state = ((SetDeviceStateRequest) request).getDeviceState();
+            DeviceState state = ((SetDeviceStateRequest) request).getDeviceState();
             LOG.debug("Setting device state: {}", state);
-            device.setState(state);
+            setDeviceState(state);
             queueNextRequest();
             return;
         }
@@ -1897,7 +1899,7 @@ public class FossilQAdapter {
         restartTimeout();
         currentFossilRequest = request;
 
-        shimSupport.createTransactionBuilder(request.getClass().getSimpleName())
+        fossilAdapter.getDeviceSupport().createWriteBatch(request.getClass().getSimpleName())
                 .write(request.getRequestUUID(), request.getRequestData())
                 .queue();
 
@@ -1916,7 +1918,7 @@ public class FossilQAdapter {
             }
             Request next = requestQueue.remove(0);
             if (next instanceof SetDeviceStateRequest) {
-                device.setState(((SetDeviceStateRequest) next).getDeviceState());
+                setDeviceState(((SetDeviceStateRequest) next).getDeviceState());
                 queueNextRequest();
             } else if (next instanceof FossilRequest) {
                 executeRequest((FossilRequest) next);
@@ -1988,11 +1990,8 @@ public class FossilQAdapter {
         }
 
         boolean requestFinished;
-        // Use the 3-arg constructor (UUID, properties, permissions) so this resolves
-        // identically against the JVM stub and the REAL Android BluetoothGattCharacteristic.
-        // (Real Android has no 1-arg UUID constructor.) The request handlers only call
-        // characteristic.getUuid(), so properties/permissions are irrelevant here.
-        BluetoothGattCharacteristic characteristic = new BluetoothGattCharacteristic(uuid, 0, 0);
+        // Re-owned protocol: request handlers take the characteristic UUID directly
+        // (no android.bluetooth.BluetoothGattCharacteristic). They only need getUuid().
         try {
             if (uuidStr.equals("3dda0003-957f-7d4a-34a6-74696673696d")) {
                 byte requestType = (byte) (value[0] & 0x0F);
@@ -2005,7 +2004,7 @@ public class FossilQAdapter {
                 }
             }
 
-            currentFossilRequest.handleResponse(characteristic, value);
+            currentFossilRequest.handleResponse(uuid, value);
             requestFinished = currentFossilRequest.isFinished();
         } catch (RuntimeException e) {
             LOG.error("Error handling response for {}", currentFossilRequest.getName(), e);
@@ -2311,7 +2310,7 @@ public class FossilQAdapter {
     private void onMtuChanged(int newMtu) {
         LOG.info("MTU changed: {}", newMtu);
         this.mtu = newMtu;
-        shimAdapter.setMTU(newMtu);
+        fossilAdapter.setMTU(newMtu);
 
         // If we're waiting for an MTU request to complete, mark it finished
         if (currentFossilRequest instanceof RequestMtuRequest) {

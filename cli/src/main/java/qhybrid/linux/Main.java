@@ -1,8 +1,8 @@
 package qhybrid.linux;
 
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.buttonconfig.ConfigPayload;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.fossil.alarm.Alarm;
-import nodomain.freeyourgadget.gadgetbridge.service.devices.qhybrid.requests.misfit.PlayNotificationRequest.VibrationType;
+import qhybrid.protocol.buttonconfig.ConfigPayload;
+import qhybrid.protocol.requests.fossil.alarm.Alarm;
+import qhybrid.protocol.requests.misfit.PlayNotificationRequest.VibrationType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import picocli.CommandLine;
