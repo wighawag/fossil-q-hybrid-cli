@@ -445,6 +445,33 @@ now 36 total (22 prior + 14), 0 failures. `./fossil-q --help` unchanged;
 
 ## WP9 — Calendar → Alarm Mapping (pure)
 
+**Status:** ✅ DONE & VERIFIED (JVM, no hardware). Pure helper added to `:protocol`:
+`qhybrid.protocol.requests.fossil.alarm.CalendarAlarmMapper` (alongside WP5's
+`AlarmSlot`/`AlarmCompiler`). 13 new tests (`Wp9CalendarAlarmMapperTest`) green;
+`:protocol:test` now 49 total (36 prior + 13), 0 failures. `./fossil-q --help`
+unchanged; `:android:assembleDebug` succeeds. No protocol wire bytes / `AlarmSlot` /
+`AlarmCompiler` output / `BleTransport` / `AndroidBleTransport.kt` / WP3 service touched.
+
+- **Placement:** pure helper in `:protocol` (only `java.time` + slf4j-free). WP9
+  PRODUCES `AlarmSlot` objects that WP5's `AlarmCompiler` compiles 1:1. No Android
+  calendar APIs (that is WP13, which will feed `(title, DTSTART)` pairs in).
+- **Entry point (time injected, no system clock):**
+  `CalendarAlarmMapper.mapEventsToAlarmSlots(List<CalendarEvent>, long nowEpochMillis, ZoneId zone)`.
+  `CalendarEvent` = `(String title, long startEpochMillis)`. Local weekday/hour/minute
+  computed via `Instant.atZone(zone)`, so DST/offset is handled by `java.time` and
+  tests pass a fixed `now` + `ZoneId` for determinism.
+- **Pipeline:** filter to `[now, now + 7 days)` (half-open) → de-dup on wire identity
+  `(daysMask, hour, minute)` (earliest-start wins, tie-break title then original index)
+  → sort by start → take nearest ≤16 → assign slots 16, 17, … → emit non-repeating,
+  enabled `AlarmSlot`s.
+- **Weekday → daysMask:** 1:1 wire bits (bit0=Sun..bit6=Sat; bit3=Wed, bit4=Thu per
+  FINDINGS #12), NO translation — same convention as WP5. Friday → bit5 (`0x20`), which
+  `AlarmCompiler.encode` turns into `[0xA0][min][hour]` (acceptance: Fri 10:15 → `A0 0F 0A`).
+
+> **CLI FOLLOW-UP (not part of this WP — do later):** wire `CalendarAlarmMapper`
+> into the `:cli` `alarm` command so the CLI can drive calendar→alarm slots 16–31
+> too, reusing this same pure helper (pair with the WP5 CLI follow-up).
+
 **Goal:** Pure function turning a list of `(title, startEpochMillis)` events into ≤16 non-repeating weekday alarm domain objects for slots 16–31.
 
 **Scope:**
