@@ -5,6 +5,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -165,10 +167,20 @@ open class SettingsViewModel(
         appSettings.value = appSettings.value.copy(preferredMusicApp = normalized)
     }
 
-    /** Load the installed-app list for the music picker (reuses the WP16c provider). */
+    /**
+     * Load the installed-app list for the music picker (reuses the WP16c provider).
+     *
+     * The production [InstalledAppsProvider] enumerates EVERY launcher app and loads each icon via
+     * `PackageManager` — a heavy, blocking call that must NEVER run on the main thread (it ANRs
+     * the UI). [coroutineScope] is the Main-dispatched `viewModelScope` in production, so the
+     * query is moved onto [Dispatchers.IO]; only the resulting list assignment hops back. Idempotent
+     * — skips the work if the list is already loaded.
+     */
     fun loadInstalledApps() {
+        if (installedApps.value.isNotEmpty()) return
         coroutineScope.launch {
-            installedApps.value = appsProvider.installedApps()
+            val apps = withContext(Dispatchers.IO) { appsProvider.installedApps() }
+            installedApps.value = apps
         }
     }
 
