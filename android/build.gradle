@@ -72,6 +72,8 @@ dependencies {
     // WP3: StateFlow connection-state holder + lifecycle-aware collection in Compose.
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
     implementation 'androidx.lifecycle:lifecycle-runtime-compose:2.8.7'
+    // WP16a: ViewModel + viewModel() factory in Compose for the Dashboard.
+    implementation 'androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7'
 
     // WP4: Room persistence (multi-watch + clone/transfer). Pure data layer, no BLE.
     implementation 'androidx.room:room-runtime:2.6.1'

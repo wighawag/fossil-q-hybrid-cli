@@ -28,6 +28,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -44,6 +45,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import qhybrid.android.dashboard.DashboardScreen
 import qhybrid.android.debug.DebugMenu
 import qhybrid.android.debug.DebugMenuScreen
 import androidx.compose.ui.Modifier
@@ -101,13 +103,25 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun AppScaffold() {
         var showDebug by remember { mutableStateOf(false) }
+        // WP16a: the Dashboard is the home content; the WP3 setup flow (permissions /
+        // CDM associate / battery exemption) moves behind a top-right gear so it stays
+        // reachable for first-run pairing without cluttering the dashboard.
+        var showSetup by remember { mutableStateOf(false) }
+        val title = when {
+            showDebug -> "Debug Menu"
+            showSetup -> "Setup"
+            else -> "Fossil Q"
+        }
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { Text(if (showDebug) "Debug Menu" else "Fossil Q") },
+                    title = { Text(title) },
                     actions = {
+                        IconButton(onClick = { showSetup = !showSetup; showDebug = false }) {
+                            Icon(Icons.Filled.Settings, contentDescription = "Setup")
+                        }
                         if (DebugMenu.isEnabled()) {
-                            IconButton(onClick = { showDebug = !showDebug }) {
+                            IconButton(onClick = { showDebug = !showDebug; showSetup = false }) {
                                 Icon(Icons.Filled.Build, contentDescription = "Debug menu")
                             }
                         }
@@ -116,7 +130,11 @@ class MainActivity : ComponentActivity() {
             },
         ) { padding ->
             Box(modifier = Modifier.padding(padding)) {
-                if (showDebug && DebugMenu.isEnabled()) DebugMenuScreen() else HomeScreen()
+                when {
+                    showDebug && DebugMenu.isEnabled() -> DebugMenuScreen()
+                    showSetup -> HomeScreen()
+                    else -> DashboardScreen()
+                }
             }
         }
     }

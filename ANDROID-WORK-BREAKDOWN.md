@@ -780,6 +780,75 @@ same `LogRingBuffer` for a CLI `logs` command.
 
 ## WP16 — Compose UI Screens
 
+> **WP16a STATUS:** ✅ DONE & VERIFIED (provable core JVM/Robolectric-tested; UI builds +
+> lint-passes; live rendering + Find Watch choreography flagged on-device-pending). Follows
+> the proven WP15 two-layer pattern: a unit-tested state holder + an Android UI layer that
+> compiles and lint-passes.
+>
+> **(1) Provable core (`qhybrid.android.dashboard`, Robolectric + in-memory Room):**
+> - `DashboardViewModel` + `DashboardUiState` — `combine`s WP3 `WatchState.status`
+>   (live link/battery/firmware/model/mtu/message) with the WP4 `WatchRepository`
+>   active-watch row (`observeActiveWatch`) + registry (`observeWatches`) into one
+>   immutable `DashboardUiState` via `stateIn(WhileSubscribed)`. Battery/firmware/model
+>   prefer the LIVE link value and fall back to the active watch's last-known row.
+>   Derived UI helpers: `isConnected`, `isBusy` (CONNECTING/INITIALIZING/AUTH_REQUIRED),
+>   `selectedMac`. **Steps are STUBBED** (`steps = null`, `stepGoal` from the WP4 row) —
+>   live activity data is WP16f.
+> - Intents: `setActiveWatch` (→ `WatchRepository.setActiveWatch`, WP4),
+>   `connect`/`disconnect`/`sync` (→ the injectable `WatchActions` seam), and `findWatch`
+>   (phone→watch). Connect with no arg resolves the active watch's mac from the current
+>   `uiState` (no extra DB roundtrip); the service still falls back to the CDM-associated mac.
+> - `WatchActions` interface + `ServiceWatchActions` production impl forwarding 1:1 to the
+>   existing WP3 `WatchConnectionService` static entry points (`connectNow`/`disconnect`/
+>   `syncNow`). **No new BLE/protocol behavior:** `findWatch()` is a documented no-op stub
+>   (real hand-choreography / repeating-vibe trigger per ANDROID-PLAN §4.J is on-device-pending).
+> - **Tests:** `android/src/test/.../dashboard/DashboardViewModelTest.kt` (7, Robolectric +
+>   `DbTestBase` in-memory Room). State combination (live link + active watch → expected
+>   `DashboardUiState`, incl. battery/firmware/model + `mtu` + watches list + null steps);
+>   battery/firmware fall-back to the active watch row when the link has none; switching the
+>   active watch updates both the DB and the combined state; `connect()` uses the active
+>   watch's mac when unspecified and honours an explicit mac; disconnect/sync/find hit the
+>   fake; busy/connected state across CONNECTING→AUTH_REQUIRED→INITIALIZED. (The VM is given
+>   a REAL `CoroutineScope` and the combined `StateFlow` is polled with a bounded `awaitState`
+>   because Room's reactive Flows run on Room's own executor — virtual-time would not observe
+>   their re-emissions.) `:android:testDebugUnitTest` now **24 total (17 prior + 7)**, 0 failures.
+>
+> **(2) UI layer (`qhybrid.android.dashboard.DashboardScreen`, build + lint green):**
+> - `DashboardScreen()` hosts the production VM via `viewModel(factory = …)` and renders a
+>   stateless `DashboardContent(state, intents…)` (pure function of `DashboardUiState` + intent
+>   lambdas, so it is preview-/UI-testable with fake state and no VM/Room/BLE). Cards:
+>   **Connection** (link label + status message + battery/model/firmware/MTU), **Steps**
+>   (clearly-marked WP16f placeholder: `— / goal` with a 0% bar + "not wired yet" note),
+>   **Active watch** selector (`ExposedDropdownMenuBox` from `observeWatches`, emits
+>   `setActiveWatch`), and **action buttons** Connect/Disconnect/Sync + **Find Watch**
+>   (enable-gated by `isConnected`/`isBusy`; a label flags Find Watch's on-device-pending
+>   choreography).
+> - Made the app's **home content** in `MainActivity` (replacing the thin WP3 `HomeScreen`).
+>   The WP3 setup flow (permissions / CDM associate / battery exemption) moved behind a new
+>   top-right **gear (Settings)** so first-run pairing stays reachable; the **WP15 Debug gear
+>   (Build icon) is intact and still release-gated** by `DebugMenu.isEnabled()`.
+>
+> **Build/deps deltas:** added `androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7` (for
+> `viewModel()` + factory). No manifest changes.
+>
+> **Acceptance met:** `:protocol:test` 108 green (unchanged); `:android:testDebugUnitTest`
+> 24 green (17 + 7); `:android:assembleDebug` + `:android:lintDebug` succeed; `./fossil-q
+> --help` unchanged. NO change to protocol wire bytes / `BleTransport` / `AndroidBleTransport.kt`
+> / WP3 `WatchConnectionService` wire behavior (only READS `WatchState` + calls existing static
+> entry points) / WP4 repository behavior / WP15 Debug Menu gating.
+>
+> **On-device verification pending:** the Compose Dashboard rendering/scroll, the active-watch
+> dropdown interaction, the Connect/Disconnect/Sync/Find-Watch live effects, and the gear→Setup
+> / gear→Debug navigation can only be confirmed on a device. The headless half (state
+> combination + intents → right repo/fake calls) is unit-tested.
+>
+> **Follow-ups:** WP16f wires live steps/activity (WP8 parsing → DB) into `DashboardUiState.steps`;
+> real **Find Watch** choreography (phone→watch repeating notification / hand animation,
+> ANDROID-PLAN §4.J) is a later WP that adds the actual protocol trigger behind `WatchActions.findWatch`;
+> remaining screens **WP16b** (alarms), **WP16c** (notifications), **WP16d** (buttons),
+> **WP16e** (calibration), **WP16f** (sleep/activity charts), **WP16g** (settings) follow the
+> same ViewModel+StateFlow / fake-backed-test pattern.
+
 **Goal:** The user-facing screens, each backed by a ViewModel reading WP4 + WP8 and writing via the service.
 
 **Sub-parts (each independently buildable with fake data/preview):**
