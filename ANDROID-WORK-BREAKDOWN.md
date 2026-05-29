@@ -195,6 +195,42 @@ NotificationFilterEntry}` (no disk loading in :protocol). Callbacks: `onActivity
 
 ## WP2 — AndroidBleTransport (real BluetoothGatt)
 
+**Status:** ✅ DONE — HARDWARE-VERIFIED. `android/.../AndroidBleTransport.kt` is now a
+robust `BleTransport` over `BluetoothGatt`, and `MainActivity` drives the protocol through
+the `FossilController` façade (not the raw `FossilQAdapter`). Verified on a real phone:
+fresh-bond `connect → watch vibrates → TOP button → 03 06 00 01 ACCEPTED → createBond →
+INITIALIZED` in ~4.5s (all real bond-negotiation time, no dead wait); already-bonded
+fast-path `03 07 01 → INITIALIZED` with no button; clean Disconnect; reads battery 22% /
+firmware HW0.0.2.9r.v3 / model HW.0.0. `:protocol:test` (22) stays green; `./fossil-q --help`
+unchanged.
+
+**Hardening delivered over the WP0.5 first pass (all behind the `BleTransport` seam — NO
+protocol/wire-byte changes):**
+1. **Per-characteristic write-type** (FINDINGS #2): `WRITE_TYPE_NO_RESPONSE` (command) for the
+   write+notify / write-without-response chars (3dda0002/0004/0006/0007); `WRITE_TYPE_DEFAULT`
+   (request) only for the INDICATE chars (3dda0003/0005). Mirrors `BluezTransport.getWriteType()`.
+   *(WP0.5 wrongly used request for everything.)*
+2. **Connect → `STATE_CONNECTED` latch → discover with retry/backoff** (3 attempts, 250ms·n),
+   verifying the six Fossil chars resolved; clean timeout → disconnect+false.
+3. **`refreshGattCache()`** via reflective `BluetoothGatt.refresh()` — **option (b): fallback
+   only**, between failed discovery attempts, to clear a stale service cache.
+4. **Proactive `requestMtu(512)`** in `connect()` wired to `mtuCallback` (FINDINGS #5 — the
+   adapter never issues an ATT-layer MTU request itself); negotiated to 185 on this watch.
+5. **`pair()` polls `device.bondState`** (the authoritative system state) instead of the
+   `ACTION_BOND_STATE_CHANGED` broadcast. *The broadcast-receiver approach missed the BONDED
+   transition and cost a full 30s timeout AFTER the bond had already succeeded — the polling
+   version returns ~within 200ms of the real bond completing.* Short-circuits if already bonded;
+   exits early on return-to-NONE after BONDING (genuine failure).
+6. **Stale-callback guards**: each read/write op records its expected characteristic UUID; late
+   callbacks from a prior op are ignored so they can't complete the next op's latch.
+   Submission-failure (write/read/descriptor/MTU returning false) is handled, not hung.
+7. **Clean teardown**: best-effort disable notifications → `disconnect()` + `close()` → release
+   all in-flight latches → single connection-state callback (unexpected drops fire it too, so
+   out-of-range/return is visible; intentional disconnect doesn't double-fire).
+8. **`MainActivity` via `FossilController`**: auth prompt shown only when the watch actively
+   requests auth; live `Link: Connected/Disconnected` from the connection callback; Disconnect
+   button; GATT teardown on `onDestroy`.
+
 **Goal:** Implement `BleTransport` on top of Android's native `BluetoothGatt`.
 
 **Scope:**
@@ -211,7 +247,7 @@ NotificationFilterEntry}` (no disk loading in :protocol). Callbacks: `onActivity
 - Verify the auth button-press flow once (fresh bond) and once (already bonded → `03 07 01`).
 - No UI, no DB — just transport + façade.
 
-**Done when:** the test harness reliably connects, authenticates, and reports device info on real hardware.
+**Done when:** the test harness reliably connects, authenticates, and reports device info on real hardware. ✅ Met — see Status above.
 
 ---
 
