@@ -1013,6 +1013,95 @@ same `LogRingBuffer` for a CLI `logs` command.
 > (calibration), **WP16f** (sleep/activity charts), **WP16g** (settings) follow the same
 > ViewModel+StateFlow / fake-backed-test pattern.
 
+> **WP16d STATUS:** ✅ DONE & VERIFIED (provable core JVM/Robolectric-tested; UI builds +
+> lint-passes; mapping-list/editor rendering + the real button-config upload flagged
+> on-device-pending / deferred to WP14). Mirrors the proven WP16a/b/c two-layer pattern exactly:
+> a unit-tested state holder + an Android UI layer that compiles and lint-passes. Manages
+> per-button `ButtonMappingEntity` rows (modeType + dial-mode toggles + action list) for the
+> active watch.
+>
+> **DESIGN DECISION — MODEL-AGNOSTIC / FLEXIBLE:** the screen deliberately does NOT hard-code
+> per-model button counts/layouts and does NOT gate any buttonId/mode/action behind a watch-model
+> lookup table. The user can add a mapping for ANY `buttonId` (hex `0x10`/`0x20`/`0x30` … or more
+> for 5-position dials, or even arbitrary values), pick ANY mode/action, with NO count cap, and
+> remove any mapping. The protocol *does* have a model concept
+> (`ButtonCompiler.DialModel` + `availableModes`) but WP16d does not enforce it; per-hardware
+> validation that a given buttonId actually exists is **out of scope (on-device-pending / WP14)**.
+> Only the truly shared, model-independent vocabulary is centralized (modeType strings + labels,
+> dial-mode list, action catalog) — NOT a per-model button map.
+>
+> **(1) Provable core (`qhybrid.android.buttons`, Robolectric + in-memory Room):**
+> - `ButtonsViewModel` + `ButtonsUiState` — observes the WP4
+>   `WatchRepository.observeActiveWatch()` and (per active watch) `observeButtons(mac)`, **sorted
+>   by buttonId (any count)**, into one immutable `ButtonsUiState` via `flatMapLatest` +
+>   `stateIn(WhileSubscribed)` (identical structure to WP16b/c). Derived helpers: `activeMac`,
+>   `hasActiveWatch`, `buttonIds` (for duplicate-rejection). **No model-specific filtering.**
+> - Intents: `addMapping(buttonId, modeType, actionsJson)` (**rejects a duplicate buttonId** —
+>   the composite PK is [watchMac, buttonId]; we don't want a silent REPLACE — and no-ops on
+>   no-active-watch; returns a Boolean accepted/rejected; buttonId is NOT range-checked → any
+>   value allowed), `updateMapping` (→ `upsertButton`), `setMode(buttonId, modeType)`,
+>   `setActions(buttonId, actionsJson)` / `setActionList`, and `resetButton(buttonId)`
+>   (→ new single-row repo/DAO `deleteButton(mac, buttonId)`). All writes normalize the modeType
+>   and round-trip `actionsJson` through the helper so a malformed string can never be persisted.
+> - `ButtonModes` / `ButtonDialModes` / `ButtonActions` — centralized, model-agnostic vocabulary
+>   shared by VM + tests + UI so they cannot drift (discipline like `VibePatterns`/`AlarmDays`):
+>   modeType `SINGLE_ACTION`/`MUSIC_MULTIMODE`/`CUSTOM_TOGGLE` (+ labels, `usesDialModes`);
+>   dial modes `ALERT, TIMEZONE_2, ALARM, DATE, TWENTY_FOUR_HOUR` (1:1 with WP7
+>   `ButtonCompiler.DialMode`); action catalog 1:1 with WP7 `ConfigPayload` enum names
+>   (`FORWARD_TO_PHONE … RING_PHONE`, 11 entries) + human labels.
+> - `ButtonActionsJson` — small, robust encode/decode helper for the free-form `actionsJson`
+>   array. Encodes the canonical `[{"action":"…"}]` shape; **tolerates empty/blank/malformed JSON
+>   → empty list (never throws)**; also accepts a bare-string-array fallback and the WP4 DAO
+>   fixture shape. Plus `summary(...)` for the row subtitle.
+> - `ButtonSync` (interface) + `ServiceButtonSync` (production) — the injectable "Save to watch"
+>   seam (mirrors `AlarmSync`/`NotificationSync`). Production forwards to the existing WP3
+>   `WatchConnectionService.syncNow` (no new wire behavior) and returns
+>   `BUTTON_UPLOAD_WIRED=false` until WP14.
+> - Tests (`ButtonsViewModelTest`, `ButtonVocabularyTest`, + a `button_deleteSingleRow` DAO test
+>   in `CrudRoundTripTest`): mappings combine/sort at any count (incl. 5-position `0x40`/`0x50`);
+>   add inserts the given fields; **arbitrary buttonId not rejected (model-agnostic)**;
+>   duplicate-buttonId rejection (no silent REPLACE); set-mode / set-actions write the right row;
+>   malformed-JSON update persists a valid empty array; reset removes the row; save hits the fake
+>   + reports the WP14-pending flag; constants sanity (modeType/dial/action 1:1 with protocol);
+>   actionsJson encode/decode round-trip + empty/malformed tolerance + bare-string fallback.
+>   `:android:testDebugUnitTest` = **77 green** (55 prior + 22 new), 0 failures.
+>
+> **(2) UI layer (`ButtonsScreen.kt`, builds + lint-passes; behavior on-device-pending):**
+> - Stateless `ButtonsContent(state, onAdd, onUpdate, onReset, onSave)` (preview-/UI-testable
+>   with fake state, no VM/Room/BLE) + a thin `ButtonsScreen()` that wires the production VM via
+>   `ButtonsViewModel.factory(context)`. Renders the active watch's mapping list (buttonId hex
+>   label, mode label, action/dial summary), an **"Add button mapping" FAB that accepts any
+>   buttonId** (hex `0x10` or decimal), a per-mapping editor dialog with a **mode dropdown**, an
+>   **action multi-select** (SINGLE_ACTION/MUSIC_MULTIMODE) OR **dial-mode toggle chips**
+>   (CUSTOM_TOGGLE — chosen mode implies the dial UI), a **reset** per mapping, and a **Save to
+>   watch** button that surfaces the WP14-pending note when not wired.
+> - Reachable via a **4th bottom-nav tab** added to `MainActivity` (Dashboard / Alarms /
+>   Notifications / **Buttons**). Buttons tab icon = `Icons.Filled.Star` (verified on the
+>   material-icons-core classpath the way WP16c verified `Email`; extended icons are NOT on the
+>   classpath). The WP15 Debug gear stays present + release-gated; WP16a/b/c still work.
+>
+> **Did NOT touch** protocol wire bytes / `ButtonCompiler` / `ButtonConfigBuilder` /
+> `ConfigPayload` output / `BleTransport` / `AndroidBleTransport.kt` / WP3 service wire behavior
+> (only calls the existing `syncNow`) / existing WP4 repository semantics (only ADDED the
+> single-row `deleteButton`/`getButton`) / WP15 Debug Menu gating. `:protocol:test` stays at
+> **108 green**; `./fossil-q --help` unchanged; `:android:assembleDebug` + `:android:lintDebug`
+> succeed.
+>
+> **On-device verification pending:** the Compose mapping list/scroll, the add-buttonId field +
+> mode dropdown + action multi-select + dial-mode chips, the reset/save effects, and the 4-tab
+> bottom-nav switching can only be confirmed on a device. The headless half (state
+> combination/sort at any count + intents → right repo/fake calls + duplicate-rejection +
+> JSON tolerance + constants) is unit-tested.
+>
+> **Deferred / follow-ups:** the **actual button-config upload to the watch is WP14** (compile
+> the per-button rows via WP7 `ButtonCompiler.compileMultiEntry`/`compileSingleEntryPerButton`
+> → `FossilController.compileButtons` → SETTINGS_BUTTONS `0x0600` BLE file write);
+> `ServiceButtonSync.BUTTON_UPLOAD_WIRED` flips to true then. **Model-aware hardware validation**
+> (which buttonIds/dial modes a given connected watch actually supports, via
+> `ButtonCompiler.availableModes`) is intentionally out of scope here and may land with WP14.
+> Remaining screens **WP16e** (calibration), **WP16f** (sleep/activity charts), **WP16g**
+> (settings) follow the same ViewModel+StateFlow / fake-backed-test pattern.
+
 > **WP16d PREP — concrete vocabulary (scanned from code, for the Buttons screen).** This is a
 > reference for the WP16d implementer so the constants are NOT rediscovered. **Design decision:
 > the WP16d UI is MODEL-AGNOSTIC** — it allows ALL buttons/modes/actions and does NOT gate by

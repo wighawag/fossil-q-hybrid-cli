@@ -90,4 +90,24 @@ class CrudRoundTripTest : DbTestBase() {
         buttonDao.deleteForWatch(mac)
         assertTrue(buttonDao.getForWatch(mac).isEmpty())
     }
+
+    /** WP16d — single-row [ButtonMappingDao.deleteButton] removes only the matching buttonId. */
+    @Test
+    fun button_deleteSingleRow() = runTest {
+        watchDao.upsert(watch(mac))
+        buttonDao.upsert(button(mac, 0x10))
+        buttonDao.upsert(button(mac, 0x20))
+        assertEquals(2, buttonDao.getForWatch(mac).size)
+        assertNotNull(buttonDao.getButton(mac, 0x10))
+
+        buttonDao.deleteButton(mac, 0x10)
+        val remaining = buttonDao.getForWatch(mac)
+        assertEquals(1, remaining.size)
+        assertEquals(0x20, remaining.first().buttonId)
+        assertNull(buttonDao.getButton(mac, 0x10))
+
+        // Deleting a non-existent buttonId is a harmless no-op.
+        buttonDao.deleteButton(mac, 0xFF)
+        assertEquals(1, buttonDao.getForWatch(mac).size)
+    }
 }

@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -51,6 +52,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import qhybrid.android.alarms.AlarmsScreen
+import qhybrid.android.buttons.ButtonsScreen
 import qhybrid.android.dashboard.DashboardScreen
 import qhybrid.android.notifications.NotificationsScreen
 import qhybrid.android.debug.DebugMenu
@@ -108,9 +110,9 @@ class MainActivity : ComponentActivity() {
      */
     /**
      * WP16: the bottom-nav home tabs (Dashboard = WP16a, Alarms = WP16b,
-     * Notifications = WP16c).
+     * Notifications = WP16c, Buttons = WP16d).
      */
-    private enum class HomeTab { DASHBOARD, ALARMS, NOTIFICATIONS }
+    private enum class HomeTab { DASHBOARD, ALARMS, NOTIFICATIONS, BUTTONS }
 
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
@@ -129,6 +131,7 @@ class MainActivity : ComponentActivity() {
             showSetup -> "Setup"
             tab == HomeTab.ALARMS -> "Alarms"
             tab == HomeTab.NOTIFICATIONS -> "Notifications"
+            tab == HomeTab.BUTTONS -> "Buttons"
             else -> "Fossil Q"
         }
         Scaffold(
@@ -169,6 +172,12 @@ class MainActivity : ComponentActivity() {
                             icon = { Icon(Icons.Filled.Email, contentDescription = "Notifications") },
                             label = { Text("Notifications") },
                         )
+                        NavigationBarItem(
+                            selected = tab == HomeTab.BUTTONS,
+                            onClick = { tab = HomeTab.BUTTONS },
+                            icon = { Icon(Icons.Filled.Star, contentDescription = "Buttons") },
+                            label = { Text("Buttons") },
+                        )
                     }
                 }
             },
@@ -179,6 +188,7 @@ class MainActivity : ComponentActivity() {
                     showSetup -> HomeScreen()
                     tab == HomeTab.ALARMS -> AlarmsScreen()
                     tab == HomeTab.NOTIFICATIONS -> NotificationsScreen()
+                    tab == HomeTab.BUTTONS -> ButtonsScreen()
                     else -> DashboardScreen()
                 }
             }

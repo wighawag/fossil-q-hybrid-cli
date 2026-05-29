@@ -72,6 +72,8 @@ class WatchRepository(
     suspend fun getButtons(mac: String) = buttonDao.getForWatch(mac)
     fun observeButtons(mac: String) = buttonDao.observeForWatch(mac)
     suspend fun upsertButton(mapping: ButtonMappingEntity) = buttonDao.upsert(mapping)
+    suspend fun getButton(mac: String, buttonId: Int) = buttonDao.getButton(mac, buttonId)
+    suspend fun deleteButton(mac: String, buttonId: Int) = buttonDao.deleteButton(mac, buttonId)
 
     // ---- clone / transfer ----------------------------------------------------
 

@@ -23,6 +23,13 @@ interface ButtonMappingDao {
     @Query("DELETE FROM button_mappings WHERE watchMac = :mac")
     suspend fun deleteForWatch(mac: String)
 
+    /** WP16d — single-row delete (mirrors WP16c's [NotificationRuleDao.deleteRule]). */
+    @Query("DELETE FROM button_mappings WHERE watchMac = :mac AND buttonId = :buttonId")
+    suspend fun deleteButton(mac: String, buttonId: Int)
+
+    @Query("SELECT * FROM button_mappings WHERE watchMac = :mac AND buttonId = :buttonId")
+    suspend fun getButton(mac: String, buttonId: Int): ButtonMappingEntity?
+
     @Query("SELECT * FROM button_mappings WHERE watchMac = :mac ORDER BY buttonId")
     suspend fun getForWatch(mac: String): List<ButtonMappingEntity>
 

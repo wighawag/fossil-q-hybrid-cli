@@ -1,0 +1,245 @@
+package qhybrid.android.buttons
+
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+import qhybrid.android.db.ButtonMappingEntity
+import qhybrid.android.db.DbTestBase
+
+/**
+ * WP16d — headless tests for the Buttons state holder. Reuses the WP4 [DbTestBase] in-memory
+ * Room harness; "Save to watch" is replaced by a [FakeButtonSync]. Verifies:
+ *   - per-button mappings combine into the UiState, sorted by buttonId (any count),
+ *   - add picks up the given fields, and a duplicate buttonId is rejected (composite PK),
+ *   - set-mode / set-actions write the right row,
+ *   - reset removes the row,
+ *   - save delegates to the fake and reports the WP14-pending flag.
+ *
+ * Like [qhybrid.android.notifications.NotificationsViewModelTest], the VM is given a REAL
+ * [CoroutineScope] and the combined [StateFlow] is polled with a bounded [awaitState] because
+ * Room's reactive Flows re-emit on Room's own executor (virtual-time would not observe them).
+ */
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [33])
+class ButtonsViewModelTest : DbTestBase() {
+
+    private val vmScope = CoroutineScope(Dispatchers.Unconfined + SupervisorJob())
+
+    private class FakeButtonSync(private val wired: Boolean = false) : ButtonSync {
+        var saveCount = 0
+        override fun saveToWatch(): Boolean { saveCount++; return wired }
+    }
+
+    private fun vm(sync: ButtonSync = FakeButtonSync()) = ButtonsViewModel(repo, sync, vmScope)
+
+    private fun awaitState(
+        flow: StateFlow<ButtonsUiState>,
+        predicate: (ButtonsUiState) -> Boolean,
+    ): ButtonsUiState = runBlocking {
+        withTimeout(5_000) { flow.first { predicate(it) } }
+    }
+
+    private fun mapping(
+        mac: String,
+        buttonId: Int,
+        mode: String = ButtonModes.SINGLE_ACTION,
+        actionsJson: String = ButtonActionsJson.encode(listOf(ButtonActions.FORWARD_TO_PHONE)),
+    ) = ButtonMappingEntity(
+        watchMac = mac,
+        buttonId = buttonId,
+        modeType = mode,
+        actionsJson = actionsJson,
+    )
+
+    // ---- state combination (any count, sorted by buttonId) -------------------
+
+    @Test
+    fun combinesMappingsSortedByButtonIdIntoUiState() {
+        runBlocking {
+            watchDao.upsert(watch("AA:00:00:00:00:01", name = "One", active = true))
+            // Inserted out of order + a 5-position-style extra button (0x40, 0x50).
+            buttonDao.upsert(mapping("AA:00:00:00:00:01", 0x30))
+            buttonDao.upsert(mapping("AA:00:00:00:00:01", 0x10))
+            buttonDao.upsert(mapping("AA:00:00:00:00:01", 0x50))
+            buttonDao.upsert(mapping("AA:00:00:00:00:01", 0x20))
+            buttonDao.upsert(mapping("AA:00:00:00:00:01", 0x40))
+        }
+        val model = vm()
+        val s = awaitState(model.uiState) { it.mappings.size == 5 }
+        assertEquals("AA:00:00:00:00:01", s.activeMac)
+        assertTrue(s.hasActiveWatch)
+        assertEquals(
+            listOf(0x10, 0x20, 0x30, 0x40, 0x50),
+            s.mappings.map { it.buttonId },
+        )
+    }
+
+    @Test
+    fun emptyWhenNoActiveWatch() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = false)) }
+        val model = vm()
+        val s = awaitState(model.uiState) { true }
+        assertNull(s.activeWatch)
+        assertFalse(s.hasActiveWatch)
+        assertTrue(s.mappings.isEmpty())
+    }
+
+    // ---- add / duplicate rejection -------------------------------------------
+
+    @Test
+    fun addMappingInsertsWithGivenFields() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }
+        val model = vm()
+        awaitState(model.uiState) { it.hasActiveWatch }
+
+        val ok = model.addMapping(
+            buttonId = 0x20,
+            modeType = ButtonModes.MUSIC_MULTIMODE,
+            actionsJson = ButtonActionsJson.encode(listOf(ButtonActions.MUSIC_CONTROL)),
+        )
+        assertTrue(ok)
+
+        val s = awaitState(model.uiState) { it.mappings.any { m -> m.buttonId == 0x20 } }
+        val added = s.mappings.first { it.buttonId == 0x20 }
+        assertEquals(ButtonModes.MUSIC_MULTIMODE, added.modeType)
+        assertEquals(listOf(ButtonActions.MUSIC_CONTROL), ButtonActionsJson.decode(added.actionsJson))
+    }
+
+    @Test
+    fun addAllowsArbitraryButtonIdNoModelGating() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }
+        val model = vm()
+        awaitState(model.uiState) { it.hasActiveWatch }
+        // A non-standard buttonId must NOT be rejected (model-agnostic).
+        assertTrue(model.addMapping(buttonId = 0x99))
+        val s = awaitState(model.uiState) { it.mappings.any { m -> m.buttonId == 0x99 } }
+        assertEquals(0x99, s.mappings.first().buttonId)
+    }
+
+    @Test
+    fun addRejectsDuplicateButtonId() {
+        runBlocking {
+            watchDao.upsert(watch("AA:00:00:00:00:01", active = true))
+            buttonDao.upsert(mapping("AA:00:00:00:00:01", 0x10, mode = ButtonModes.SINGLE_ACTION))
+        }
+        val model = vm()
+        awaitState(model.uiState) { it.mappings.size == 1 }
+
+        // Attempting to add the same buttonId must be rejected and NOT overwrite the row.
+        val ok = model.addMapping(buttonId = 0x10, modeType = ButtonModes.MUSIC_MULTIMODE)
+        assertFalse(ok)
+
+        runBlocking {
+            val rows = repo.getButtons("AA:00:00:00:00:01")
+            assertEquals(1, rows.size)
+            assertEquals(ButtonModes.SINGLE_ACTION, rows.first().modeType) // original preserved
+        }
+    }
+
+    @Test
+    fun addNoOpWithoutActiveWatch() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = false)) }
+        val model = vm()
+        awaitState(model.uiState) { !it.hasActiveWatch }
+        assertFalse(model.addMapping(buttonId = 0x10))
+        runBlocking { assertEquals(0, repo.getButtons("AA:00:00:00:00:01").size) }
+    }
+
+    // ---- set-mode / set-actions ----------------------------------------------
+
+    @Test
+    fun setModeUpdatesRow() {
+        runBlocking {
+            watchDao.upsert(watch("AA:00:00:00:00:01", active = true))
+            buttonDao.upsert(mapping("AA:00:00:00:00:01", 0x10, mode = ButtonModes.SINGLE_ACTION))
+        }
+        val model = vm()
+        awaitState(model.uiState) { it.mappings.size == 1 }
+
+        model.setMode(0x10, ButtonModes.CUSTOM_TOGGLE)
+        val s = awaitState(model.uiState) {
+            it.mappings.firstOrNull()?.modeType == ButtonModes.CUSTOM_TOGGLE
+        }
+        assertEquals(ButtonModes.CUSTOM_TOGGLE, s.mappings.first().modeType)
+        runBlocking {
+            assertEquals(ButtonModes.CUSTOM_TOGGLE, repo.getButtons("AA:00:00:00:00:01").first().modeType)
+        }
+    }
+
+    @Test
+    fun setActionsUpdatesRow() {
+        runBlocking {
+            watchDao.upsert(watch("AA:00:00:00:00:01", active = true))
+            buttonDao.upsert(mapping("AA:00:00:00:00:01", 0x10))
+        }
+        val model = vm()
+        awaitState(model.uiState) { it.mappings.size == 1 }
+
+        model.setActionList(0x10, listOf(ButtonActions.DATE, ButtonActions.RING_PHONE))
+        val s = awaitState(model.uiState) {
+            ButtonActionsJson.decode(it.mappings.firstOrNull()?.actionsJson).size == 2
+        }
+        assertEquals(
+            listOf(ButtonActions.DATE, ButtonActions.RING_PHONE),
+            ButtonActionsJson.decode(s.mappings.first().actionsJson),
+        )
+    }
+
+    @Test
+    fun updateMappingNormalizesMalformedJson() {
+        runBlocking {
+            watchDao.upsert(watch("AA:00:00:00:00:01", active = true))
+            buttonDao.upsert(mapping("AA:00:00:00:00:01", 0x10))
+        }
+        val model = vm()
+        val s0 = awaitState(model.uiState) { it.mappings.size == 1 }
+
+        // Feed a malformed actionsJson; the VM must persist a valid (empty-array) JSON, never crash.
+        model.updateMapping(s0.mappings.first().copy(actionsJson = "{not json"))
+        val s = awaitState(model.uiState) {
+            ButtonActionsJson.decode(it.mappings.firstOrNull()?.actionsJson).isEmpty()
+        }
+        assertEquals("[]", s.mappings.first().actionsJson)
+    }
+
+    // ---- reset ----------------------------------------------------------------
+
+    @Test
+    fun resetRemovesMapping() {
+        runBlocking {
+            watchDao.upsert(watch("AA:00:00:00:00:01", active = true))
+            buttonDao.upsert(mapping("AA:00:00:00:00:01", 0x10))
+            buttonDao.upsert(mapping("AA:00:00:00:00:01", 0x20))
+        }
+        val model = vm()
+        awaitState(model.uiState) { it.mappings.size == 2 }
+
+        model.resetButton(0x10)
+        val s = awaitState(model.uiState) { it.mappings.size == 1 }
+        assertEquals(listOf(0x20), s.mappings.map { it.buttonId })
+        runBlocking { assertEquals(1, repo.getButtons("AA:00:00:00:00:01").size) }
+    }
+
+    // ---- save -----------------------------------------------------------------
+
+    @Test
+    fun saveToWatchHitsTheFakeAndReportsPending() {
+        val sync = FakeButtonSync(wired = false)
+        val model = vm(sync)
+        val wired = model.saveToWatch()
+        assertEquals(1, sync.saveCount)
+        assertFalse(wired) // button-config upload deferred to WP14
+    }
+}
