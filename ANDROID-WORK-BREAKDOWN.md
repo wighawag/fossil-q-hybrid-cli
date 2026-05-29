@@ -1013,13 +1013,50 @@ same `LogRingBuffer` for a CLI `logs` command.
 > (calibration), **WP16f** (sleep/activity charts), **WP16g** (settings) follow the same
 > ViewModel+StateFlow / fake-backed-test pattern.
 
+> **WP16d PREP — concrete vocabulary (scanned from code, for the Buttons screen).** This is a
+> reference for the WP16d implementer so the constants are NOT rediscovered. **Design decision:
+> the WP16d UI is MODEL-AGNOSTIC** — it allows ALL buttons/modes/actions and does NOT gate by
+> watch model (some watches have 3 dial positions, some 5; we let all be possible). The protocol
+> *does* have a model concept (`ButtonCompiler.DialModel` + `availableModes`) but WP16d must NOT
+> hard-code or enforce it; WP14 may use it later for hardware validation.
+>
+> - **`ButtonMappingEntity`** (`qhybrid.android.db`, WP4): composite PK `[watchMac, buttonId]`;
+>   fields `buttonId: Int` (**0x10=TOP, 0x20=MIDDLE, 0x30=BOTTOM**, and … 0x40, 0x50 for 5-pos
+>   — increments of 0x10; do NOT cap the count), `modeType: String`, `actionsJson: String`.
+>   `ButtonMappingDao` has `upsert`/`upsertAll`/`delete`(whole row)/`deleteForWatch`/`getForWatch`/
+>   `observeForWatch` — **add a single-row `deleteRule`-style `deleteButton(mac, buttonId)`** (and
+>   `WatchRepository.deleteButton`) in the same additive style as WP16c, with a DAO test.
+> - **`modeType` values** (the entity doc + DAO test use these strings): `"SINGLE_ACTION"`
+>   (button fires one action), `"MUSIC_MULTIMODE"` (multi-function music control), `"CUSTOM_TOGGLE"`
+>   (cycles through several dial modes on press). Centralize these + human labels in a shared
+>   `ButtonModes` object (discipline like `VibePatterns`/`AlarmDays`). Treat as a flat catalog.
+> - **Action catalog** = `qhybrid.protocol.buttonconfig.ConfigPayload` enum (WP7), each with a
+>   human `description`. Surface these as the selectable actions (centralize id+label in a shared
+>   `ButtonActions` object, OR read `ConfigPayload.values()`/`getDescription()` directly):
+>   `FORWARD_TO_PHONE` ("forward to phone"), `FORWARD_TO_PHONE_MULTI` ("forward to phone
+>   (multifunction)"), `MUSIC_CONTROL` ("control music (play/pause/prev/next)"), `STOPWATCH`,
+>   `DATE` ("show date"), `LAST_NOTIFICATION` ("show last notification"), `SECOND_TIMEZONE`
+>   ("show second timezone"), `VOLUME_UP` ("music volume up"), `VOLUME_DOWN` ("music volume down"),
+>   `STEP_GOAL_COMPLETION` ("show step goal completion"), `RING_PHONE` ("ring phone").
+> - **Dial modes** (the watch-face sub-eye positions a `CUSTOM_TOGGLE` cycles) =
+>   `ButtonCompiler.DialMode` enum: `ALERT, TIMEZONE_2, ALARM, DATE, TWENTY_FOUR_HOUR`. (Music is
+>   NOT a dial mode — it's a phone-side action.) The UI's dial-mode toggles should offer ALL of
+>   these regardless of model.
+> - **`actionsJson`** is a free-form JSON array string (e.g. `[{"action":"MUSIC_PLAY"}]` in the
+>   DAO test). WP16d needs a small encode/decode helper that tolerates empty/malformed JSON; the
+>   exact-byte compile (via WP7 `ButtonCompiler.compileMultiEntry`/`compileSingleEntryPerButton`,
+>   `FossilController.compileButtons`) is for WP14 (logging/preview only if trivially safe).
+> - **Protocol button compile (do NOT change its output):** `qhybrid.protocol.requests.fossil.button.ButtonCompiler`
+>   + `qhybrid.protocol.ButtonConfigBuilder` + `qhybrid.protocol.buttonconfig.{ConfigFileBuilder,ConfigPayload}`;
+>   golden-tested in `Wp7ButtonCompilerTest`. SETTINGS_BUTTONS file 0x0600.
+
 **Goal:** The user-facing screens, each backed by a ViewModel reading WP4 + WP8 and writing via the service.
 
 **Sub-parts (each independently buildable with fake data/preview):**
 - **16a Dashboard**: connection status, battery, steps/goal, active-watch selector, Find Watch.
 - **16b Alarms**: list/add/edit/delete (slots 0–15), day picker, weekday/weekend shortcuts.
 - **16c Notifications**: app list + search, per-app vibe + hand degrees editor.
-- **16d Buttons**: per-button mapping + dial-mode toggles (model-aware).
+- **16d Buttons**: per-button mapping + dial-mode toggles (**model-agnostic** — allow all buttons/modes; no per-model gating).
 - **16e Calibration**: interactive hand alignment (WP F flow).
 - **16f Sleep/Activity**: charts from WP8.
 - **16g Settings**: nudge, vibration strength, timezone, preferred music app, settings transfer (WP4), log viewer (WP15).
