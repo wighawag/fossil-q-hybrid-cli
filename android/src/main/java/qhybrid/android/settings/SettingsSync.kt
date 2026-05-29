@@ -19,15 +19,16 @@ import qhybrid.android.WatchConnectionService
  *   - **second timezone** → `FossilController.setSecondTimezone(offsetMinutes)` (config 0x11 —
  *     `TimezoneOffsetConfigItem`).
  *
- * **DEFERRED (on-device-pending — WP14).** The protocol helpers ALREADY exist on
- * `qhybrid.protocol.FossilController` / `FossilQAdapter` (and are golden-tested in the protocol
- * layer), but they are NOT yet exposed via the WP3 [WatchConnectionService] static entry points.
- * Wiring those `ConfigurationPutRequest` items through the foreground service as new BLE actions is
- * its own work package (WP14, the same WP that wires the alarm/notification/button uploads).
- * Until then this seam ONLY pokes the existing service (`syncNow`) — no new wire bytes are
- * invented — and reports [SETTINGS_WIRED] = `false` so the UI can flag the live apply as
- * on-device-pending. The persisted values are saved regardless (WatchRepository / [SettingsPrefs]),
- * so flipping [SETTINGS_WIRED] to true later applies the already-stored prefs.
+ * **WIRED (WP14).** The protocol helpers (`FossilController.setVibrationStrength` /
+ * `setInactivityNudge` / `setSecondTimezone` → `ConfigurationPutRequest` items 0x0A / 0x09 / 0x11)
+ * are now driven through the WP3 [WatchConnectionService] on its ble-worker by the WP14
+ * SyncOrchestrator. The flow is **persist-then-sync**: the [SettingsViewModel] writes the value
+ * (vibration → the WP4 [qhybrid.android.db.WatchRepository] row; nudge / second timezone →
+ * [SettingsPrefs]) and then this seam pokes `syncNow`, which reloads the active watch's config
+ * (including the just-saved value) and applies the live `ConfigurationPutRequest` commands. A
+ * single live apply path covers all three; [SETTINGS_WIRED] is `true`. (On-device BLE effect is
+ * verified-pending hardware; the apply logic is unit-tested in the `sync` package.) No wire bytes
+ * are invented — the golden-tested façade settings methods are reused.
  *
  * The **preferred music app** is intentionally NOT here: it is a pure phone-side pref (the
  * music-control fallback launches it locally, ANDROID-PLAN §4.E); it is never sent to the watch.
@@ -71,15 +72,15 @@ class ServiceSettingsSync(context: Context) : SettingsSync {
     override fun applySecondTimezone(offsetMinutes: Int): Boolean = poke()
 
     private fun poke(): Boolean {
-        // Poke the existing sync-on-connect path. The dedicated live settings commands
-        // (FossilController.setVibrationStrength / setInactivityNudge / setSecondTimezone via the
-        // WP3 service) are WP14 and not added here (no new wire behavior, no invented bytes).
+        // WP14: syncNow now drives the SyncOrchestrator, which applies the just-persisted
+        // vibration / nudge / second-timezone values live via the golden-tested façade settings
+        // methods on the WP3 service's ble-worker (no new wire behavior, no invented bytes).
         WatchConnectionService.syncNow(appContext)
         return SETTINGS_WIRED
     }
 
     companion object {
-        /** Flip to true when WP14 wires the live settings ConfigurationPutRequest commands. */
-        const val SETTINGS_WIRED = false
+        /** WP14: the live settings ConfigurationPutRequest commands are wired (syncNow → SyncOrchestrator). */
+        const val SETTINGS_WIRED = true
     }
 }

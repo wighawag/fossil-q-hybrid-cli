@@ -349,4 +349,11 @@ class SettingsViewModelTest : DbTestBase() {
         assertEquals(SettingsVocabulary.NUDGE_DEFAULT_MINUTES, s.nudgeMinutes)
         assertEquals(SettingsVocabulary.MUSIC_APP_NONE, s.preferredMusicApp)
     }
+
+    @Test
+    fun productionSettingsApplyIsWired() {
+        // WP14 sub-part 4: the live vibration / nudge / second-timezone commands
+        // (persist-then-sync through the WP3 service's SyncOrchestrator) are wired.
+        assertTrue(ServiceSettingsSync.SETTINGS_WIRED)
+    }
 }
