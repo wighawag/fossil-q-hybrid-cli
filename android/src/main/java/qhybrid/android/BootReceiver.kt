@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import qhybrid.android.sync.SyncScheduler
 
 /**
  * WP3 — reboot survival.
@@ -36,6 +37,8 @@ class BootReceiver : BroadcastReceiver() {
         // Re-arm event-driven presence (API 31+); fallback handles 26–30.
         CompanionManager.startObserving(context, mac)
         ReconnectFallback.arm(context, mac)
+        // WP14: (re-)arm the periodic safety-sync job (idempotent; KEEP policy).
+        SyncScheduler.schedule(context)
         // Bring the service back up (it will reconnect when the watch appears).
         WatchConnectionService.connectNow(context, mac)
     }

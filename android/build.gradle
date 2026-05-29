@@ -80,6 +80,10 @@ dependencies {
     // WP16a: ViewModel + viewModel() factory in Compose for the Dashboard.
     implementation 'androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7'
 
+    // WP14: periodic safety-sync job (Doze-aware, no continuous scanning). First-party AndroidX
+    // library named in ANDROID-PLAN §5/§6; standard for periodic background work.
+    implementation 'androidx.work:work-runtime-ktx:2.9.1'
+
     // WP4: Room persistence (multi-watch + clone/transfer). Pure data layer, no BLE.
     implementation 'androidx.room:room-runtime:2.6.1'
     implementation 'androidx.room:room-ktx:2.6.1'

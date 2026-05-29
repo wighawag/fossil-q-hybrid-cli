@@ -123,7 +123,11 @@ class WatchConnectionService : Service() {
         when (action) {
             ACTION_CONNECT -> {
                 val mac = intent.getStringExtra(EXTRA_MAC) ?: CompanionManager.getAssociatedMac(this)
-                if (mac != null) submitConnect(mac) else {
+                if (mac != null) {
+                    // WP14: ensure the periodic safety-sync job is armed (idempotent, KEEP policy).
+                    qhybrid.android.sync.SyncScheduler.schedule(applicationContext)
+                    submitConnect(mac)
+                } else {
                     Log.w(TAG, "ACTION_CONNECT with no mac and no associated mac")
                 }
             }
@@ -366,6 +370,8 @@ class WatchConnectionService : Service() {
                 clearDeviceInfo = true,
             )
             if (stopAfter) {
+                // WP14: full stop — cancel the periodic safety-sync too.
+                qhybrid.android.sync.SyncScheduler.cancel(applicationContext)
                 stopForegroundCompat()
                 stopSelf()
             }
