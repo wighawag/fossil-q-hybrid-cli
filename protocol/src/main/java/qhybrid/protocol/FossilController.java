@@ -115,6 +115,29 @@ public class FossilController {
         adapter.setButtonsRaw(buttonConfigFile);
     }
 
+    /**
+     * Build a multi-entry button-config file (mode-toggle capable) without uploading
+     * (pure, deterministic). Each button takes an array of
+     * {@link ButtonConfigBuilder.ButtonEntry}; payloads are NOT deduplicated and a CRC32
+     * trailer is appended. Single source of truth = {@code ButtonCompiler} (WP7).
+     */
+    public static byte[] compileButtons(ButtonConfigBuilder.ButtonEntry[] top,
+                                        ButtonConfigBuilder.ButtonEntry[] mid,
+                                        ButtonConfigBuilder.ButtonEntry[] bot) {
+        return qhybrid.protocol.requests.fossil.button.ButtonCompiler
+                .compileMultiEntry(top, mid, bot);
+    }
+
+    /**
+     * Build a single-entry-per-button config file (vendored format: dedup payloads,
+     * customization count 0) without uploading. Single source of truth = {@code ButtonCompiler}.
+     */
+    public static byte[] compileButtonsSingleEntry(
+            qhybrid.protocol.buttonconfig.ConfigPayload[] payloads, boolean appendChecksum) {
+        return qhybrid.protocol.requests.fossil.button.ButtonCompiler
+                .compileSingleEntryPerButton(payloads, appendChecksum);
+    }
+
     public void setInactivityNudge(int fromHour, int fromMinute, int toHour, int toMinute,
                                    int inactiveMinutes, boolean enabled) {
         adapter.setInactivityNudge(fromHour, fromMinute, toHour, toMinute, inactiveMinutes, enabled);

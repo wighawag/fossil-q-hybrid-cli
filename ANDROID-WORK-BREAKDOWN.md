@@ -419,6 +419,32 @@ implemented — possible future work.**
 
 ## WP7 — Button Mapping Compile (multi-entry + dial modes)
 
+**Status:** ✅ DONE & VERIFIED (JVM, no hardware). Pure helper added to `:protocol`:
+`qhybrid.protocol.requests.fossil.button.ButtonCompiler` (slf4j-free; `java.nio` +
+`java.util.zip.CRC32` only). It is now the single source of truth for both real wire
+formats and both legacy paths delegate to it 1:1:
+- `ButtonConfigBuilder.build(...)` → `ButtonCompiler.compileMultiEntry(...)`
+  (per-entry `0x00`, non-dedup payloads, customization section, CRC32 LE trailer).
+- `buttonconfig.ConfigFileBuilder.build(appendChecksum)` →
+  `ButtonCompiler.compileSingleEntryPerButton(ConfigPayload[], boolean)`
+  (dedup payloads, customization count `0x00`, optional CRC32 trailer).
+Façade entry points added: `FossilController.compileButtons(top,mid,bot)` and
+`compileButtonsSingleEntry(payloads, appendChecksum)` (mirrors WP6 `buildPlayFile`).
+Model-aware availability hook (pure lookup, no byte mutation):
+`ButtonCompiler.DialMode` {ALERT, TIMEZONE_2, ALARM, DATE, TWENTY_FOUR_HOUR} (music is
+NOT a dial mode), `DialModel` {THREE_POSITION, FIVE_POSITION}, `availableModes(model)`,
+`isModeAvailable(model, mode)`. 15 new golden tests
+(`Wp7ButtonCompilerTest`) green; `:protocol:test` now 83 total (68 prior + 15), 0
+failures. `./fossil-q --help` unchanged; `:android:assembleDebug` succeeds. No wire
+bytes / `BleTransport` / `AndroidBleTransport.kt` / WP3 service /
+`AlarmCompiler` / `CalendarAlarmMapper` / `NotificationCompiler` output touched.
+Golden vectors locked: embedded captured payloads (ALARM_SEQUENCED, DATE_TOGGLE,
+24H/24H_SEQ, GOAL_TRACKING), a full single-entry assignment file, a 3-mode toggle
+(structure + order + CRC32 trailer recomputed independently), and old-path == compiler
+equality. CLI `buttons` command already routes through these builders (so it produces
+compiler bytes); a TODO note marks routing it directly through `ButtonCompiler` later
+(mirrors WP6).
+
 **Goal:** Pure compilation of button configuration files, including multi-entry mode toggles and the supported dial modes.
 
 **Scope:**

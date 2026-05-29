@@ -1,13 +1,7 @@
 package qhybrid.protocol;
 
 import qhybrid.protocol.buttonconfig.ConfigPayload;
-
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-import java.util.zip.CRC32;
+import qhybrid.protocol.requests.fossil.button.ButtonCompiler;
 
 /**
  * Builds button config binary files with support for multi-entry buttons.
@@ -170,10 +164,6 @@ public class ButtonConfigBuilder {
     // variant difference: standalone = variant 0x01 (01 01 18 00).
     // Inside toggle context it may behave differently (see FINDINGS testing).
 
-    // Customization suffix: constant 6 bytes appended after each entry's header
-    // in the customization section. Captured from official app.
-    private static final byte[] CUSTOMIZATION_SUFFIX = {0x0a, 0x00, 0x01, 0x02, 0x01, 0x00};
-
     // ========== Button entry abstraction ==========
 
     /**
@@ -213,88 +203,11 @@ public class ButtonConfigBuilder {
      * Build a button config file. Each button gets an array of ButtonEntry.
      * Payloads are NOT deduplicated (one per button×entry, matching official app).
      * Customization entries are included (one per button×entry).
+     *
+     * <p>WP7: byte assembly now lives in the pure {@link ButtonCompiler}
+     * (single source of truth). This method delegates 1:1.
      */
     public static byte[] build(ButtonEntry[] topEntries, ButtonEntry[] midEntries, ButtonEntry[] botEntries) {
-        ButtonEntry[][] allButtons = {topEntries, midEntries, botEntries};
-        byte[] buttonIndices = {0x10, 0x20, 0x30};
-
-        // Collect all payloads in order (one per button×entry, NOT deduplicated)
-        List<ButtonEntry> allEntries = new ArrayList<>();
-        for (ButtonEntry[] entries : allButtons) {
-            for (ButtonEntry entry : entries) {
-                allEntries.add(entry);
-            }
-        }
-        int totalPayloads = allEntries.size();
-
-        // Calculate sizes
-        int headerSectionSize = 0;
-        for (ButtonEntry[] entries : allButtons) {
-            // buttonIndex(1) + entryCount(1) + (header(4) + null(1)) per entry
-            headerSectionSize += 2 + (entries.length * 5);
-        }
-
-        int payloadSectionSize = 0;
-        for (ButtonEntry entry : allEntries) {
-            payloadSectionSize += entry.data().length;
-        }
-
-        // Customization: header(4) + suffix(6) = 10 bytes per entry
-        int customizationSize = totalPayloads * 10;
-
-        int totalSize = 3                    // version
-                + 1                           // button count
-                + headerSectionSize
-                + 1                           // payload count
-                + payloadSectionSize
-                + 1                           // customization count
-                + customizationSize
-                + 4;                          // CRC32
-
-        ByteBuffer buf = ByteBuffer.allocate(totalSize);
-        buf.order(ByteOrder.LITTLE_ENDIAN);
-
-        // Version
-        buf.put((byte) 0x01);
-        buf.put((byte) 0x00);
-        buf.put((byte) 0x00);
-
-        // Button count
-        buf.put((byte) allButtons.length);
-
-        // Button headers — each entry is header(4) + null(1)
-        for (int b = 0; b < allButtons.length; b++) {
-            buf.put(buttonIndices[b]);
-            buf.put((byte) allButtons[b].length);
-            for (ButtonEntry entry : allButtons[b]) {
-                buf.put(entry.header());
-                buf.put((byte) 0x00);
-            }
-        }
-
-        // Payload count (one per button×entry, NOT deduplicated)
-        buf.put((byte) totalPayloads);
-
-        // Payloads in order
-        for (ButtonEntry entry : allEntries) {
-            buf.put(entry.data());
-        }
-
-        // Customization count
-        buf.put((byte) totalPayloads);
-
-        // Customization entries: header(4) + constant suffix(6)
-        for (ButtonEntry entry : allEntries) {
-            buf.put(entry.header());
-            buf.put(CUSTOMIZATION_SUFFIX);
-        }
-
-        // CRC32 over everything before the CRC
-        int dataLen = buf.position();
-        CRC32 crc = new CRC32();
-        crc.update(buf.array(), 0, dataLen);
-        buf.putInt((int) crc.getValue());
-
-        return buf.array();
+        return ButtonCompiler.compileMultiEntry(topEntries, midEntries, botEntries);
     }
 }

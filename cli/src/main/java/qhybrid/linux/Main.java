@@ -2100,6 +2100,12 @@ public class Main implements Runnable {
 
         @Override
         public Integer call() {
+            // NOTE (WP7): button byte assembly now lives in the pure
+            // qhybrid.protocol.requests.fossil.button.ButtonCompiler (single source of truth).
+            // ButtonConfigBuilder.build(...) and ConfigFileBuilder.build(...) both delegate to it,
+            // so this CLI path already produces compiler bytes. TODO: route this command directly
+            // through FossilController.compileButtons(...) / ButtonCompiler so there is exactly one
+            // visible button-byte entry point (mirrors the WP6 NotificationCompiler note).
             // Parse each button spec — may be single function or multi-entry (with +)
             ButtonConfigBuilder.ButtonEntry[] topEntries = parseButtonSpec(top, "top");
             ButtonConfigBuilder.ButtonEntry[] midEntries = parseButtonSpec(middle, "middle");
