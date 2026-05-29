@@ -1102,6 +1102,104 @@ same `LogRingBuffer` for a CLI `logs` command.
 > Remaining screens **WP16e** (calibration), **WP16f** (sleep/activity charts), **WP16g**
 > (settings) follow the same ViewModel+StateFlow / fake-backed-test pattern.
 
+> **WP16e STATUS:** ✅ DONE & VERIFIED (provable core JVM/Robolectric-tested; UI builds +
+> lint-passes; hand-select / nudge / Apply rendering + the real move-hands/save-calibration
+> command flagged on-device-pending / deferred to **WP14 / WP F**). Mirrors the proven
+> WP16a/b/c/d two-layer pattern's **active-watch half exactly** (`combine` over
+> `observeActiveWatch` + `stateIn(WhileSubscribed)`; injectable `*Sync` seam with a
+> `*_WIRED=false` deferral flag; stateless `*Content`; production `factory`; Robolectric +
+> in-memory Room tests via `DbTestBase` with a real `CoroutineScope` + bounded `awaitState`
+> polling). The fifth user-facing screen: interactive hand-position calibration for the active
+> watch.
+>
+> **DESIGN DECISION — EPHEMERAL / NOT PERSISTED (drives the whole design):** calibration is a
+> physical "set zero = current hand position" handshake, NOT stored data. The meaningful value
+> is a LIVE delta relative to where the hands physically are this instant; a saved offset would
+> re-apply a now-wrong correction, and de-calibration cannot be saved. Therefore **NO new Room
+> entity / DAO / `WatchRepository` calibration method was added** — the calibration
+> offset + hand-selection live ONLY in `CalibrationUiState` (in-memory): zeroed on
+> `enterCalibration()`, cleared on `exitCalibration()`. **Re-opening the screen ALWAYS starts a
+> fresh, neutral session** (no reloaded offset). The ViewModel observes `observeActiveWatch()`
+> PURELY to know which watch is active and to disable the UI when none is connected. **NO test
+> asserts any DB persistence — there is none.** (Confirmed: no calibration DB field existed to
+> (mis)use; the protocol *does* have the building blocks —
+> `FossilQAdapter.requestHandsControl`/`setHands`/`saveCalibration`/`releaseHandsControl` — but
+> they are NOT yet exposed via the WP3 `WatchConnectionService` static entry points, so the
+> apply path stays deferred behind the `CALIBRATION_WIRED=false` seam; no wire bytes invented.)
+>
+> **DESIGN DECISION — MODEL-AGNOSTIC / FLEXIBLE:** the screen deliberately does NOT hard-code
+> per-model hand counts or sub-eye layouts. `CalibrationHands` is a flat catalog
+> (`HOUR`/`MINUTE`/`SUB`, 1:1 with the CLI `calibrate` command) the UI lets the user nudge
+> without a model lookup table; a watch that lacks one of these hands simply ignores its move
+> (hardware behaviour is on-device-pending / WP14 / WP F). Only the truly shared,
+> model-independent vocabulary is centralized (hand ids + labels; the degree/step conventions).
+>
+> **(1) Provable core (`qhybrid.android.calibration`, Robolectric + in-memory Room):**
+> - `CalibrationViewModel` + `CalibrationUiState` — `combine(observeActiveWatch(), session)`
+>   into one immutable `CalibrationUiState` via `stateIn(WhileSubscribed)`. The active-watch
+>   half (`activeWatch`/`hasActiveWatch`) is observed; the calibration session (`inProgress`,
+>   `selectedHand`, `offsets: Map<hand,deg>`) is plain **in-memory** `MutableStateFlow` — no DB.
+>   Derived helpers: `activeMac`, `canCalibrate` (= `hasActiveWatch && inProgress`),
+>   `offsetOf(hand)` (defaults neutral 0°).
+> - Intents: `enterCalibration()` (starts a FRESH neutral session — `inProgress=true`, default
+>   hand, offsets zeroed, **never reloads a prior offset**), `exitCalibration()` (clears the
+>   session; no persistence), `nudge(hand, deltaDegrees)` (apply + normalize via `HandDegrees`,
+>   tolerates wrap past 0/359; no-op unless in session), `setHand(hand, degrees)` (absolute,
+>   normalized; tolerates negative/out-of-range), `selectHand(hand)` (unknown id → default), and
+>   `apply()` delegating to the injectable `CalibrationSync` seam (fire-and-forget LIVE command;
+>   no-op unless in session + active watch; returns the WP14/WP-F-pending flag).
+> - `CalibrationHands` / `HandDegrees` — centralized, model-agnostic vocabulary shared by
+>   VM + tests + UI (discipline like `VibePatterns`/`AlarmDays`/`ButtonModes`): hand ids
+>   `HOUR`/`MINUTE`/`SUB` (+ labels, `normalize`); degree conventions `FULL=360`, `COARSE=6°`
+>   (one minute mark), `FINE=1°`, `NEUTRAL=0`, with `normalize(deg)`/`nudge(deg,delta)` that
+>   wrap onto the 0–359 ring (matches the CLI `calibrate` `wrap()` helper).
+> - `CalibrationSync` (interface) + `ServiceCalibrationSync` (production) — the injectable
+>   "Apply" seam (mirrors `AlarmSync`/`NotificationSync`/`ButtonSync`). Production forwards to
+>   the existing WP3 `WatchConnectionService.syncNow` (no new wire behavior) and returns
+>   `CALIBRATION_WIRED=false` until WP14 / WP F.
+> - Tests (`CalibrationViewModelTest`, `CalibrationVocabularyTest`): UiState reflects the active
+>   watch + disables when none; enter starts a neutral session; exit clears + re-enter starts
+>   neutral with **NO reloaded offset**; nudge applies + normalizes incl. wrap past 0 and past
+>   359; nudge/setHand/apply are no-ops outside a session; setHand/selectHand update the
+>   in-memory session (incl. negative/out-of-range + unknown-id tolerance); apply hits the fake
+>   + reports the WP14/WP-F-pending flag + forwards per-hand offsets; degree normalize/nudge
+>   round-trip + idempotence; constants sanity. **No DB-persistence assertions (none exists).**
+>   `:android:testDebugUnitTest` = **95 green** (77 prior + 18 new), 0 failures.
+>
+> **(2) UI layer (`CalibrationScreen.kt`, builds + lint-passes; behavior on-device-pending):**
+> - Stateless `CalibrationContent(state, onEnter, onExit, onSelectHand, onNudge, onApply)`
+>   (preview-/UI-testable with fake state, no VM/Room/BLE) + a thin `CalibrationScreen()` that
+>   wires the production VM via `CalibrationViewModel.factory(context)`. Renders enter/exit
+>   calibration, a **hand selector** (flat catalog chips, not gated by model), **+/- nudge**
+>   controls (coarse `6°` + fine `1°`), a **live per-hand degree readout** + an all-hands
+>   session summary, and an **Apply** button that surfaces the WP14/WP-F-pending note when not
+>   wired. Makes the transient nature explicit ("Exit (discard)" + "nothing is saved" hints).
+> - Reachable via a **5th bottom-nav tab** added to `MainActivity` (Dashboard / Alarms /
+>   Notifications / Buttons / **Calibration**). Calibration tab icon = `Icons.Filled.Refresh`
+>   (verified on the material-icons-core classpath the way WP16d verified `Star` — enumerated
+>   the jar's `filled/*Kt.class` entries; extended icons are NOT on the classpath). The WP15
+>   Debug gear stays present + release-gated; WP16a–d still work.
+>
+> **Did NOT touch** protocol wire bytes / any protocol calibration output
+> (`SaveCalibrationRequest`/`MoveHandsRequest`/`RequestHandControlRequest`) / `BleTransport` /
+> `AndroidBleTransport.kt` / WP3 service wire behavior (only calls the existing `syncNow`) /
+> existing WP4 repository semantics (**added NO DB entity/DAO/repo method — calibration is
+> ephemeral**) / WP15 Debug Menu gating. `:protocol:test` stays at **108 green**;
+> `./fossil-q --help` unchanged; `:android:assembleDebug` + `:android:lintDebug` succeed.
+>
+> **On-device verification pending:** the Compose hand-select chips, the +/- nudge controls, the
+> live degree readout, the Apply effect, and the 5-tab bottom-nav switching can only be confirmed
+> on a device. The headless half (active-watch observation + in-memory session intents + degree
+> normalization/wrap + constants) is unit-tested.
+>
+> **Deferred / follow-ups:** the **actual move-hands / save-calibration command to the watch is
+> WP14 / WP F** (the CLI `calibrate` sequence `requestHandsControl` → `setHands(h,m,s)` →
+> `saveCalibration` → `releaseHandsControl` → `syncTime`, wired through the WP3 foreground
+> service as a new BLE action); `ServiceCalibrationSync.CALIBRATION_WIRED` flips to true then.
+> Calibration is intentionally **NOT persisted** (ephemeral by nature — a live reference set,
+> not stored data). Remaining screens **WP16f** (sleep/activity charts) and **WP16g** (settings)
+> follow the same ViewModel+StateFlow / fake-backed-test pattern.
+
 > **WP16d PREP — concrete vocabulary (scanned from code, for the Buttons screen).** This is a
 > reference for the WP16d implementer so the constants are NOT rediscovered. **Design decision:
 > the WP16d UI is MODEL-AGNOSTIC** — it allows ALL buttons/modes/actions and does NOT gate by
