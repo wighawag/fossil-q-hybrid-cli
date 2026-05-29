@@ -336,6 +336,29 @@ and the boot receiver; `companion_device_setup` feature.
 
 ## WP5 — Alarm Domain Logic (16/16 split + byte compile)
 
+**Status:** ✅ DONE & VERIFIED (JVM, no hardware). Pure helper added to `:protocol`:
+`qhybrid.protocol.requests.fossil.alarm.AlarmSlot` (platform-neutral domain object
+mirroring WP4's `WatchAlarmEntity`) + `AlarmCompiler` (16/16 split + 3 wire modes +
+32-slot guard). 14 new golden-byte tests (`Wp5AlarmCompilerTest`) green; `:protocol:test`
+now 36 total (22 prior + 14), 0 failures. `./fossil-q --help` unchanged;
+`:android:assembleDebug` succeeds. No protocol wire bytes / `Alarm.java` /
+`AlarmsSetRequest.java` / `BleTransport` / `AndroidBleTransport.kt` / WP3 service touched.
+
+- **Placement:** pure helper in `:protocol` (reuses the golden-locked `Alarm.getData()`
+  for standard modes; the undocumented calendar non-repeat-weekday `[0x80|days][min][hour]`
+  is built directly in `AlarmCompiler` since `Alarm` can't emit it).
+- **daysMask ↔ wire bitmask:** **1:1 identity, NO translation.** `WatchAlarmEntity.daysMask`
+  (bit0=Sun..bit6=Sat) is exactly the hardware-corrected wire `days` byte (bit3=Wed,
+  bit4=Thu per FINDINGS #12). The mask is passed straight through. (The `WEEKDAY_*`
+  constants on `Alarm.java` are mislabeled for Wed/Thu but are unused by the byte path.)
+- **Doc note found:** the `--days 30 = Mon-Fri` CLI example (FINDINGS line 357) is
+  mislabeled — 0x1E (30) is Mon-Thu; true Mon-Fri is 0x3E (62), matching the `0xBE`
+  hardware capture at FINDINGS line 1038. Both values are locked by tests.
+
+> **CLI FOLLOW-UP (not part of this WP — do later):** wire `AlarmSlot`/`AlarmCompiler`
+> (and the eventual WP9 calendar→alarm mapping) into the `:cli` `alarm` command so the
+> CLI can drive the 16/16 split + calendar slots too, reusing this same pure helper.
+
 **Goal:** Convert a list of alarm domain objects into the watch's alarm file bytes, honoring the 16/16 slot split and all three wire modes.
 
 **Scope:**
