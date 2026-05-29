@@ -8,16 +8,18 @@ import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -27,41 +29,54 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import qhybrid.protocol.FossilQAdapter
+import qhybrid.protocol.FossilController
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 
 /**
- * WP0.5 Walking Skeleton.
+ * WP2 transport-bring-up harness.
  *
- * Smallest possible runnable app that proves the whole toolchain end-to-end on a
- * real phone: request Bluetooth permission, connect to the watch via a real
- * [AndroidBleTransport] + the shared :protocol [FossilQAdapter], and show live
- * device info (battery %, firmware). No DB, no features — just "the setup works".
+ * Drives the protocol through the platform-agnostic [FossilController] façade
+ * (NOT the raw FossilQAdapter) over the hardened [AndroidBleTransport]. Proves the
+ * whole stack on real hardware: connect → auth (button press on fresh bond, or the
+ * 03 07 01 fast-path when already bonded) → read battery/firmware → INITIALIZED,
+ * reliably across connect/disconnect/reconnect.
+ *
+ * Still deliberately UI-light (no DB, no features) — that is WP3+/WP16.
  */
 class MainActivity : ComponentActivity() {
 
     companion object {
-        private const val TAG = "FossilQ-WP0.5"
+        private const val TAG = "FossilQ-WP2"
         // Prefilled default for convenience; editable on screen.
         private const val DEFAULT_MAC = "D9:20:71:11:74:2A"
     }
+
+    // The live controller/transport for the current session (so Disconnect can act).
+    private val controllerRef = AtomicReference<FossilController?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    WalkingSkeletonScreen()
+                    HarnessScreen()
                 }
             }
         }
     }
 
+    override fun onDestroy() {
+        super.onDestroy()
+        // Make sure we never leak a live GATT connection across activity teardown.
+        controllerRef.getAndSet(null)?.let { c ->
+            thread(name = "ble-teardown") { runCatching { c.disconnect() } }
+        }
+    }
+
     @Composable
-    private fun WalkingSkeletonScreen() {
-        val context = LocalContext.current
+    private fun HarnessScreen() {
         var mac by remember { mutableStateOf(DEFAULT_MAC) }
         var status by remember {
             mutableStateOf(
@@ -69,7 +84,10 @@ class MainActivity : ComponentActivity() {
                 else "Grant Bluetooth permission, then Connect."
             )
         }
+        // Live connection-state line, updated from the transport's connection callback.
+        var link by remember { mutableStateOf("Disconnected") }
         var busy by remember { mutableStateOf(false) }
+        var connected by remember { mutableStateOf(false) }
 
         val permissionLauncher = rememberLauncherForActivityResult(
             ActivityResultContracts.RequestMultiplePermissions()
@@ -86,89 +104,144 @@ class MainActivity : ComponentActivity() {
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Text("Fossil Q — Walking Skeleton", style = MaterialTheme.typography.titleLarge)
+            Text("Fossil Q — Transport Harness (WP2)", style = MaterialTheme.typography.titleLarge)
+
+            Text("Link: $link", style = MaterialTheme.typography.labelLarge)
 
             OutlinedTextField(
                 value = mac,
                 onValueChange = { mac = it },
                 label = { Text("Watch MAC") },
                 singleLine = true,
+                enabled = !busy && !connected,
                 modifier = Modifier.fillMaxWidth()
             )
 
             Button(
                 onClick = { permissionLauncher.launch(requiredPermissions()) },
+                enabled = !busy,
                 modifier = Modifier.fillMaxWidth()
             ) { Text("Request Bluetooth permission") }
 
-            Button(
-                enabled = !busy,
-                onClick = {
-                    if (!hasPermissions()) {
-                        status = "Missing Bluetooth permission — tap 'Request' first."
-                        return@Button
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Button(
+                    enabled = !busy && !connected,
+                    modifier = Modifier.fillMaxWidth(0.5f),
+                    onClick = {
+                        if (!hasPermissions()) {
+                            status = "Missing Bluetooth permission — tap 'Request' first."
+                            return@Button
+                        }
+                        busy = true
+                        status = "Connecting to $mac…"
+                        connectAndInit(
+                            mac.trim(),
+                            onStatus = { status = it },
+                            onLink = { up -> link = if (up) "Connected" else "Disconnected"; connected = up },
+                            onDone = { busy = false }
+                        )
                     }
-                    busy = true
-                    status = "Connecting to $mac…"
-                    connectAndReadInfo(mac.trim(),
-                        onUpdate = { status = it },
-                        onDone = { busy = false }
-                    )
-                },
-                modifier = Modifier.fillMaxWidth()
-            ) { Text(if (busy) "Connecting…" else "Connect") }
+                ) { Text(if (busy && !connected) "Connecting…" else "Connect") }
+
+                OutlinedButton(
+                    enabled = connected && !busy,
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = {
+                        busy = true
+                        status = "Disconnecting…"
+                        disconnect(
+                            onStatus = { status = it },
+                            onDone = { busy = false }
+                        )
+                    }
+                ) { Text("Disconnect") }
+            }
 
             Text(status, style = MaterialTheme.typography.bodyLarge)
         }
     }
 
-    /** Runs the blocking BLE connect+init off the main thread, then reports info. */
-    private fun connectAndReadInfo(
+    /** Runs the blocking BLE connect + FossilController init off the main thread. */
+    private fun connectAndInit(
         mac: String,
-        onUpdate: (String) -> Unit,
+        onStatus: (String) -> Unit,
+        onLink: (Boolean) -> Unit,
         onDone: () -> Unit
     ) {
         thread(name = "ble-connect") {
             val transport = AndroidBleTransport(applicationContext)
+            val controller = FossilController(transport)
+            controllerRef.set(controller)
             try {
-                if (!transport.connect(mac)) {
-                    post(onUpdate, "❌ Failed to connect to $mac (out of range / BT off?)")
+                // Reflect link state changes (including unexpected out-of-range drops)
+                // straight to the UI.
+                transport.setConnectionCallback { up -> runOnUiThread { onLink(up) } }
+
+                // Show the confirm prompt ONLY when the watch actively requests
+                // authorization (it vibrates). On the already-bonded fast-path
+                // (03 07 01) this never fires and init proceeds silently.
+                controller.onAuthRequired {
+                    post(onStatus,
+                        "⌚ Authorization requested — the watch is vibrating.\n\n" +
+                            "Hold the TOP button to CONFIRM (within 30s).")
+                }
+                controller.onConfigSynced {
+                    Log.i(TAG, "Config synced")
+                }
+
+                if (!controller.connect(mac)) {
+                    post(onStatus, "❌ Failed to connect to $mac (out of range / BT off / phone-still-bonded?)")
+                    controllerRef.compareAndSet(controller, null)
                     return@thread
                 }
-                post(onUpdate, "Connected. Initializing…")
+                post(onStatus, "Connected. Initializing…")
 
-                val adapter = FossilQAdapter(transport)
-                // Only prompt for the button when the watch ACTUALLY requests
-                // authorization (it vibrates). If it is already authorized, init
-                // proceeds straight to reading info with no prompt.
-                adapter.setOnAuthRequired {
-                    post(onUpdate, "⌚ Authorization requested — the watch is vibrating.\n\n" +
-                        "Hold the TOP button to CONFIRM, or the BOTTOM button to CANCEL (within 30s).")
-                }
-                adapter.initialize(false) // minimal init: file versions + auth
-                if (adapter.isFossilProtocol()) {
-                    // 60s allows time for the auth button press on first bond.
-                    if (!adapter.waitForInit(60_000)) {
+                // Minimal init: file versions + auth. FossilController.init(false)
+                // is the auth-only path (no config/filter upload).
+                controller.init(false)
+                if (controller.isFossilProtocol()) {
+                    // 60s allows time for the auth button press on a fresh bond.
+                    if (!controller.waitForInit(60_000)) {
                         Log.w(TAG, "init may not have completed fully")
                     }
                 }
 
+                val initialized = controller.isFossilProtocol()
                 val info = buildString {
-                    append("✅ Connected to ").append(mac).append("\n")
-                    append("Model:    ").append(adapter.modelNumber ?: "?").append("\n")
-                    append("Firmware: ").append(adapter.firmwareVersion ?: "?").append("\n")
-                    append("Battery:  ").append(adapter.batteryLevel).append("%\n")
+                    append(if (initialized) "✅ INITIALIZED — " else "⚠️ connected (not Fossil 2.x) — ")
+                    append(mac).append("\n")
+                    append("Model:    ").append(controller.modelNumber ?: "?").append("\n")
+                    append("Firmware: ").append(controller.firmwareVersion ?: "?").append("\n")
+                    append("Battery:  ").append(controller.batteryLevel).append("%\n")
                     append("Protocol: ")
-                        .append(if (adapter.isFossilProtocol()) "Fossil (2.x)" else "Misfit")
+                        .append(if (initialized) "Fossil (2.x)" else "Misfit")
                 }
                 Log.i(TAG, info)
-                post(onUpdate, info)
-                adapter.shutdown()
+                post(onStatus, info)
+                // Stay connected so reconnect/teardown can be exercised via Disconnect.
             } catch (e: Exception) {
                 Log.e(TAG, "connect/init failed", e)
-                post(onUpdate, "❌ Error: ${e.message}")
+                post(onStatus, "❌ Error: ${e.message}")
+                runCatching { controller.disconnect() }
+                controllerRef.compareAndSet(controller, null)
             } finally {
-                try { transport.disconnect() } catch (_: Exception) {}
+                runOnUiThread { onDone() }
+            }
+        }
+    }
+
+    private fun disconnect(onStatus: (String) -> Unit, onDone: () -> Unit) {
+        thread(name = "ble-disconnect") {
+            try {
+                controllerRef.getAndSet(null)?.disconnect()
+                post(onStatus, "Disconnected. Ready to Connect.")
+            } catch (e: Exception) {
+                Log.w(TAG, "disconnect failed", e)
+                post(onStatus, "Disconnect error: ${e.message}")
+            } finally {
                 runOnUiThread { onDone() }
             }
         }
