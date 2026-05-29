@@ -106,15 +106,15 @@ class ButtonsViewModelTest : DbTestBase() {
 
         val ok = model.addMapping(
             buttonId = 0x20,
-            modeType = ButtonModes.MUSIC_MULTIMODE,
-            actionsJson = ButtonActionsJson.encode(listOf(ButtonActions.MUSIC_CONTROL)),
+            modeType = ButtonModes.SINGLE_ACTION,
+            actionsJson = ButtonActionsJson.encode(listOf(ButtonActions.MULTI_FUNCTION)),
         )
         assertTrue(ok)
 
         val s = awaitState(model.uiState) { it.mappings.any { m -> m.buttonId == 0x20 } }
         val added = s.mappings.first { it.buttonId == 0x20 }
-        assertEquals(ButtonModes.MUSIC_MULTIMODE, added.modeType)
-        assertEquals(listOf(ButtonActions.MUSIC_CONTROL), ButtonActionsJson.decode(added.actionsJson))
+        assertEquals(ButtonModes.SINGLE_ACTION, added.modeType)
+        assertEquals(listOf(ButtonActions.MULTI_FUNCTION), ButtonActionsJson.decode(added.actionsJson))
     }
 
     @Test
@@ -138,7 +138,7 @@ class ButtonsViewModelTest : DbTestBase() {
         awaitState(model.uiState) { it.mappings.size == 1 }
 
         // Attempting to add the same buttonId must be rejected and NOT overwrite the row.
-        val ok = model.addMapping(buttonId = 0x10, modeType = ButtonModes.MUSIC_MULTIMODE)
+        val ok = model.addMapping(buttonId = 0x10, modeType = ButtonModes.CUSTOM_TOGGLE)
         assertFalse(ok)
 
         runBlocking {
@@ -292,17 +292,35 @@ class ButtonsViewModelTest : DbTestBase() {
     }
 
     @Test
-    fun setSlotMusicMultimodeKeepsOnlyOneMusicId() {
+    fun setSlotMultiFunctionIsAPlainSingleAction() {
+        // WP-BTN: MULTI_FUNCTION is just a SINGLE_ACTION id; multi-id input still collapses to one.
         runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }
         val model = vm()
         awaitState(model.uiState) { it.hasActiveWatch }
 
-        model.setSlot(ButtonSlots.BOTTOM, ButtonModes.MUSIC_MULTIMODE,
-            listOf(ButtonActions.STOPWATCH, ButtonActions.MUSIC_CONTROL, ButtonActions.FORWARD_TO_PHONE_MULTI))
+        model.setSlot(ButtonSlots.BOTTOM, ButtonModes.SINGLE_ACTION,
+            listOf(ButtonActions.MULTI_FUNCTION, ButtonActions.STOPWATCH))
         val s = awaitState(model.uiState) { it.mappingFor(ButtonSlots.BOTTOM) != null }
         assertEquals(
-            listOf(ButtonActions.MUSIC_CONTROL),
+            listOf(ButtonActions.MULTI_FUNCTION),
             ButtonActionsJson.decode(s.mappingFor(ButtonSlots.BOTTOM)?.actionsJson),
+        )
+    }
+
+    @Test
+    fun setSlotCollapsesLegacyMusicMultimodeRowToSingleAction() {
+        // A legacy MUSIC_MULTIMODE modeType normalizes to SINGLE_ACTION on write.
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }
+        val model = vm()
+        awaitState(model.uiState) { it.hasActiveWatch }
+
+        model.setSlot(ButtonSlots.TOP, ButtonModes.LEGACY_MUSIC_MULTIMODE,
+            listOf(ButtonActions.MULTI_FUNCTION, ButtonActions.DATE))
+        val s = awaitState(model.uiState) { it.mappingFor(ButtonSlots.TOP) != null }
+        assertEquals(ButtonModes.SINGLE_ACTION, s.mappingFor(ButtonSlots.TOP)?.modeType)
+        assertEquals(
+            listOf(ButtonActions.MULTI_FUNCTION),
+            ButtonActionsJson.decode(s.mappingFor(ButtonSlots.TOP)?.actionsJson),
         )
     }
 

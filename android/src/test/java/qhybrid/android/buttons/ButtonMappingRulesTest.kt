@@ -10,8 +10,7 @@ import org.junit.Test
  *
  * No Android deps needed (the rules are plain Kotlin); asserts the collapse semantics that both
  * [ButtonsViewModel.setSlot] and `SyncOrchestrator.entriesFor` rely on:
- *   - SINGLE_ACTION / MUSIC_MULTIMODE → at most one id,
- *   - MUSIC_MULTIMODE only keeps a music-capable id,
+ *   - SINGLE_ACTION → at most one id,
  *   - CUSTOM_TOGGLE keeps the whole (cycle) list, order preserved.
  */
 class ButtonMappingRulesTest {
@@ -22,7 +21,8 @@ class ButtonMappingRulesTest {
     fun onlyCustomToggleAllowsMultiple() {
         assertTrue(ButtonMappingRules.allowsMultiple(ButtonModes.CUSTOM_TOGGLE))
         assertFalse(ButtonMappingRules.allowsMultiple(ButtonModes.SINGLE_ACTION))
-        assertFalse(ButtonMappingRules.allowsMultiple(ButtonModes.MUSIC_MULTIMODE))
+        // Legacy MUSIC_MULTIMODE normalizes to SINGLE_ACTION → single-valued.
+        assertFalse(ButtonMappingRules.allowsMultiple(ButtonModes.LEGACY_MUSIC_MULTIMODE))
         // Blank/unknown normalizes to SINGLE_ACTION → single-valued.
         assertFalse(ButtonMappingRules.allowsMultiple("   "))
         assertFalse(ButtonMappingRules.allowsMultiple("BOGUS"))
@@ -31,7 +31,7 @@ class ButtonMappingRulesTest {
     @Test
     fun maxIdsReflectsCardinality() {
         assertEquals(1, ButtonMappingRules.maxIds(ButtonModes.SINGLE_ACTION))
-        assertEquals(1, ButtonMappingRules.maxIds(ButtonModes.MUSIC_MULTIMODE))
+        assertEquals(1, ButtonMappingRules.maxIds(ButtonModes.LEGACY_MUSIC_MULTIMODE))
         assertEquals(Int.MAX_VALUE, ButtonMappingRules.maxIds(ButtonModes.CUSTOM_TOGGLE))
     }
 
@@ -63,49 +63,17 @@ class ButtonMappingRulesTest {
         )
     }
 
-    // ---- music-multimode: one music-capable id -------------------------------
+    // ---- legacy MUSIC_MULTIMODE collapses to single-action --------------------
 
     @Test
-    fun musicMultimodeKeepsFirstMusicActionOnly() {
+    fun legacyMusicMultimodeCollapsesToFirstIdLikeSingleAction() {
         assertEquals(
-            listOf(ButtonActions.MUSIC_CONTROL),
+            listOf(ButtonActions.MULTI_FUNCTION),
             ButtonMappingRules.normalizeIds(
-                ButtonModes.MUSIC_MULTIMODE,
-                listOf(ButtonActions.MUSIC_CONTROL, ButtonActions.FORWARD_TO_PHONE_MULTI),
+                ButtonModes.LEGACY_MUSIC_MULTIMODE,
+                listOf(ButtonActions.MULTI_FUNCTION, ButtonActions.STOPWATCH),
             ),
         )
-    }
-
-    @Test
-    fun musicMultimodeSkipsNonMusicActionsToFindAMusicOne() {
-        assertEquals(
-            listOf(ButtonActions.FORWARD_TO_PHONE_MULTI),
-            ButtonMappingRules.normalizeIds(
-                ButtonModes.MUSIC_MULTIMODE,
-                // A non-music action first; the first MUSIC-capable id wins.
-                listOf(ButtonActions.STOPWATCH, ButtonActions.FORWARD_TO_PHONE_MULTI, ButtonActions.MUSIC_CONTROL),
-            ),
-        )
-    }
-
-    @Test
-    fun musicMultimodeWithNoMusicActionYieldsEmpty() {
-        assertTrue(
-            ButtonMappingRules.normalizeIds(
-                ButtonModes.MUSIC_MULTIMODE,
-                listOf(ButtonActions.STOPWATCH, ButtonActions.DATE),
-            ).isEmpty(),
-        )
-    }
-
-    @Test
-    fun musicActionSetIsTheMultiFunctionPayloads() {
-        assertTrue(ButtonMappingRules.isMusicAction(ButtonActions.MUSIC_CONTROL))
-        assertTrue(ButtonMappingRules.isMusicAction(ButtonActions.FORWARD_TO_PHONE_MULTI))
-        assertTrue(ButtonMappingRules.isMusicAction(ButtonActions.VOLUME_UP))
-        assertTrue(ButtonMappingRules.isMusicAction(ButtonActions.VOLUME_DOWN))
-        assertFalse(ButtonMappingRules.isMusicAction(ButtonActions.STOPWATCH))
-        assertFalse(ButtonMappingRules.isMusicAction(ButtonActions.FORWARD_TO_PHONE))
     }
 
     // ---- custom-toggle: keep the whole cycle, order preserved ----------------

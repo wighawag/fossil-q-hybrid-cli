@@ -205,7 +205,7 @@ private fun SlotEditorDialog(
     onConfirm: (modeType: String, ids: List<String>) -> Unit,
 ) {
     var mode by remember { mutableStateOf(ButtonModes.normalize(initialMode)) }
-    // Selected ids: actions when SINGLE_ACTION/MUSIC_MULTIMODE (single-select, ≤1),
+    // Selected ids: one action when SINGLE_ACTION (single-select, ≤1),
     // dial modes when CUSTOM_TOGGLE (multi-select, the cycle). We always keep [selected]
     // already normalized for the current [mode] so an invalid combination cannot be stored.
     var selected by remember { mutableStateOf(ButtonMappingRules.normalizeIds(mode, initialIds)) }
@@ -246,13 +246,11 @@ private fun SlotEditorDialog(
                         onToggle = { id -> selected = toggle(selected, id) },
                     )
                 } else {
-                    // Single-select: MUSIC_MULTIMODE offers only music-capable actions.
-                    val options =
-                        if (mode == ButtonModes.MUSIC_MULTIMODE) ButtonMappingRules.MUSIC_ACTIONS
-                        else ButtonActions.ALL
+                    // Single-select: one action only (WP-BTN cardinality contract). The catalog is
+                    // already deduped to wire-unique actions incl. MULTI_FUNCTION.
                     Text("Action", style = MaterialTheme.typography.labelLarge)
                     ActionRadioGroup(
-                        options = options,
+                        options = ButtonActions.ALL,
                         selected = selected.firstOrNull(),
                         onSelect = { id -> selected = listOf(id) },
                     )
@@ -285,10 +283,9 @@ private fun ModeDropdown(selected: String, onSelect: (String) -> Unit) {
 }
 
 /**
- * WP-BTN single-select action picker (SINGLE_ACTION / MUSIC_MULTIMODE). A radio group enforces
- * the cardinality contract in the UI itself: exactly one action can be chosen, so an invalid
- * multi-action combination can never be stored. [options] is the music-only subset for
- * MUSIC_MULTIMODE, the full catalog otherwise.
+ * WP-BTN single-select action picker (SINGLE_ACTION). A radio group enforces the cardinality
+ * contract in the UI itself: exactly one action can be chosen, so an invalid multi-action
+ * combination can never be stored. [options] is the deduped wire-unique action catalog.
  */
 @Composable
 private fun ActionRadioGroup(options: List<String>, selected: String?, onSelect: (String) -> Unit) {

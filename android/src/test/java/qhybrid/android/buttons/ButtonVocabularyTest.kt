@@ -38,26 +38,32 @@ class ButtonVocabularyTest {
 
     @Test
     fun buttonModeConstantsAndLabels() {
+        // WP-BTN: two selectable modes only (MUSIC_MULTIMODE removed).
         assertEquals("SINGLE_ACTION", ButtonModes.SINGLE_ACTION)
-        assertEquals("MUSIC_MULTIMODE", ButtonModes.MUSIC_MULTIMODE)
         assertEquals("CUSTOM_TOGGLE", ButtonModes.CUSTOM_TOGGLE)
-        assertEquals(3, ButtonModes.ALL.size)
+        assertEquals(listOf(ButtonModes.SINGLE_ACTION, ButtonModes.CUSTOM_TOGGLE), ButtonModes.ALL)
+        assertEquals(2, ButtonModes.ALL.size)
         assertEquals(ButtonModes.SINGLE_ACTION, ButtonModes.DEFAULT)
-        assertTrue(ButtonModes.isKnown(ButtonModes.MUSIC_MULTIMODE))
+        assertTrue(ButtonModes.isKnown(ButtonModes.SINGLE_ACTION))
+        assertTrue(ButtonModes.isKnown(ButtonModes.CUSTOM_TOGGLE))
+        // The removed legacy mode is no longer a known/selectable mode.
+        assertFalse(ButtonModes.isKnown(ButtonModes.LEGACY_MUSIC_MULTIMODE))
         assertFalse(ButtonModes.isKnown("BOGUS"))
         // Unknown strings render raw (graceful fallback).
         assertEquals("BOGUS", ButtonModes.label("BOGUS"))
         // Only CUSTOM_TOGGLE implies dial-mode toggles.
         assertTrue(ButtonModes.usesDialModes(ButtonModes.CUSTOM_TOGGLE))
         assertFalse(ButtonModes.usesDialModes(ButtonModes.SINGLE_ACTION))
-        assertFalse(ButtonModes.usesDialModes(ButtonModes.MUSIC_MULTIMODE))
     }
 
     @Test
-    fun normalizeDefaultsBlankToDefault() {
+    fun normalizeDefaultsBlankToDefaultAndCollapsesLegacyMusicMode() {
         assertEquals(ButtonModes.DEFAULT, ButtonModes.normalize(null))
         assertEquals(ButtonModes.DEFAULT, ButtonModes.normalize("   "))
         assertEquals(ButtonModes.CUSTOM_TOGGLE, ButtonModes.normalize("  CUSTOM_TOGGLE "))
+        // WP-BTN: a legacy MUSIC_MULTIMODE row normalizes to SINGLE_ACTION (no crash, no new mode).
+        assertEquals(ButtonModes.SINGLE_ACTION, ButtonModes.normalize(ButtonModes.LEGACY_MUSIC_MULTIMODE))
+        assertEquals(ButtonModes.SINGLE_ACTION, ButtonModes.normalize("  MUSIC_MULTIMODE "))
     }
 
     // ---- ButtonDialModes -----------------------------------------------------
@@ -77,17 +83,40 @@ class ButtonVocabularyTest {
     // ---- ButtonActions -------------------------------------------------------
 
     @Test
-    fun actionCatalogMirrorsConfigPayload() {
-        // Each id must be a real ConfigPayload enum constant (1:1 with WP7).
+    fun actionCatalogIsDedupedToWireUniquePayloads() {
+        // WP-BTN: 9 SELECTABLE actions, each resolving (via payloadName) to a real ConfigPayload.
         for (id in ButtonActions.ALL) {
-            assertEquals(id, qhybrid.protocol.buttonconfig.ConfigPayload.valueOf(id).name)
+            assertEquals(
+                ButtonActions.payloadName(id),
+                qhybrid.protocol.buttonconfig.ConfigPayload.valueOf(ButtonActions.payloadName(id)).name,
+            )
             assertTrue("missing label for $id", ButtonActions.isKnown(id))
         }
-        assertEquals(11, ButtonActions.ALL.size)
-        assertEquals(ButtonActions.FORWARD_TO_PHONE, ButtonActions.DEFAULT)
+        assertEquals(9, ButtonActions.ALL.size)
+        assertEquals(ButtonActions.MULTI_FUNCTION, ButtonActions.DEFAULT)
+        // The redundant duplicates are NOT offered.
+        assertFalse(ButtonActions.MUSIC_CONTROL in ButtonActions.ALL)
+        assertFalse(ButtonActions.FORWARD_TO_PHONE_MULTI in ButtonActions.ALL)
+        assertFalse(ButtonActions.FORWARD_TO_PHONE in ButtonActions.ALL)
+        // isKnown reflects the SELECTABLE set (legacy aliases are not "known").
+        assertFalse(ButtonActions.isKnown(ButtonActions.MUSIC_CONTROL))
         assertEquals("Ring phone", ButtonActions.label(ButtonActions.RING_PHONE))
+        assertEquals("Multi-function (app decides)", ButtonActions.label(ButtonActions.MULTI_FUNCTION))
         // Unknown id renders raw.
         assertEquals("BOGUS", ButtonActions.label("BOGUS"))
+    }
+
+    @Test
+    fun payloadNameCollapsesRedundantAliasesAndIsIdentityOtherwise() {
+        // The two duplicate pairs collapse onto a single canonical wire payload.
+        assertEquals("FORWARD_TO_PHONE_MULTI", ButtonActions.payloadName(ButtonActions.MULTI_FUNCTION))
+        assertEquals("FORWARD_TO_PHONE_MULTI", ButtonActions.payloadName(ButtonActions.MUSIC_CONTROL))
+        assertEquals("FORWARD_TO_PHONE_MULTI", ButtonActions.payloadName(ButtonActions.FORWARD_TO_PHONE_MULTI))
+        assertEquals("RING_PHONE", ButtonActions.payloadName(ButtonActions.FORWARD_TO_PHONE))
+        // Distinct actions are their own payloads (identity).
+        assertEquals("VOLUME_UP", ButtonActions.payloadName(ButtonActions.VOLUME_UP))
+        assertEquals("VOLUME_DOWN", ButtonActions.payloadName(ButtonActions.VOLUME_DOWN))
+        assertEquals("STOPWATCH", ButtonActions.payloadName(ButtonActions.STOPWATCH))
     }
 
     // ---- ButtonActionsJson round-trip + tolerance ----------------------------

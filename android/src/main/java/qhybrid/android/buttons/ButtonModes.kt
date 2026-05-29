@@ -14,9 +14,14 @@ package qhybrid.android.buttons
  * be possible; per-model hardware validation is out of scope (WP14 / on-device-pending).
  *
  * `modeType` strings match the WP4 [qhybrid.android.db.ButtonMappingEntity] doc + DAO tests:
- * - `SINGLE_ACTION`   — button fires one action.
- * - `MUSIC_MULTIMODE` — multi-function music control (one press cycles music functions).
+ * - `SINGLE_ACTION`   — button fires one action (incl. [ButtonActions.MULTI_FUNCTION], the
+ *   open-ended "emit gesture events to the phone" action whose meaning the app decides later).
  * - `CUSTOM_TOGGLE`   — press cycles through several physical dial modes (sub-eye positions).
+ *
+ * **WP-BTN:** the former `MUSIC_MULTIMODE` mode was removed — its multi-function behaviour is
+ * just the single [ButtonActions.MULTI_FUNCTION] action inside `SINGLE_ACTION` (the watch emits
+ * gesture events; the app interprets them). The constant is retained ONLY as a tolerated legacy
+ * value ([LEGACY_MUSIC_MULTIMODE]) so old DB rows normalize to `SINGLE_ACTION` without crashing.
  */
 /**
  * WP16d — the three physical buttons every Fossil Q Hybrid watch has, in TOP/MIDDLE/BOTTOM
@@ -47,18 +52,23 @@ object ButtonSlots {
 
 object ButtonModes {
     const val SINGLE_ACTION = "SINGLE_ACTION"
-    const val MUSIC_MULTIMODE = "MUSIC_MULTIMODE"
     const val CUSTOM_TOGGLE = "CUSTOM_TOGGLE"
 
-    /** All known modeType ids in display order. */
-    val ALL = listOf(SINGLE_ACTION, MUSIC_MULTIMODE, CUSTOM_TOGGLE)
+    /**
+     * WP-BTN — legacy modeType (removed from the selectable set). Old DB rows may still hold this
+     * string; [normalize] maps it to [SINGLE_ACTION] so nothing crashes and a former music button
+     * compiles as a single action (its single id, e.g. [ButtonActions.MULTI_FUNCTION]).
+     */
+    const val LEGACY_MUSIC_MULTIMODE = "MUSIC_MULTIMODE"
+
+    /** All SELECTABLE modeType ids in display order (two only — WP-BTN). */
+    val ALL = listOf(SINGLE_ACTION, CUSTOM_TOGGLE)
 
     /** Default for a brand-new mapping. */
     const val DEFAULT = SINGLE_ACTION
 
     private val LABELS = mapOf(
         SINGLE_ACTION to "Single action",
-        MUSIC_MULTIMODE to "Music (multi-function)",
         CUSTOM_TOGGLE to "Dial-mode toggle",
     )
 
@@ -68,13 +78,18 @@ object ButtonModes {
     /** True if [modeType] is one we know; unknown strings are still tolerated (rendered raw). */
     fun isKnown(modeType: String): Boolean = modeType in LABELS
 
-    /** Normalize a modeType, defaulting blank/null to [DEFAULT] (never throws). */
-    fun normalize(modeType: String?): String =
-        modeType?.trim()?.takeIf { it.isNotEmpty() } ?: DEFAULT
+    /**
+     * Normalize a modeType, defaulting blank/null to [DEFAULT] (never throws). The legacy
+     * [LEGACY_MUSIC_MULTIMODE] string collapses to [SINGLE_ACTION] (WP-BTN mode removal).
+     */
+    fun normalize(modeType: String?): String {
+        val m = modeType?.trim()?.takeIf { it.isNotEmpty() } ?: return DEFAULT
+        return if (m == LEGACY_MUSIC_MULTIMODE) SINGLE_ACTION else m
+    }
 
     /**
      * Whether the chosen mode implies the dial-mode toggle UI (sub-eye positions). True only
-     * for [CUSTOM_TOGGLE]; [SINGLE_ACTION]/[MUSIC_MULTIMODE] use the action picker instead.
+     * for [CUSTOM_TOGGLE]; [SINGLE_ACTION] uses the single-select action picker instead.
      */
     fun usesDialModes(modeType: String): Boolean = modeType == CUSTOM_TOGGLE
 }
@@ -108,16 +123,25 @@ object ButtonDialModes {
 }
 
 /**
- * WP16d — the selectable button-action catalog. Ids mirror the WP7
- * [qhybrid.protocol.buttonconfig.ConfigPayload] enum names 1:1 so a stored action id maps
- * straight onto the protocol payload at compile time (WP14). Labels lifted from each
- * payload's `getDescription()`. Centralized so the action picker and the stored
- * `actionsJson` cannot drift; treated as a flat catalog (no per-model gating).
+ * WP-BTN — the selectable button-action catalog, **deduped to one entry per UNIQUE wire payload**.
+ *
+ * Several [qhybrid.protocol.buttonconfig.ConfigPayload] constants are byte-for-byte identical, so
+ * offering both would let the user pick two menu items that produce the SAME watch bytes. We expose
+ * only the wire-unique set:
+ * - `01 06 12 00` (the open-ended "emit gesture events to the phone" payload) → [MULTI_FUNCTION]
+ *   (replaces the redundant `MUSIC_CONTROL` / `FORWARD_TO_PHONE_MULTI`; the app decides per-gesture
+ *   meaning in a LATER config).
+ * - `01 01 0C 00` → [RING_PHONE] (the redundant `FORWARD_TO_PHONE` is dropped from the menu).
+ *
+ * Most ids still map 1:1 onto a [ConfigPayload] name; [MULTI_FUNCTION] and the retained legacy
+ * aliases resolve via [payloadName] so a stored id always compiles to the right golden payload
+ * (no wire bytes invented). Legacy alias constants are kept (not in [ALL]) so old DB rows decode.
  */
 object ButtonActions {
-    const val FORWARD_TO_PHONE = "FORWARD_TO_PHONE"
-    const val FORWARD_TO_PHONE_MULTI = "FORWARD_TO_PHONE_MULTI"
-    const val MUSIC_CONTROL = "MUSIC_CONTROL"
+    // ---- selectable (wire-unique) actions ------------------------------------
+    /** Open-ended "emit gesture events to the phone" action (wire `01 06 12 00`); meaning decided
+     *  app-side later. Compiles to [ConfigPayload.FORWARD_TO_PHONE_MULTI] (== `MUSIC_CONTROL`). */
+    const val MULTI_FUNCTION = "MULTI_FUNCTION"
     const val STOPWATCH = "STOPWATCH"
     const val DATE = "DATE"
     const val LAST_NOTIFICATION = "LAST_NOTIFICATION"
@@ -127,11 +151,17 @@ object ButtonActions {
     const val STEP_GOAL_COMPLETION = "STEP_GOAL_COMPLETION"
     const val RING_PHONE = "RING_PHONE"
 
-    /** All action ids in display order (mirrors [ConfigPayload] declaration order). */
+    // ---- retained legacy aliases (NOT shown; kept so old DB rows still decode/compile) --------
+    /** @deprecated redundant with [RING_PHONE] (identical wire bytes). Legacy rows only. */
+    const val FORWARD_TO_PHONE = "FORWARD_TO_PHONE"
+    /** @deprecated redundant with [MULTI_FUNCTION] (identical wire bytes). Legacy rows only. */
+    const val FORWARD_TO_PHONE_MULTI = "FORWARD_TO_PHONE_MULTI"
+    /** @deprecated redundant with [MULTI_FUNCTION] (identical wire bytes). Legacy rows only. */
+    const val MUSIC_CONTROL = "MUSIC_CONTROL"
+
+    /** All SELECTABLE action ids in display order (wire-unique only — WP-BTN). */
     val ALL = listOf(
-        FORWARD_TO_PHONE,
-        FORWARD_TO_PHONE_MULTI,
-        MUSIC_CONTROL,
+        MULTI_FUNCTION,
         STOPWATCH,
         DATE,
         LAST_NOTIFICATION,
@@ -143,12 +173,21 @@ object ButtonActions {
     )
 
     /** Default action for a brand-new SINGLE_ACTION mapping. */
-    const val DEFAULT = FORWARD_TO_PHONE
+    const val DEFAULT = MULTI_FUNCTION
+
+    /**
+     * Resolve an app-level action id to its backing [ConfigPayload] enum NAME. [MULTI_FUNCTION]
+     * and the legacy aliases collapse onto their canonical payload; every other id is its own
+     * payload name. Used by the orchestrator's compile step so no wire bytes are invented.
+     */
+    fun payloadName(actionId: String): String = when (actionId) {
+        MULTI_FUNCTION, FORWARD_TO_PHONE_MULTI, MUSIC_CONTROL -> FORWARD_TO_PHONE_MULTI
+        FORWARD_TO_PHONE -> RING_PHONE
+        else -> actionId
+    }
 
     private val LABELS = mapOf(
-        FORWARD_TO_PHONE to "Forward to phone",
-        FORWARD_TO_PHONE_MULTI to "Forward to phone (multi-function)",
-        MUSIC_CONTROL to "Control music (play/pause/prev/next)",
+        MULTI_FUNCTION to "Multi-function (app decides)",
         STOPWATCH to "Stopwatch",
         DATE to "Show date",
         LAST_NOTIFICATION to "Show last notification",
@@ -157,8 +196,13 @@ object ButtonActions {
         VOLUME_DOWN to "Music volume down",
         STEP_GOAL_COMPLETION to "Show step goal completion",
         RING_PHONE to "Ring phone",
+        // Legacy aliases keep a readable label if an old row surfaces in a summary.
+        FORWARD_TO_PHONE to "Ring phone",
+        FORWARD_TO_PHONE_MULTI to "Multi-function (app decides)",
+        MUSIC_CONTROL to "Multi-function (app decides)",
     )
 
     fun label(action: String): String = LABELS[action] ?: action
-    fun isKnown(action: String): Boolean = action in LABELS
+    /** True if [action] is a SELECTABLE (shown) action. Legacy aliases return false. */
+    fun isKnown(action: String): Boolean = action in ALL
 }

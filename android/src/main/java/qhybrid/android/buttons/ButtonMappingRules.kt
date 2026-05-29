@@ -9,12 +9,13 @@ package qhybrid.android.buttons
  * The mode and the action cardinality disagreed.
  *
  * The contract (verified in ANDROID-FOLLOWUPS-PLAN.md WP-BTN):
- * - [ButtonModes.SINGLE_ACTION]   → **exactly one** [ButtonActions] / [ConfigPayload] id.
- * - [ButtonModes.MUSIC_MULTIMODE] → **exactly one** id; the multi-function is *inside* the
- *   payload (e.g. [ButtonActions.MUSIC_CONTROL] / [ButtonActions.FORWARD_TO_PHONE_MULTI]); only
- *   the music-capable actions are offered.
- * - [ButtonModes.CUSTOM_TOGGLE]   → **one-or-more** dial-mode ids — the genuine "cycle through
+ * - [ButtonModes.SINGLE_ACTION] → **exactly one** [ButtonActions] id (incl.
+ *   [ButtonActions.MULTI_FUNCTION], the open-ended "emit gestures to phone" action).
+ * - [ButtonModes.CUSTOM_TOGGLE] → **one-or-more** dial-mode ids — the genuine "cycle through
  *   several dial modes in turn" (see [ButtonDialModes] / `ButtonCompiler.compileMultiEntry`).
+ *
+ * **WP-BTN:** the former `MUSIC_MULTIMODE` mode was removed — multi-function is now just the
+ * single [ButtonActions.MULTI_FUNCTION] action inside `SINGLE_ACTION`.
  *
  * This is the single source of truth shared by [ButtonsViewModel.setSlot] (normalize before
  * persisting) and `SyncOrchestrator.entriesFor` (defensively collapse a legacy multi-id row),
@@ -24,22 +25,6 @@ package qhybrid.android.buttons
  * [qhybrid.protocol.buttonconfig.ConfigPayload]
  */
 object ButtonMappingRules {
-
-    /**
-     * The music-capable actions a [ButtonModes.MUSIC_MULTIMODE] button may carry. These are the
-     * multi-function music payloads (the "multi" is *inside* the payload). Mirrors the
-     * [ButtonActions] ids 1:1; a non-music action picked for a music button is dropped by
-     * [normalizeIds].
-     */
-    val MUSIC_ACTIONS: List<String> = listOf(
-        ButtonActions.MUSIC_CONTROL,
-        ButtonActions.FORWARD_TO_PHONE_MULTI,
-        ButtonActions.VOLUME_UP,
-        ButtonActions.VOLUME_DOWN,
-    )
-
-    /** Whether [actionId] is a music-capable action (offer-set for [ButtonModes.MUSIC_MULTIMODE]). */
-    fun isMusicAction(actionId: String): Boolean = actionId in MUSIC_ACTIONS
 
     /**
      * True if [modeType] allows more than one id (the cycle). Only [ButtonModes.CUSTOM_TOGGLE]
@@ -60,8 +45,6 @@ object ButtonMappingRules {
      *
      * - [ButtonModes.CUSTOM_TOGGLE] → keep the list as-is (order preserved; it is the cycle order),
      *   blank entries dropped.
-     * - [ButtonModes.MUSIC_MULTIMODE] → keep at most one id, **and only a music-capable one**
-     *   (the first music action in the list; if none, the list is emptied).
      * - any other (single-action) mode → keep at most the **first** non-blank id.
      *
      * This is the collapse rule both the ViewModel (before persisting) and the orchestrator
@@ -70,11 +53,6 @@ object ButtonMappingRules {
      */
     fun normalizeIds(modeType: String, ids: List<String>): List<String> {
         val clean = ids.map { it.trim() }.filter { it.isNotEmpty() }
-        val mode = ButtonModes.normalize(modeType)
-        return when {
-            allowsMultiple(mode) -> clean
-            mode == ButtonModes.MUSIC_MULTIMODE -> clean.firstOrNull { isMusicAction(it) }?.let { listOf(it) } ?: emptyList()
-            else -> clean.take(1)
-        }
+        return if (allowsMultiple(modeType)) clean else clean.take(1)
     }
 }

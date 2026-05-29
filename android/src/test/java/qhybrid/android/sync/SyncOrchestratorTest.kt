@@ -217,15 +217,44 @@ class SyncOrchestratorTest {
         SyncOrchestrator.sync(
             SyncInput(watch = watch(),
                 buttons = listOf(button(ButtonSlots.TOP, ButtonModes.SINGLE_ACTION,
-                    listOf(ButtonActions.MUSIC_CONTROL))),
+                    listOf(ButtonActions.STOPWATCH))),
                 settings = SyncSettings()),
             up,
         )
         val expected = ButtonConfigBuilder.build(
-            arrayOf(ButtonConfigBuilder.entryFrom(ConfigPayload.MUSIC_CONTROL)),
+            arrayOf(ButtonConfigBuilder.entryFrom(ConfigPayload.STOPWATCH)),
             emptyArray(), emptyArray(),
         )
         assertArrayEquals(expected, up.buttonBytes)
+    }
+
+    @Test
+    fun multiFunctionActionCompilesToTheMultiWirePayload() {
+        // WP-BTN: MULTI_FUNCTION (and the legacy MUSIC_CONTROL alias) resolve to the SAME wire
+        // payload (FORWARD_TO_PHONE_MULTI == MUSIC_CONTROL bytes) via ButtonActions.payloadName.
+        val up = FakeUploader()
+        SyncOrchestrator.sync(
+            SyncInput(watch = watch(),
+                buttons = listOf(button(ButtonSlots.TOP, ButtonModes.SINGLE_ACTION,
+                    listOf(ButtonActions.MULTI_FUNCTION))),
+                settings = SyncSettings()),
+            up,
+        )
+        val expected = ButtonConfigBuilder.build(
+            arrayOf(ButtonConfigBuilder.entryFrom(ConfigPayload.FORWARD_TO_PHONE_MULTI)),
+            emptyArray(), emptyArray(),
+        )
+        assertArrayEquals(expected, up.buttonBytes)
+        // The legacy MUSIC_CONTROL id must compile to byte-identical output.
+        val up2 = FakeUploader()
+        SyncOrchestrator.sync(
+            SyncInput(watch = watch(),
+                buttons = listOf(button(ButtonSlots.TOP, ButtonModes.SINGLE_ACTION,
+                    listOf(ButtonActions.MUSIC_CONTROL))),
+                settings = SyncSettings()),
+            up2,
+        )
+        assertArrayEquals(expected, up2.buttonBytes)
     }
 
     @Test
@@ -271,20 +300,20 @@ class SyncOrchestratorTest {
     }
 
     @Test
-    fun legacyMultiIdMusicMultimodeRowCollapsesToOneMusicEntry() {
-        // A legacy MUSIC_MULTIMODE row with several ids (incl. a non-music one) collapses to the
-        // first music-capable id only — one entry, matching the golden compiler.
+    fun legacyMusicMultimodeRowCompilesAsSingleActionFirstId() {
+        // WP-BTN: a legacy MUSIC_MULTIMODE modeType normalizes to SINGLE_ACTION and the multi-id
+        // list collapses to its first id — one entry, matching the golden compiler.
         val up = FakeUploader()
         SyncOrchestrator.sync(
             SyncInput(watch = watch(),
-                buttons = listOf(button(ButtonSlots.BOTTOM, ButtonModes.MUSIC_MULTIMODE,
-                    listOf(ButtonActions.STOPWATCH, ButtonActions.MUSIC_CONTROL, ButtonActions.FORWARD_TO_PHONE_MULTI))),
+                buttons = listOf(button(ButtonSlots.BOTTOM, ButtonModes.LEGACY_MUSIC_MULTIMODE,
+                    listOf(ButtonActions.MULTI_FUNCTION, ButtonActions.STOPWATCH))),
                 settings = SyncSettings()),
             up,
         )
         val expected = ButtonConfigBuilder.build(
             emptyArray(), emptyArray(),
-            arrayOf(ButtonConfigBuilder.entryFrom(ConfigPayload.MUSIC_CONTROL)),
+            arrayOf(ButtonConfigBuilder.entryFrom(ConfigPayload.FORWARD_TO_PHONE_MULTI)),
         )
         assertArrayEquals(expected, up.buttonBytes)
     }
