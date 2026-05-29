@@ -1,7 +1,7 @@
 package qhybrid.android.alarms
 
 import android.content.Context
-import qhybrid.android.WatchConnectionService
+import qhybrid.android.sync.ServiceSaveToWatch
 
 /**
  * WP16b — narrow, injectable seam for the "Save to watch" intent (mirrors WP16a's
@@ -36,10 +36,10 @@ class ServiceAlarmSync(context: Context) : AlarmSync {
     private val appContext = context.applicationContext
 
     override fun saveToWatch(): Boolean {
-        // WP14: syncNow now drives the SyncOrchestrator (WP5 compile → BLE alarm-file write)
-        // on the service's ble-worker. The rows are already persisted to Room by the intents.
-        WatchConnectionService.syncNow(appContext)
-        return ALARM_UPLOAD_WIRED
+        // WP14: drives the SyncOrchestrator (WP5 compile → BLE alarm-file write) on the service's
+        // ble-worker; rows are already persisted to Room by the intents.
+        // WP-SYNCFIX: publish SYNCING immediately (spinner shows at once) + connect-then-sync.
+        return ServiceSaveToWatch.trigger(appContext) && ALARM_UPLOAD_WIRED
     }
 
     companion object {

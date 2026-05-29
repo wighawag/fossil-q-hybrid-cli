@@ -1,7 +1,7 @@
 package qhybrid.android.settings
 
 import android.content.Context
-import qhybrid.android.WatchConnectionService
+import qhybrid.android.sync.ServiceSaveToWatch
 
 /**
  * WP16g — narrow, injectable seam for the LIVE settings commands the Settings screen can push to
@@ -72,11 +72,11 @@ class ServiceSettingsSync(context: Context) : SettingsSync {
     override fun applySecondTimezone(offsetMinutes: Int): Boolean = poke()
 
     private fun poke(): Boolean {
-        // WP14: syncNow now drives the SyncOrchestrator, which applies the just-persisted
-        // vibration / nudge / second-timezone values live via the golden-tested façade settings
-        // methods on the WP3 service's ble-worker (no new wire behavior, no invented bytes).
-        WatchConnectionService.syncNow(appContext)
-        return SETTINGS_WIRED
+        // WP14: drives the SyncOrchestrator, which applies the just-persisted vibration / nudge /
+        // second-timezone values live via the golden-tested façade settings methods on the WP3
+        // service's ble-worker (no new wire behavior, no invented bytes).
+        // WP-SYNCFIX: publish SYNCING immediately (status row shows at once) + connect-then-sync.
+        return ServiceSaveToWatch.trigger(appContext) && SETTINGS_WIRED
     }
 
     companion object {

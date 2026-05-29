@@ -118,6 +118,12 @@ class WatchConnectionService : Service() {
     // Guards against overlapping connect attempts (single-link device).
     private val connecting = AtomicBoolean(false)
 
+    // WP-SYNCFIX: set true when an explicit user "Save to watch" requested a sync while the link
+    // was down, so a connect-then-sync runs and a CONNECT FAILURE is surfaced honestly as a
+    // SyncState ERROR ("watch not reachable") rather than silently dropping the write. Cleared
+    // once the connect attempt resolves (success runs the sync; failure publishes the error).
+    private val pendingSyncOnConnect = AtomicBoolean(false)
+
     // ---- binding (thin client reads state / triggers actions) ---------------
 
     inner class LocalBinder : Binder() {
@@ -241,6 +247,9 @@ class WatchConnectionService : Service() {
                     message = "Failed to connect (out of range / BT off / phone still bonded?)",
                     clearDeviceInfo = true,
                 )
+                // WP-SYNCFIX: a Save-to-watch that triggered this connect must NOT report success
+                // when the watch is unreachable — surface an honest sync error instead.
+                failPendingSync("Watch not reachable (out of range / Bluetooth off?)")
                 controllerRef.compareAndSet(controller, null)
                 return
             }
@@ -266,6 +275,10 @@ class WatchConnectionService : Service() {
                     mtu = transportRef.get()?.getMtu() ?: 0,
                     message = "Connected",
                 )
+                // A connect requested by an explicit Save-to-watch is about to run the sync via
+                // the on-connect hook below; clear the pending flag so the failure paths don't
+                // also publish an error.
+                pendingSyncOnConnect.set(false)
                 // WP3 sync-on-connect hook (WP5/6/9 fill in alarm/filter/calendar uploads).
                 runOnConnectSync(controller)
                 // WP-ACTIVITY: also pull the activity file on connect so the Sleep screen +
@@ -282,6 +295,9 @@ class WatchConnectionService : Service() {
                     mac = mac,
                     message = "Connected (not Fossil 2.x)",
                 )
+                // WP-SYNCFIX: a non-Fossil watch can't receive the config — don't leave a pending
+                // Save-to-watch spinning; report it honestly.
+                failPendingSync("Connected, but this watch isn't a Fossil Q Hybrid 2.x.")
             }
         } catch (e: Exception) {
             Log.e(TAG, "connect/init failed", e)
@@ -290,8 +306,26 @@ class WatchConnectionService : Service() {
                 message = "Error: ${e.message}",
                 clearDeviceInfo = true,
             )
+            // WP-SYNCFIX: surface the connect/init failure to a pending Save-to-watch.
+            failPendingSync("Could not sync: ${e.message ?: e.javaClass.simpleName}")
             runCatching { controller.disconnect() }
             controllerRef.compareAndSet(controller, null)
+        }
+    }
+
+    /**
+     * WP-SYNCFIX — if an explicit Save-to-watch ([submitSync]) requested a sync while the link was
+     * down and the subsequent connect attempt FAILED, publish a SyncState ERROR so the Save button
+     * shows an honest failure (and does NOT claim the config was saved to the watch). No-op if no
+     * sync was pending. Clears the pending flag.
+     */
+    private fun failPendingSync(message: String) {
+        if (pendingSyncOnConnect.getAndSet(false)) {
+            SyncState.publish(
+                SyncState.SyncPhase.ERROR,
+                errorMessage = message,
+                nowMillis = System.currentTimeMillis(),
+            )
         }
     }
 
@@ -348,14 +382,47 @@ class WatchConnectionService : Service() {
             SharedPreferencesSettingsPrefs(applicationContext),
         )
 
+    /**
+     * WP-SYNCFIX — "Save to watch". If the link is already up, run the sync immediately. If it is
+     * DOWN, do a **connect-then-sync** rather than silently dropping the request: mark a pending
+     * sync, then kick a connect for the associated mac. On a successful connect the on-connect
+     * hook ([connectAndInit] → [runOnConnectSync]) performs the sync (publishing SUCCESS/ERROR
+     * from the result); on a FAILED connect [failPendingSync] publishes a SyncState ERROR so the
+     * UI reports honestly that nothing was saved to the watch. With no associated watch at all, we
+     * publish an immediate error.
+     *
+     * The app-side already published SYNCING (see [qhybrid.android.sync.ServiceSaveToWatch]) so the
+     * Save button shows the spinner the instant the user taps it, even before the link is up.
+     */
     private fun submitSync() {
         worker.execute {
             val c = controllerRef.get()
-            if (c == null || !isLinkUp()) {
-                Log.d(TAG, "syncNow ignored — not connected")
+            if (c != null && isLinkUp()) {
+                runCatching { runOnConnectSync(c) }
+                    .onFailure {
+                        Log.e(TAG, "sync failed", it)
+                        SyncState.publish(
+                            SyncState.SyncPhase.ERROR,
+                            errorMessage = it.message ?: it.javaClass.simpleName,
+                            nowMillis = System.currentTimeMillis(),
+                        )
+                    }
                 return@execute
             }
-            runCatching { runOnConnectSync(c) }
+            // Link is down — connect first, then sync on connect.
+            val mac = CompanionManager.getAssociatedMac(this)
+            if (mac == null) {
+                Log.w(TAG, "syncNow: no associated watch")
+                SyncState.publish(
+                    SyncState.SyncPhase.ERROR,
+                    errorMessage = "No watch associated.",
+                    nowMillis = System.currentTimeMillis(),
+                )
+                return@execute
+            }
+            Log.i(TAG, "syncNow: link down — connecting then syncing ($mac)")
+            pendingSyncOnConnect.set(true)
+            submitConnect(mac)
         }
     }
 
