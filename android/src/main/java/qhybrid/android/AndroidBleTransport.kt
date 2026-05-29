@@ -11,6 +11,8 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.content.Context
 import android.os.Build
+import android.os.Handler
+import android.os.HandlerThread
 import android.util.Log
 import qhybrid.protocol.BleTransport
 import java.util.UUID
@@ -44,9 +46,16 @@ import java.util.function.Consumer
  *     and an op generation, so a late callback from a previous op can never
  *     complete the next op's latch.
  *
- * Threading: GATT callbacks arrive on a binder thread and only countDown latches
- * / forward notifications — they never block. The blocking happens on the
- * caller's worker thread (MainActivity runs connect()/init() off the main thread).
+ * Threading: a dedicated background [HandlerThread] ("ble-gatt") is passed to
+ * [BluetoothDevice.connectGatt] so that ALL [BluetoothGattCallback] events —
+ * including [onCharacteristicChanged], which forwards every incoming watch
+ * notification into the SYNCHRONOUS protocol layer ([qhybrid.protocol.FossilQAdapter])
+ * — are delivered OFF the main thread. (Without an explicit Handler, Android delivers
+ * GATT callbacks on the app's MAIN thread; during the connect/init/auth/file-sync
+ * notification burst the protocol's synchronous processing would then saturate the
+ * main thread and ANR the UI — "Skipped N frames". See the connect() comment.) The
+ * caller's blocking (connect()/read()/write() awaiting a CountDownLatch) happens on
+ * the service's "ble-worker" executor, never the main thread.
  */
 @SuppressLint("MissingPermission") // Permissions are requested in MainActivity before connect().
 class AndroidBleTransport(private val context: Context) : BleTransport {
@@ -81,6 +90,12 @@ class AndroidBleTransport(private val context: Context) : BleTransport {
     private var gatt: BluetoothGatt? = null
     @Volatile private var connectedMac: String? = null
     @Volatile private var mtu: Int = DEFAULT_MTU
+
+    // Dedicated background thread for GATT callback delivery (see the class doc). Created
+    // lazily on connect() and quit in disconnect() — the WP3 service builds a fresh
+    // AndroidBleTransport per connect, so this is naturally scoped to one link.
+    @Volatile private var gattThread: HandlerThread? = null
+    @Volatile private var gattHandler: Handler? = null
 
     // One GATT op at a time. Each blocking call grabs this lock for its duration.
     private val opLock = Any()
@@ -223,7 +238,15 @@ class AndroidBleTransport(private val context: Context) : BleTransport {
 
         // Step 1: GATT connect — wait for STATE_CONNECTED.
         connectLatch = CountDownLatch(1)
-        gatt = device.connectGatt(context, false, gattCallback, TRANSPORT_LE)
+        // Deliver every GATT callback on a dedicated background thread (NOT the main
+        // thread) so that onCharacteristicChanged → the synchronous protocol layer can't
+        // saturate the UI thread during the notification burst (ANR fix). The 6-arg
+        // overload that accepts a Handler is API 26+ (== our minSdk).
+        val handler = ensureGattHandler()
+        gatt = device.connectGatt(
+            context, false, gattCallback, TRANSPORT_LE,
+            BluetoothDevice.PHY_LE_1M_MASK, handler,
+        )
         val connected = connectLatch?.await(CONNECT_STATE_TIMEOUT_MS, TimeUnit.MILLISECONDS) ?: false
         connectLatch = null
         if (!connected || connectedMac == null) {
@@ -339,7 +362,22 @@ class AndroidBleTransport(private val context: Context) : BleTransport {
             writeLatch?.countDown()
             mtuLatch?.countDown()
             if (wasConnected) connectionCallback?.accept(false)
+            // Tear down the GATT callback thread (a fresh transport is built per connect).
+            // quitSafely() lets already-queued callbacks drain first.
+            gattThread?.quitSafely()
+            gattThread = null
+            gattHandler = null
         }
+    }
+
+    /** Lazily create (or reuse) the background HandlerThread that delivers GATT callbacks. */
+    private fun ensureGattHandler(): Handler {
+        gattHandler?.let { return it }
+        val thread = HandlerThread("ble-gatt").also { it.start() }
+        val handler = Handler(thread.looper)
+        gattThread = thread
+        gattHandler = handler
+        return handler
     }
 
     override fun isConnected(): Boolean = connectedMac != null
