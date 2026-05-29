@@ -405,6 +405,15 @@ To provide transparency and a seamless developer/debugging experience, we will i
 | **Background Jobs**| WorkManager | Handles system-integrated background scheduling & battery constraints. |
 | **Service Control**| `NotificationListenerService` + `CompanionDeviceManager` | Guarantees connection reliability in the background. |
 
+### UI Approach & Rationale (Decision: Jetpack Compose)
+We deliberately build the entire app UI with **Jetpack Compose + Kotlin**, Google's official recommended toolkit for all new Android apps since 2021. This is the current best practice, not a legacy choice.
+
+- **Modern, declarative UI**: Screens are described as a function of state (`@Composable`). When state changes (e.g. battery level, connection status, alarm list), the UI updates automatically. No XML layouts, no `findViewById`, no `RecyclerView`/Adapter/ViewHolder boilerplate — a scrolling list is simply `LazyColumn { items(...) }`.
+- **Why NOT the older "XML Views + RecyclerView" approach (which Gadgetbridge uses)**: Gadgetbridge predates Compose (~2015) and carries a large, mature Views-based codebase for 100+ devices; rewriting it would be pointless for them. That is a *historical* fact about *their* codebase, not a technical recommendation. Building our own focused app gives us a clean, modern, Compose-native foundation tailored to one watch family — which is itself a core reason for not just extending Gadgetbridge.
+- **Clean language split (no friction)**: `:protocol` stays **Java** (the reused, untouched Gadgetbridge protocol classes + `FossilQAdapter`); `:android` is **Kotlin + Compose**. Kotlin/Compose calls Java seamlessly, so reusing the Java protocol layer costs us nothing.
+- **Reusing Gadgetbridge's UI logic, not its screens**: Because GB's permission/welcome wizard is built in XML Views + RecyclerView, we do **not** drop its screens into our Compose app (the paradigms don't mix cleanly). Instead we copy GB's permission *logic* (e.g. which permissions, how to check them, Android-version branching from `PermissionsUtils`) and rebuild the *UI* in Compose. This applies to all borrowed Gadgetbridge UI: borrow the logic, re-express the UI in Compose.
+- **State management**: MVVM with `ViewModel` + `StateFlow`, the standard Compose architecture pattern, backed by Room (data) and DataStore (preferences).
+
 ---
 
 ## 6. Detailed Implementation Phases
