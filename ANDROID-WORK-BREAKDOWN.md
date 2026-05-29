@@ -523,24 +523,29 @@ and the boot receiver; `companion_device_setup` feature.
 
 ---
 
-## WP15 — In-App Log Viewer (level filter + export)
+## WP15 — In-App Log Viewer + Debug Menu (level filter + export)
 
-**Goal:** Capture INFO/DEBUG logs into a ring buffer; Compose console with level filter + export.
+**Goal:** Capture INFO/DEBUG logs into a ring buffer; Compose console with level filter + export. Also host the **Debug Menu** — a developer-tools surface reached from a top-right overflow/gear in the app, gated so it never ships enabled in release (e.g. `BuildConfig.DEBUG`).
 
 **Scope:**
 - An SLF4J appender (or bridge) feeding an in-memory ring buffer with level + timestamp.
 - The protocol already logs via SLF4J — route those through too.
 - INFO = friendly operational lines (plan §4.I examples); DEBUG = raw hex/GATT/DB.
+- **Debug Menu** (plan §4.I.4): top-right entry → a screen of dev/testing actions, with the log console living here too. First actions:
+  - **DB tools (WP4):** dump Room DB to the console, seed sample data, **clone/transfer between two MACs** (`WatchRepository.transferSettings`), wipe a watch (exercises CASCADE), list/switch active watch.
+  - **BLE/protocol tools (WP3):** connect/disconnect/sync-now, show link state + negotiated MTU.
+  - **Misc:** build/version info, permission state, CDM associations.
+  - *Note:* this replaces the throwaway WP4 in-`MainActivity` debug panel (dump-to-logcat tag `FossilQ-DB`) that verified multi-watch + clone on two real watches and was then removed.
 
-**Depends on:** WP0; richer once WP1–WP3 emit logs.
+**Depends on:** WP0; richer once WP1–WP4 emit logs / expose the repository.
 
-**Reference files:** `ANDROID-PLAN.md` §4.I.
+**Reference files:** `ANDROID-PLAN.md` §4.I (incl. §4.I.4 Debug Menu).
 
 **Isolated test (JVM + UI):**
 - Unit: push N log records of mixed levels → filter returns expected subset; export format stable.
-- UI: filter toggles update the list; copy/export produces a text blob.
+- UI: filter toggles update the list; copy/export produces a text blob; Debug Menu actions invoke the right repo/service calls against a fake.
 
-**Done when:** log routing + filter + export verified (buffer unit-tested headlessly).
+**Done when:** log routing + filter + export verified (buffer unit-tested headlessly); Debug Menu reachable and release-gated.
 
 ---
 

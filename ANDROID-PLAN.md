@@ -385,6 +385,13 @@ To provide transparency and a seamless developer/debugging experience, we will i
      - GATT write requests, CCCD notification alerts, received raw hex byte arrays, database insert/updates, and internal exception stack traces.
 3. **Log Export**:
    - Quick "Copy to Clipboard" and "Export to Text File" buttons to easily share logs for bug reports.
+4. **Debug Menu (developer entry point)**:
+   - A small **overflow / settings affordance in the app's top-right** (e.g. a "⋮" or gear icon) opens a menu; one entry is **"Debug"**, leading to a screen of developer/testing actions. The Log Viewer above lives here too (debug and log viewing are the same "developer tools" surface).
+   - Intended actions (grown over time, gated so they never ship enabled in a release build — e.g. behind `BuildConfig.DEBUG`):
+     - **Database tools**: dump the Room DB (watches + alarms/rules/buttons) to the log console; seed sample data; **clone/transfer settings between two MACs** (the WP4 `transferSettings` operation); wipe a watch (exercises `ForeignKey.CASCADE`); list/switch the active watch.
+     - **Protocol/BLE tools**: force connect/disconnect/sync-now; replay a canned byte sequence; show negotiated MTU / link state.
+     - **Misc**: show app/build/version info, permission state, CDM associations.
+   - *Provenance:* during WP4 bring-up a temporary in-`MainActivity` debug panel verified multi-watch + clone/transfer on two real watches (dump-to-logcat under tag `FossilQ-DB`, since devices often lack a `sqlite3` binary). That throwaway panel was removed; this Debug Menu is its permanent, properly-gated home.
 
 ### J. Bidirectional Find-My-Phone & Animations
 - **Find Watch (Phone-to-Watch)**: A prominent "Find Watch" button in the app dashboard triggers a repeating call notification or a specific hand choreography to locate a lost watch.
