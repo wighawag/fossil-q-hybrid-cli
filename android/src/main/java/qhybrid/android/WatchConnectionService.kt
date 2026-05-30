@@ -17,8 +17,11 @@ import qhybrid.android.db.WatchRepository
 import qhybrid.android.settings.SharedPreferencesSettingsPrefs
 import qhybrid.android.sync.ConnectSyncDecider
 import qhybrid.android.sync.SyncDataLoader
+import qhybrid.android.sync.SyncInput
+import qhybrid.android.sync.SyncMode
 import qhybrid.android.sync.SyncOrchestrator
 import qhybrid.android.sync.SyncSection
+import qhybrid.android.sync.SyncSettings
 import qhybrid.android.sync.SyncState
 import qhybrid.android.sync.SyncStateReporter
 import qhybrid.android.sync.Uploader
@@ -353,17 +356,32 @@ class WatchConnectionService : Service() {
                 //       yet) so a freshly-added watch gets its config; known watches sync never.
                 val requestedSections = pendingSyncSections.getAndSet(null)
                 val hadPendingSync = pendingSyncOnConnect.getAndSet(false)
-                when (val d = ConnectSyncDecider.decide(hadPendingSync, requestedSections, isNewWatch(mac))) {
+                val newWatch = isNewWatch(mac)
+                when (val d = ConnectSyncDecider.decide(hadPendingSync, requestedSections, newWatch)) {
                     is ConnectSyncDecider.Decision.Sync -> {
-                        Log.i(TAG, "on-connect sync: ${d.reason} sections=${d.sections}")
-                        runOnConnectSync(controller, d.sections)
+                        if (newWatch && !hadPendingSync) {
+                            // WP-ONBOARD: a brand-new watch (no DB row) is PROVISIONED here — a
+                            // one-time, force-write pass that blanks the unreadable sections and lands
+                            // the reserved buzz filter. The watch is "added" (row written) ONLY if the
+                            // buzz-critical notification filter upload SUCCEEDS; otherwise we leave it
+                            // unregistered so the next connect re-provisions (no half-added watch).
+                            Log.i(TAG, "provisioning new watch $mac")
+                            if (provisionNewWatch(controller, mac)) {
+                                registerWatchRow(mac)
+                            } else {
+                                Log.w(TAG, "provisioning $mac did not confirm the reserved filter — NOT marking added (will retry next connect)")
+                            }
+                        } else {
+                            // A user-requested sync that was pending while the link was down.
+                            Log.i(TAG, "on-connect sync: ${d.reason} sections=${d.sections}")
+                            runOnConnectSync(controller, d.sections)
+                            // This is an already-known watch (the user asked to sync it); keep its row.
+                            registerWatchRow(mac)
+                        }
                     }
                     ConnectSyncDecider.Decision.None ->
                         Log.i(TAG, "known watch $mac — no auto-sync on connect (sync is user-initiated)")
                 }
-                // WP-PULLSYNC: register the watch row AFTER deciding newness so the next connect
-                // is treated as "known" (no repeated provisioning). Idempotent + marks it active.
-                registerWatchRow(mac)
                 // WP-BUZZTEST: a manual buzz requested while the link was down connects here, then
                 // buzzes (we're already on the ble-worker). Runs AFTER any pending sync so it is
                 // sequenced behind those writes on the single control channel.
@@ -476,6 +494,49 @@ class WatchConnectionService : Service() {
             WatchRepository(applicationContext),
             SharedPreferencesSettingsPrefs(applicationContext),
         )
+
+    /**
+     * WP-ONBOARD (Phase 1) — provision a BRAND-NEW watch (no DB row yet) on its first connect.
+     *
+     * Runs a one-time PROVISION sync that force-writes the unreadable sections to blank the watch to
+     * the seed and, critically, uploads the notification filter — which folds in the reserved buzz
+     * entries so a manual play-only buzz works. Phase 1 seeds an EMPTY config (no alarms/rules/
+     * buttons yet — the WP-DEFAULTS profile + readable-settings read-back are deferred); the empty
+     * alarm file still blanks the watch's 32 slots.
+     *
+     * Builds the [SyncInput] for [mac] directly (NOT via the DB loader, which reads the *active*
+     * watch — a new watch has no row yet). Returns TRUE only if the buzz-critical NOTIFICATION_FILTER
+     * upload was performed: the caller marks the watch "added" only then, so a failed provision
+     * leaves no row and re-provisions next connect. Runs on the ble-worker.
+     */
+    private fun provisionNewWatch(controller: FossilController, mac: String): Boolean {
+        return try {
+            // Phase 1: empty seed (WP-DEFAULTS profile deferred). A minimal watch row so the
+            // orchestrator has a target; readable settings use safe constants (read-back deferred).
+            val seed = qhybrid.android.db.WatchEntity(
+                macAddress = mac.uppercase(),
+                name = mac.uppercase(),
+                model = controller.modelNumber,
+                firmwareVersion = controller.firmwareVersion,
+                batteryLevel = controller.batteryLevel,
+            )
+            val input = SyncInput(watch = seed, settings = SyncSettings(vibrationStrength = null))
+            val result = SyncStateReporter.reportAround(System::currentTimeMillis) {
+                SyncOrchestrator.sync(
+                    input,
+                    ServiceUploader(controller),
+                    SyncSection.ALL,
+                    mode = SyncMode.PROVISION,
+                )
+            }
+            val filterOk = result != null && SyncSection.NOTIFICATION_FILTER in result.performed
+            Log.i(TAG, "provision $mac: performed=${result?.performed} filterOk=$filterOk")
+            filterOk
+        } catch (e: Exception) {
+            Log.e(TAG, "provisionNewWatch($mac) failed", e)
+            false
+        }
+    }
 
     /**
      * WP-PULLSYNC — true when [mac] has no Room row yet (a brand-new association). A new watch

@@ -147,6 +147,55 @@ class SyncOrchestratorTest {
         assertTrue(SyncSection.ALARMS in result.skipped)
     }
 
+    // ---- WP-ONBOARD: PROVISION mode (force-write empties to blank the watch) ---
+
+    @Test
+    fun provisionMode_emptyWatch_blanksAlarmsAndUploadsFilter() {
+        val up = FakeUploader()
+        // A brand-new watch with NO user config. PROVISION must still write the (empty) alarm file to
+        // clear all 32 slots, and the notification filter (carrying the reserved buzz entries).
+        val result = SyncOrchestrator.sync(
+            SyncInput(watch = watch(), settings = SyncSettings(vibrationStrength = null)),
+            up,
+            mode = SyncMode.PROVISION,
+        )
+        assertTrue(SyncSection.ALARMS in up.order)        // empty alarm file force-written
+        assertTrue(SyncSection.NOTIFICATION_FILTER in up.order) // filter (reserved entries) uploaded
+        assertTrue(SyncSection.ALARMS in result.performed)
+        assertTrue(SyncSection.NOTIFICATION_FILTER in result.performed)
+        // No buttons seeded in Phase 1 (WP-DEFAULTS deferred) → buttons still skipped.
+        assertFalse(SyncSection.BUTTONS in up.order)
+    }
+
+    @Test
+    fun reconcileMode_emptyWatch_skipsAlarmsButStillUploadsFilter() {
+        val up = FakeUploader()
+        // RECONCILE (the default ongoing sync): empty alarms are skipped, but the filter still
+        // uploads (reserved buzz entries). This is the contract that keeps ongoing syncs minimal.
+        val result = SyncOrchestrator.sync(
+            SyncInput(watch = watch(), settings = SyncSettings(vibrationStrength = null)),
+            up,
+            mode = SyncMode.RECONCILE,
+        )
+        assertFalse(SyncSection.ALARMS in up.order)
+        assertTrue(SyncSection.ALARMS in result.skipped)
+        assertTrue(SyncSection.NOTIFICATION_FILTER in result.performed)
+    }
+
+    @Test
+    fun provisionMode_writesWhole32SlotAlarmFile_overwritingWatch() {
+        val up = FakeUploader()
+        // Even ONE default alarm produces the whole 32-slot file (the rest cleared) — a full
+        // overwrite that wipes any pre-existing watch alarms.
+        val result = SyncOrchestrator.sync(
+            SyncInput(watch = watch(), alarms = listOf(alarm(0)), settings = SyncSettings()),
+            up,
+            mode = SyncMode.PROVISION,
+        )
+        assertTrue(SyncSection.ALARMS in result.performed)
+        assertTrue(up.alarmBytes != null)
+    }
+
     // ---- order ----------------------------------------------------------------
 
     @Test

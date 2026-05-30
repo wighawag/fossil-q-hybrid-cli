@@ -60,6 +60,7 @@ object SyncOrchestrator {
         input: SyncInput,
         uploader: Uploader,
         sections: Set<SyncSection> = SyncSection.ALL,
+        mode: SyncMode = SyncMode.RECONCILE,
     ): SyncResult {
         if (!input.hasWatch) {
             return SyncResult(mac = null, performed = emptyList(), skipped = emptyList(), errors = emptyList())
@@ -67,16 +68,23 @@ object SyncOrchestrator {
         val performed = mutableListOf<SyncSection>()
         val skipped = mutableListOf<SyncSection>()
         val errors = mutableListOf<SyncError>()
+        // WP-ONBOARD: PROVISION force-writes the unreadable sections EVEN WHEN EMPTY so a freshly
+        // added watch is blanked-to-seed (full overwrite, no leftover content from a prior owner).
+        // RECONCILE keeps skip-empties (ongoing syncs only push what the user actually has).
+        val provision = mode == SyncMode.PROVISION
 
         // 1. Alarms ------------------------------------------------------------
         runSection(SyncSection.ALARMS, sections, performed, skipped, errors) {
             val standard = input.alarms.map { it.toAlarmSlot() }
             val calendar = input.calendarAlarms.map { it.toAlarmSlot() }
-            if (standard.isEmpty() && calendar.isEmpty()) return@runSection false
+            // RECONCILE: nothing to push for an empty set. PROVISION: still write the (whole 32-slot)
+            // file to BLANK any pre-existing alarms on the watch.
+            if (standard.isEmpty() && calendar.isEmpty() && !provision) return@runSection false
             // AlarmCompiler enforces the 32-slot guard + slot ranges (throws → recorded).
             val bytes = AlarmCompiler.compile(standard, calendar)
-            // An all-disabled set compiles to 0 bytes — don't push an empty file.
-            if (bytes.isEmpty()) return@runSection false
+            // An all-disabled set compiles to 0 bytes. RECONCILE skips; PROVISION still uploads the
+            // empty file so the watch's 32 slots are actively cleared to match the (empty) seed.
+            if (bytes.isEmpty() && !provision) return@runSection false
             uploader.uploadAlarms(bytes)
         }
 
@@ -93,6 +101,9 @@ object SyncOrchestrator {
 
         // 3. Buttons -----------------------------------------------------------
         runSection(SyncSection.BUTTONS, sections, performed, skipped, errors) {
+            // RECONCILE: nothing to push with no button mappings. PROVISION: a non-compilable/empty
+            // set still has nothing to write (the button file needs at least one entry), so it is
+            // skipped either way — Phase 1 does not yet seed factory button defaults (WP-DEFAULTS).
             if (input.buttons.isEmpty()) return@runSection false
             val bytes = compileButtons(input.buttons) ?: return@runSection false
             uploader.uploadButtons(bytes)
@@ -231,6 +242,18 @@ object SyncOrchestrator {
         else -> null
     }
 }
+
+/**
+ * WP-ONBOARD — how a sync pass treats EMPTY unreadable sections.
+ *
+ * - [RECONCILE] (default, ongoing syncs): skip-empties — only push sections the user actually has,
+ *   to minimise writes and never clobber what we didn't change.
+ * - [PROVISION] (one-time, new-watch onboarding): force-write the unreadable sections even when
+ *   empty, so the watch is BLANKED to exactly the seed (a full overwrite of any prior owner's
+ *   content). The notification filter always uploads in both modes (it carries the reserved buzz
+ *   entries); PROVISION additionally force-writes the whole 32-slot alarm file when empty.
+ */
+enum class SyncMode { RECONCILE, PROVISION }
 
 /** WP14 — the sections a sync pass can touch, in upload order. */
 enum class SyncSection {
