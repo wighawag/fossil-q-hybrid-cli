@@ -32,6 +32,16 @@ public class FossilController {
         this.adapter = new FossilQAdapter(transport);
     }
 
+    /**
+     * Test/seam constructor: inject the adapter directly so contract tests can verify the
+     * façade delegates to the adapter without driving a live BLE transfer. Package-private —
+     * not part of the public façade surface.
+     */
+    FossilController(BleTransport transport, FossilQAdapter adapter) {
+        this.transport = transport;
+        this.adapter = adapter;
+    }
+
     /** Direct access to the underlying adapter (for advanced/legacy CLI paths). */
     public FossilQAdapter adapter() {
         return adapter;
@@ -235,6 +245,36 @@ public class FossilController {
 
     public void setSecondTimezone(short offsetMinutes) {
         adapter.setSecondTimezone(offsetMinutes);
+    }
+
+    /**
+     * Read the watch's current configuration (step count, goals, battery, timezone, vibration, …)
+     * via the adapter's {@link FossilQAdapter#readConfig(java.util.concurrent.CompletableFuture)}.
+     * Thin passthrough (future form) — invents NO wire bytes; the decode lives in the adapter.
+     */
+    public void readConfig(java.util.concurrent.CompletableFuture<java.util.List<FossilQAdapter.ConfigEntry>> result) {
+        adapter.readConfig(result);
+    }
+
+    /**
+     * Blocking convenience over {@link #readConfig(java.util.concurrent.CompletableFuture)} with a
+     * bounded timeout. Returns an empty list on timeout/failure (best-effort — callers fall back to
+     * constants). Mirrors how the CLI {@code read-config} command drives the adapter future.
+     */
+    public java.util.List<FossilQAdapter.ConfigEntry> readConfig() {
+        return readConfig(30_000L);
+    }
+
+    /** Blocking {@link #readConfig()} with an explicit timeout (ms). Empty list on timeout/failure. */
+    public java.util.List<FossilQAdapter.ConfigEntry> readConfig(long timeoutMs) {
+        java.util.concurrent.CompletableFuture<java.util.List<FossilQAdapter.ConfigEntry>> future =
+                new java.util.concurrent.CompletableFuture<>();
+        adapter.readConfig(future);
+        try {
+            return future.get(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+        } catch (Exception e) {
+            return java.util.Collections.emptyList();
+        }
     }
 
     public void requestActivity() {
