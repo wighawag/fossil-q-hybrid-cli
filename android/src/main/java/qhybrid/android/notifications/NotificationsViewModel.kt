@@ -56,6 +56,9 @@ open class NotificationsViewModel(
     scope: CoroutineScope? = null,
     // WP-PROGRESS (sub-part 3): the process-wide sync signal the Save button observes.
     syncSource: SyncStateSource = GlobalSyncStateSource(),
+    // WP11: the per-app "Play" test button's seam (mirrors the buzz seam). Default Noop so tests
+    // that don't exercise it never poke the service; production injects [ServiceNotificationPlay].
+    private val play: NotificationPlay = NoopNotificationPlay,
 ) : ViewModel() {
 
     private val coroutineScope: CoroutineScope = scope ?: viewModelScope
@@ -143,6 +146,20 @@ open class NotificationsViewModel(
         coroutineScope.launch { repo.deleteRule(mac, packageName) }
     }
 
+    /**
+     * WP11 — **test** the on-watch play for [packageName]'s rule: poke the watch to play that
+     * package's notification (buzz + move hands per the rule that's already on the watch in its
+     * NOTIFICATION_FILTER). A play-only-by-package put — invents NO new wire bytes (reuses the WP11
+     * [NotificationPlay] seam). No-op (returns false) without an active watch or without a saved
+     * rule for [packageName] (the watch needs the filter entry for the buzz to apply the configured
+     * vibe + hands). Returns whether the play was triggered.
+     */
+    fun playRule(packageName: String): Boolean {
+        if (!uiState.value.hasActiveWatch) return false
+        if (uiState.value.rules.none { it.packageName == packageName }) return false
+        return play.play(packageName)
+    }
+
     /** Set the vibe pattern (0–9, WP6 1:1) for [packageName]'s rule. */
     fun setVibePattern(packageName: String, vibePattern: Int) {
         val rule = uiState.value.rules.firstOrNull { it.packageName == packageName } ?: return
@@ -178,6 +195,7 @@ open class NotificationsViewModel(
                     NotificationsViewModel(
                         repo = WatchRepository(appContext),
                         sync = ServiceNotificationSync(appContext),
+                        play = ServiceNotificationPlay(appContext),
                     ) as T
             }
         }

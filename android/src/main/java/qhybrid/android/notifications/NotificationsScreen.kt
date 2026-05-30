@@ -20,6 +20,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenu
@@ -95,6 +96,7 @@ fun NotificationsScreen(modifier: Modifier = Modifier) {
         onAdd = { pkg, vibe, hourDeg, minDeg -> vm.addRule(pkg, vibe, hourDeg, minDeg) },
         onUpdate = vm::updateRule,
         onDelete = vm::deleteRule,
+        onPlay = vm::playRule,
         onSave = { vm.saveToWatch() },
         progress = progress,
         modifier = modifier,
@@ -115,6 +117,8 @@ fun NotificationsContent(
     onSave: () -> Boolean,
     modifier: Modifier = Modifier,
     progress: SyncProgressUi = SyncProgressUi.IDLE,
+    // WP11: test the on-watch play for a saved rule (buzz + hands per the already-uploaded filter).
+    onPlay: (pkg: String) -> Boolean = { false },
 ) {
     // Editor dialog state: null = closed; an entity with blank packageName = adding,
     // an entity with a real packageName already present = editing.
@@ -197,6 +201,7 @@ fun NotificationsContent(
                                 RuleRow(
                                     rule = r,
                                     onClick = { addingNew = false; editing = r },
+                                    onPlay = { onPlay(r.packageName) },
                                     onDelete = { onDelete(r.packageName) },
                                 )
                             }
@@ -231,6 +236,7 @@ fun NotificationsContent(
 private fun RuleRow(
     rule: NotificationRuleEntity,
     onClick: () -> Unit,
+    onPlay: () -> Unit,
     onDelete: () -> Unit,
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
@@ -255,6 +261,11 @@ private fun RuleRow(
                     VibePatterns.handSummary(rule.hourHandDegrees, rule.minuteHandDegrees),
                     style = MaterialTheme.typography.labelSmall,
                 )
+            }
+            // WP11: test the on-watch play for THIS app (buzz + hands per the saved rule, which is
+            // already on the watch in its NOTIFICATION_FILTER). Connect-then-play if disconnected.
+            IconButton(onClick = onPlay) {
+                Icon(Icons.Filled.PlayArrow, contentDescription = "Play on watch")
             }
             IconButton(onClick = onDelete) {
                 Icon(Icons.Filled.Delete, contentDescription = "Delete rule")

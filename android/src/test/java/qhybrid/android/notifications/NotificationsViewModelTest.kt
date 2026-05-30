@@ -45,10 +45,16 @@ class NotificationsViewModelTest : DbTestBase() {
         override fun saveToWatch(): Boolean { saveCount++; return wired }
     }
 
+    private class FakeNotificationPlay(private val wired: Boolean = true) : NotificationPlay {
+        val played = mutableListOf<String>()
+        override fun play(packageName: String): Boolean { played += packageName; return wired }
+    }
+
     private fun vm(
         sync: NotificationSync = FakeNotificationSync(),
         syncSource: FakeSyncStateSource = FakeSyncStateSource(),
-    ) = NotificationsViewModel(repo, sync, vmScope, syncSource)
+        play: NotificationPlay = FakeNotificationPlay(),
+    ) = NotificationsViewModel(repo, sync, vmScope, syncSource, play)
 
     private fun awaitState(
         flow: StateFlow<NotificationsUiState>,
@@ -252,6 +258,46 @@ class NotificationsViewModelTest : DbTestBase() {
         val s = awaitState(model.uiState) { it.rules.size == 1 }
         assertEquals(listOf("com.slack"), s.rules.map { it.packageName })
         runBlocking { assertEquals(1, repo.getRules("AA:00:00:00:00:01").size) }
+    }
+
+    // ---- play (WP11 per-app test button) -------------------------------------
+
+    @Test
+    fun playRuleForwardsPackageToSeam() {
+        runBlocking {
+            watchDao.upsert(watch("AA:00:00:00:00:01", active = true))
+            ruleDao.upsert(rule("AA:00:00:00:00:01", "com.whatsapp"))
+        }
+        val play = FakeNotificationPlay()
+        val model = vm(play = play)
+        awaitState(model.uiState) { it.rules.size == 1 }
+
+        assertTrue(model.playRule("com.whatsapp"))
+        assertEquals(listOf("com.whatsapp"), play.played)
+    }
+
+    @Test
+    fun playRuleNoopWithoutActiveWatch() {
+        val play = FakeNotificationPlay()
+        val model = vm(play = play)
+        awaitState(model.uiState) { !it.hasActiveWatch }
+        assertFalse(model.playRule("com.whatsapp"))
+        assertTrue(play.played.isEmpty())
+    }
+
+    @Test
+    fun playRuleNoopForUnsavedPackage() {
+        runBlocking {
+            watchDao.upsert(watch("AA:00:00:00:00:01", active = true))
+            ruleDao.upsert(rule("AA:00:00:00:00:01", "com.whatsapp"))
+        }
+        val play = FakeNotificationPlay()
+        val model = vm(play = play)
+        awaitState(model.uiState) { it.rules.size == 1 }
+
+        // No rule for com.slack -> the watch has no filter entry, so don't poke a useless play.
+        assertFalse(model.playRule("com.slack"))
+        assertTrue(play.played.isEmpty())
     }
 
     // ---- save ----------------------------------------------------------------
