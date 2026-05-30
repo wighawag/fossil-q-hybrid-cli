@@ -406,6 +406,47 @@ delete), `WatchRepository`/`DebugTools` (delete = full removal), a PROVISIONING 
 
 ---
 
+## WP-SYNCFIX — "Save to watch" actually commits on-device (DONE)
+
+**Problem (found on-device after WP-PROGRESS).** Tapping "Save to watch" gave no feedback and the
+watch never picked up the change. Root causes, peeled back one logcat at a time:
+
+1. **Silent no-op when disconnected.** `syncNow` bailed if the link was down (`syncNow ignored —
+   not connected`) *before* touching `SyncState`, so the button looked dead. **Fix:** publish
+   `SyncState=SYNCING` synchronously on tap (`ServiceSaveToWatch`), then **connect-then-sync**; an
+   unreachable watch surfaces an honest `ERROR` (never a fake "Saved").
+2. **Full sync on every save.** A Buttons save re-pushed alarms/settings the user never touched —
+   surprising, AND the alarm file-put collided with the button file-put on the single BLE control
+   channel (`wrong file closing handle`). **Fix:** **targeted sync** — `SyncOrchestrator.sync(input,
+   uploader, sections)`; each screen requests only its section; connect/periodic stay full-reconcile.
+3. **File-put never acked → 10s/chunk stall.** The button write was fire-and-forget; making it
+   **wait on a completion future** (like alarms, via a golden-tested `setButtons(file, future)`
+   passthrough) exposed that every WRITE_TYPE_NO_RESPONSE data chunk on `3dda0004` **blocked the
+   full 10s op-timeout** (Android doesn't reliably deliver `onCharacteristicWrite` for no-response
+   writes), so the watch timed the transfer out. **Fix:** don't block on the op-timeout for
+   no-response writes.
+4. **Last chunk dropped (the real killer).** Removing the wait made chunks fire back-to-back, but
+   Android accepts only **one unacknowledged write in flight**; a busy submit returned a failure
+   code and the chunk was **silently dropped** → truncated file → watch PUT timeout (`response 9`).
+   **Fix:** pace no-response writes on the stack's `onCharacteristicWrite` "ready" signal (short
+   timeout) and **retry a busy submit** (bounded) instead of dropping the chunk — matching what
+   BlueZ does implicitly for the working CLI.
+
+**Result (verified on-device).** `Button config: success`, `sync done performed=[BUTTONS]`, and the
+button change applies on the watch. The transport-layer flow-control fix benefits every file-put
+(alarms/notifications/buttons) and config write. Also added: a per-screen **connection banner**
+(screens stay editable offline; Room is the source of truth) and a blocking **"Saving to watch…"**
+modal.
+
+**Commits:** `wp-syncfix:` immediate-feedback+connect-then-sync → connection banner → wait-for-ack
+passthrough → diagnostic logging → targeted-sync core → targeted-sync wiring → blocking modal →
+no-response no-wait → no-response retry+pacing. **No wire change** (golden compilers/páths reused).
+
+**Follow-ups (optional):** give the notification-filter + settings writes the same wait-for-ack
+treatment for consistent SUCCESS/ERROR reporting; consider a non-blocking "Saving…" snackbar later.
+
+---
+
 ## Suggested execution order
 
 1. **WP-BTN** (fixes a real correctness bug; small, self-contained).
