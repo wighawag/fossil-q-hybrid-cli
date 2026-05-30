@@ -336,10 +336,15 @@ class ButtonsViewModelTest : DbTestBase() {
         val model = vm()
         awaitState(model.uiState) { it.hasActiveWatch }
 
-        val cycle = listOf(ButtonDialModes.TIMEZONE_2, ButtonDialModes.DATE, ButtonDialModes.ALARM)
-        model.setSlot(ButtonSlots.MIDDLE, ButtonModes.CUSTOM_TOGGLE, cycle)
+        // Tapped in a non-canonical order; stored in CANONICAL order regardless
+        // (ALERT, TIMEZONE_2, ALARM, DATE, TWENTY_FOUR_HOUR).
+        val tapped = listOf(ButtonDialModes.TIMEZONE_2, ButtonDialModes.DATE, ButtonDialModes.ALARM)
+        model.setSlot(ButtonSlots.MIDDLE, ButtonModes.CUSTOM_TOGGLE, tapped)
         val s = awaitState(model.uiState) { it.mappingFor(ButtonSlots.MIDDLE) != null }
-        assertEquals(cycle, ButtonActionsJson.decode(s.mappingFor(ButtonSlots.MIDDLE)?.actionsJson))
+        assertEquals(
+            listOf(ButtonDialModes.TIMEZONE_2, ButtonDialModes.ALARM, ButtonDialModes.DATE),
+            ButtonActionsJson.decode(s.mappingFor(ButtonSlots.MIDDLE)?.actionsJson),
+        )
     }
 
     @Test

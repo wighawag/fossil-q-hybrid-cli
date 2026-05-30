@@ -321,6 +321,8 @@ class SyncOrchestratorTest {
     @Test
     fun customToggleMapsDialModesToSequencedEntries() {
         val up = FakeUploader()
+        // Tapped non-canonically; the cycle compiles in CANONICAL order
+        // (ALERT, TIMEZONE_2, ALARM, DATE, TWENTY_FOUR_HOUR) → here: TIMEZONE_2, ALARM, DATE.
         SyncOrchestrator.sync(
             SyncInput(watch = watch(),
                 buttons = listOf(button(ButtonSlots.MIDDLE, ButtonModes.CUSTOM_TOGGLE,
@@ -332,8 +334,8 @@ class SyncOrchestratorTest {
             emptyArray(),
             arrayOf(
                 ButtonConfigBuilder.entryFrom(ConfigPayload.SECOND_TIMEZONE),
-                ButtonConfigBuilder.DATE_TOGGLE_ENTRY,
                 ButtonConfigBuilder.ALARM_SEQUENCED_ENTRY,
+                ButtonConfigBuilder.DATE_TOGGLE_ENTRY,
             ),
             emptyArray(),
         )
@@ -381,7 +383,8 @@ class SyncOrchestratorTest {
 
     @Test
     fun customToggleKeepsTheWholeCycleAfterCollapseGuard() {
-        // CUSTOM_TOGGLE is the genuine multi-id cycle — the defensive collapse must NOT shorten it.
+        // CUSTOM_TOGGLE is the genuine multi-id cycle — the defensive collapse must NOT shorten it,
+        // and the cycle is emitted in CANONICAL order (TIMEZONE_2, ALARM, DATE here).
         val up = FakeUploader()
         SyncOrchestrator.sync(
             SyncInput(watch = watch(),
@@ -394,8 +397,8 @@ class SyncOrchestratorTest {
             emptyArray(),
             arrayOf(
                 ButtonConfigBuilder.entryFrom(ConfigPayload.SECOND_TIMEZONE),
-                ButtonConfigBuilder.DATE_TOGGLE_ENTRY,
                 ButtonConfigBuilder.ALARM_SEQUENCED_ENTRY,
+                ButtonConfigBuilder.DATE_TOGGLE_ENTRY,
             ),
             emptyArray(),
         )

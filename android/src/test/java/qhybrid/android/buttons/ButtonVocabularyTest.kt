@@ -70,16 +70,10 @@ class ButtonVocabularyTest {
 
     @Test
     fun dialModeConstantsMirrorProtocol() {
-        // The SET of dial modes is 1:1 with ButtonCompiler.DialMode
-        // {ALERT, TIMEZONE_2, ALARM, DATE, TWENTY_FOUR_HOUR} — order-independent (the constants map
-        // 1:1 to the protocol regardless of display order).
+        // 1:1 with ButtonCompiler.DialMode {ALERT, TIMEZONE_2, ALARM, DATE, TWENTY_FOUR_HOUR} —
+        // this is the CANONICAL display + cycle order (editor and watch agree).
         assertEquals(
-            setOf("ALERT", "TIMEZONE_2", "ALARM", "DATE", "TWENTY_FOUR_HOUR"),
-            ButtonDialModes.ALL.toSet(),
-        )
-        // Display/cycle order: 2nd timezone first, date second (user-facing preference).
-        assertEquals(
-            listOf("TIMEZONE_2", "DATE", "ALERT", "ALARM", "TWENTY_FOUR_HOUR"),
+            listOf("ALERT", "TIMEZONE_2", "ALARM", "DATE", "TWENTY_FOUR_HOUR"),
             ButtonDialModes.ALL,
         )
         assertEquals("2nd timezone", ButtonDialModes.label(ButtonDialModes.TIMEZONE_2))

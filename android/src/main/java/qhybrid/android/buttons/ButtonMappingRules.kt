@@ -43,8 +43,11 @@ object ButtonMappingRules {
     /**
      * Normalize an id list to honour [modeType]'s cardinality. **Pure; never throws.**
      *
-     * - [ButtonModes.CUSTOM_TOGGLE] → keep the list as-is (order preserved; it is the cycle order),
-     *   blank entries dropped.
+     * - [ButtonModes.CUSTOM_TOGGLE] → keep the selected dial modes, re-ordered into the CANONICAL
+     *   [ButtonDialModes.ALL] order (alert, 2nd-timezone, alarm, date, 24-hour) and de-duplicated;
+     *   unselected modes are simply skipped. The cycle order therefore does NOT depend on the
+     *   order the user tapped the chips — it is always canonical, in both the editor and on the
+     *   watch.
      * - any other (single-action) mode → keep at most the **first** non-blank id.
      *
      * This is the collapse rule both the ViewModel (before persisting) and the orchestrator
@@ -53,6 +56,6 @@ object ButtonMappingRules {
      */
     fun normalizeIds(modeType: String, ids: List<String>): List<String> {
         val clean = ids.map { it.trim() }.filter { it.isNotEmpty() }
-        return if (allowsMultiple(modeType)) clean else clean.take(1)
+        return if (allowsMultiple(modeType)) ButtonDialModes.canonicalOrder(clean) else clean.take(1)
     }
 }

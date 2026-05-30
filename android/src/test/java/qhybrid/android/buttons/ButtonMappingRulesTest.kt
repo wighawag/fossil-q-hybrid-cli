@@ -76,12 +76,29 @@ class ButtonMappingRulesTest {
         )
     }
 
-    // ---- custom-toggle: keep the whole cycle, order preserved ----------------
+    // ---- custom-toggle: keep the selected modes in CANONICAL order ------------
 
     @Test
-    fun customToggleKeepsWholeListInOrder() {
-        val cycle = listOf(ButtonDialModes.TIMEZONE_2, ButtonDialModes.DATE, ButtonDialModes.ALARM)
-        assertEquals(cycle, ButtonMappingRules.normalizeIds(ButtonModes.CUSTOM_TOGGLE, cycle))
+    fun customToggleReordersToCanonical() {
+        // Selection order is IGNORED: the cycle is always canonical
+        // (ALERT, TIMEZONE_2, ALARM, DATE, TWENTY_FOUR_HOUR), unselected modes skipped.
+        val tappedOrder = listOf(ButtonDialModes.TIMEZONE_2, ButtonDialModes.DATE, ButtonDialModes.ALARM)
+        assertEquals(
+            listOf(ButtonDialModes.TIMEZONE_2, ButtonDialModes.ALARM, ButtonDialModes.DATE),
+            ButtonMappingRules.normalizeIds(ButtonModes.CUSTOM_TOGGLE, tappedOrder),
+        )
+    }
+
+    @Test
+    fun customToggleCanonicalIsStableAndDeduped() {
+        // Reverse-tapped + a duplicate → still canonical, de-duplicated.
+        assertEquals(
+            listOf(ButtonDialModes.ALERT, ButtonDialModes.ALARM, ButtonDialModes.DATE),
+            ButtonMappingRules.normalizeIds(
+                ButtonModes.CUSTOM_TOGGLE,
+                listOf(ButtonDialModes.DATE, ButtonDialModes.ALARM, ButtonDialModes.ALERT, ButtonDialModes.DATE),
+            ),
+        )
     }
 
     @Test

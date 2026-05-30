@@ -107,8 +107,26 @@ object ButtonDialModes {
     const val DATE = "DATE"
     const val TWENTY_FOUR_HOUR = "TWENTY_FOUR_HOUR"
 
-    /** All dial modes in display/cycle order (2nd timezone first, date second). */
-    val ALL = listOf(TIMEZONE_2, DATE, ALERT, ALARM, TWENTY_FOUR_HOUR)
+    /**
+     * All dial modes in the CANONICAL display + cycle order, 1:1 with the protocol
+     * [qhybrid.protocol.requests.fossil.button.ButtonCompiler.DialMode]
+     * {ALERT, TIMEZONE_2, ALARM, DATE, TWENTY_FOUR_HOUR}. A [ButtonModes.CUSTOM_TOGGLE] mapping
+     * always cycles its selected modes in THIS order (unselected ones are simply skipped) — the
+     * editor and the on-watch cycle agree because [ButtonDialModes.canonicalOrder] sorts the stored
+     * ids by this list before persisting/compiling.
+     */
+    val ALL = listOf(ALERT, TIMEZONE_2, ALARM, DATE, TWENTY_FOUR_HOUR)
+
+    /**
+     * Re-order an arbitrary set of dial-mode [ids] into the canonical [ALL] order, dropping unknown
+     * ids and de-duplicating. This is the single source of truth for the cycle order so the editor
+     * (chip selection) and the compiler (wire entries) can never disagree, and the order does NOT
+     * depend on the order the user tapped the chips.
+     */
+    fun canonicalOrder(ids: List<String>): List<String> {
+        val set = ids.toHashSet()
+        return ALL.filter { it in set }
+    }
 
     private val LABELS = mapOf(
         ALERT to "Alert",
