@@ -444,6 +444,18 @@ class AndroidBleTransport(private val context: Context) : BleTransport {
                 expectedWriteUuid = null
                 return
             }
+            // WRITE_TYPE_NO_RESPONSE ("command" — e.g. the 3dda0004 file-transfer data chunks) is
+            // unacknowledged at the ATT layer: Android does NOT reliably deliver
+            // onCharacteristicWrite for it, so blocking on the write latch here stalled EVERY data
+            // chunk for the full OP_TIMEOUT_MS (~10s). On a multi-chunk file PUT that made the
+            // watch time out the transfer (the file never committed). For no-response writes the
+            // submit returning GATT_SUCCESS is the completion signal — don't wait. Only
+            // write-WITH-response ("request" — the indicate control chars) awaits the callback.
+            if (writeType == BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE) {
+                writeLatch = null
+                expectedWriteUuid = null
+                return
+            }
             writeLatch?.await(OP_TIMEOUT_MS, TimeUnit.MILLISECONDS)
             writeLatch = null
             expectedWriteUuid = null
