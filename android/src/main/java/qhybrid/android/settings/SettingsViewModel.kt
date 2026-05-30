@@ -97,6 +97,8 @@ open class SettingsViewModel(
     private val fullSync: FullSync = NoopFullSync,
     // WP-WATCHADMIN: the "remove / re-provision this watch" seam (fake in tests).
     private val watchAdmin: WatchAdminSync = NoopWatchAdminSync,
+    // WP-DEFAULTS: the "apply defaults profile to this watch" seam (fake in tests).
+    private val applyDefaults: ApplyDefaultsSync = NoopApplyDefaults,
     // Tests inject a real/Unconfined scope; production passes null → uses [viewModelScope].
     scope: CoroutineScope? = null,
     // WP-PROGRESS (sub-part 3): the process-wide sync signal the Save/Apply controls observe.
@@ -207,6 +209,22 @@ open class SettingsViewModel(
         return watchAdmin.removeWatch(mac)
     }
 
+    // ---- apply defaults to this watch (WP-DEFAULTS sub-part 3) ----------------
+
+    /**
+     * WP-DEFAULTS — push the app-level defaults profile's UNREADABLE sections (buttons + the
+     * notification filter/rules) onto the already-added ACTIVE watch on demand: a FULL-OVERWRITE of
+     * those per-watch sections (the watch ends up with exactly the profile's buttons + filter, same
+     * as provisioning does). No-op (returns `false`) without an active watch. Otherwise forwards to
+     * the injectable [ApplyDefaultsSync] seam (which persists the re-keyed rows + triggers a
+     * targeted sync; SyncState SYNCING → SUCCESS/ERROR). Gate this behind a confirm dialog in the
+     * UI — it overwrites the user's per-watch button/notification setup.
+     */
+    fun applyDefaultsToActiveWatch(): Boolean {
+        if (uiState.value.activeWatch == null) return false
+        return applyDefaults.applyDefaultsToActiveWatch()
+    }
+
     // ---- inactivity nudge (APP PREF + deferred live command) -----------------
 
     /**
@@ -304,6 +322,12 @@ open class SettingsViewModel(
                                 ).launch { block() }
                             },
                         ),
+                        applyDefaults = ServiceApplyDefaults.create(appContext) { block ->
+                            kotlinx.coroutines.CoroutineScope(
+                                kotlinx.coroutines.Dispatchers.IO +
+                                    kotlinx.coroutines.SupervisorJob()
+                            ).launch { block() }
+                        },
                     ) as T
             }
         }

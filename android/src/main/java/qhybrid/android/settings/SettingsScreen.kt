@@ -82,6 +82,7 @@ fun SettingsScreen(
         onVibrate = vm::vibrateWatch,
         onVibrateWithFilter = vm::vibrateWatchWithFilter,
         onSyncAll = vm::syncAll,
+        onApplyDefaults = vm::applyDefaultsToActiveWatch,
         onSetNudge = vm::setNudge,
         onSetTimezone = vm::setSecondTimezoneOffset,
         onSetMusicApp = vm::setPreferredMusicApp,
@@ -115,6 +116,8 @@ fun SettingsContent(
     onVibrateWithFilter: (Int) -> Boolean = { false },
     // WP-PULLSYNC: manual "Sync all" (full reconcile). No-op default for previews/tests.
     onSyncAll: () -> Boolean = { false },
+    // WP-DEFAULTS: manual "Apply defaults to this watch" (overwrite buttons + filter). No-op default.
+    onApplyDefaults: () -> Boolean = { false },
     // WP-WATCHADMIN: "remove / re-provision this watch". No-op default for previews/tests.
     onRemoveWatch: () -> Boolean = { false },
 ) {
@@ -152,6 +155,8 @@ fun SettingsContent(
             MusicAppCard(state, onSetMusicApp)
             HorizontalDivider()
             SyncAllCard(state, progress, onSyncAll) { note = it }
+            HorizontalDivider()
+            ApplyDefaultsCard(state, progress, onApplyDefaults) { note = it }
             HorizontalDivider()
             TransferCard(state, onTransfer) { note = it }
             HorizontalDivider()
@@ -452,6 +457,68 @@ private fun SyncAllCard(
             enabled = progress.saveEnabled(state.hasActiveWatch),
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Sync all") }
+    }
+}
+
+// ---- apply defaults to this watch (WP-DEFAULTS sub-part 3) -------------------
+
+/**
+ * WP-DEFAULTS — "Apply defaults to this watch": push the app-level defaults profile's UNREADABLE
+ * sections (buttons + the notification filter/rules) onto the already-added active watch on demand,
+ * a FULL-OVERWRITE of those per-watch sections (the watch ends up with exactly the profile's
+ * buttons + filter, same as provisioning). Because this WIPES the user's per-watch button /
+ * notification setup, it is gated behind a confirm dialog (mirrors [RemoveWatchCard]). Disabled
+ * while a sync/buzz is in flight and when there is no active watch ([SyncProgressUi.saveEnabled]).
+ */
+@Composable
+private fun ApplyDefaultsCard(
+    state: SettingsUiState,
+    progress: SyncProgressUi,
+    onApplyDefaults: () -> Boolean,
+    onNote: (String) -> Unit,
+) {
+    var confirming by remember { mutableStateOf(false) }
+    SettingCard("Apply defaults to this watch") {
+        Text(
+            "Overwrite this watch's buttons and notification filter with your \"Defaults for new " +
+                "watches\" profile (a full replace, not a merge — the same sections provisioning " +
+                "pushes when you add a watch). Your per-watch button / notification setup is " +
+                "replaced. Connects first if needed.",
+            style = MaterialTheme.typography.labelSmall,
+        )
+        Button(
+            onClick = { confirming = true },
+            enabled = progress.saveEnabled(state.hasActiveWatch),
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("Apply defaults to this watch") }
+    }
+
+    if (confirming) {
+        val mac = state.activeMac ?: ""
+        AlertDialog(
+            onDismissRequest = { confirming = false },
+            title = { Text("Apply defaults to this watch?") },
+            text = {
+                Text(
+                    "This REPLACES $mac's buttons and notification filter with your defaults " +
+                        "profile (full overwrite, not a merge). Your current per-watch buttons and " +
+                        "notification rules for this watch will be lost. This cannot be undone.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirming = false
+                    val ok = onApplyDefaults()
+                    onNote(
+                        if (ok) "Applying the defaults profile to the watch…"
+                        else "No active watch to apply defaults to.",
+                    )
+                }) { Text("Apply defaults") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirming = false }) { Text("Cancel") }
+            },
+        )
     }
 }
 

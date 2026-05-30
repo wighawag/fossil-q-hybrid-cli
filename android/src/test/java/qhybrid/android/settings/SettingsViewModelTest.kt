@@ -108,6 +108,11 @@ class SettingsViewModelTest : DbTestBase() {
         override fun syncAll(): Boolean { count++; return wired }
     }
 
+    private class FakeApplyDefaults(private val wired: Boolean = true) : ApplyDefaultsSync {
+        var count = 0
+        override fun applyDefaultsToActiveWatch(): Boolean { count++; return wired }
+    }
+
     private class FakeWatchAdmin(private val wired: Boolean = true) : WatchAdminSync {
         var count = 0
         val removed = mutableListOf<String>()
@@ -124,6 +129,7 @@ class SettingsViewModelTest : DbTestBase() {
         vibration: VibrationSync = FakeVibration(),
         fullSync: FullSync = FakeFullSync(),
         watchAdmin: WatchAdminSync = FakeWatchAdmin(),
+        applyDefaults: ApplyDefaultsSync = FakeApplyDefaults(),
     ) = SettingsViewModel(
         repo = repo,
         prefs = prefs,
@@ -132,6 +138,7 @@ class SettingsViewModelTest : DbTestBase() {
         vibration = vibration,
         fullSync = fullSync,
         watchAdmin = watchAdmin,
+        applyDefaults = applyDefaults,
         scope = vmScope,
         syncSource = syncSource,
     )
@@ -333,6 +340,28 @@ class SettingsViewModelTest : DbTestBase() {
         awaitState(model.uiState) { !it.hasActiveWatch }
         assertFalse(model.removeActiveWatch())
         assertEquals(0, admin.count)
+    }
+
+    // ---- apply defaults to this watch (WP-DEFAULTS sub-part 3) ----------------
+
+    @Test
+    fun applyDefaultsHitsSeamWithActiveWatch() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }
+        val apply = FakeApplyDefaults(wired = true)
+        val model = vm(applyDefaults = apply)
+        awaitState(model.uiState) { it.hasActiveWatch }
+        assertTrue(model.applyDefaultsToActiveWatch())
+        assertEquals(1, apply.count)
+    }
+
+    @Test
+    fun applyDefaultsNoOpWithoutActiveWatch() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = false)) }
+        val apply = FakeApplyDefaults()
+        val model = vm(applyDefaults = apply)
+        awaitState(model.uiState) { !it.hasActiveWatch }
+        assertFalse(model.applyDefaultsToActiveWatch())
+        assertEquals(0, apply.count)
     }
 
     @Test
