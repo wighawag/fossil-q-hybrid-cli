@@ -65,6 +65,11 @@ class AndroidBleTransport(private val context: Context) : BleTransport {
         private const val OP_TIMEOUT_MS = 10_000L
         private const val CONNECT_STATE_TIMEOUT_MS = 15_000L
         private const val DISCOVER_TIMEOUT_MS = 10_000L
+        // Flow control for WRITE_TYPE_NO_RESPONSE (file-transfer data chunks). The pacing wait is
+        // the per-chunk "ready for next" window (onCharacteristicWrite); a few retries cover a
+        // momentarily-busy stack so a chunk is never silently dropped (which truncated the file).
+        private const val NO_RESPONSE_PACING_MS = 250L
+        private const val NO_RESPONSE_MAX_RETRIES = 20
         private const val DISCOVER_MAX_ATTEMPTS = 3
         private const val BOND_TIMEOUT_MS = 30_000L
         private const val TARGET_MTU = 512
@@ -421,22 +426,31 @@ class AndroidBleTransport(private val context: Context) : BleTransport {
                 Log.e(TAG, "write: characteristic not found $uuid"); return
             }
             val writeType = writeTypeFor(ch)
+            val noResponse = writeType == BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
             val typeName = if (writeType == BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) "request" else "command"
             Log.d(TAG, "WRITE $uuid ($typeName) -> ${data.toHex()}")
             writeLatch = CountDownLatch(1)
             expectedWriteUuid = uuid
             writeSuccess = false
-            val ok: Boolean
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                val rc = g.writeCharacteristic(ch, data, writeType)
-                ok = rc == BluetoothGatt.GATT_SUCCESS
-            } else {
-                @Suppress("DEPRECATION")
-                run {
-                    ch.value = data
-                    ch.writeType = writeType
-                    ok = g.writeCharacteristic(ch)
+
+            // Submit. For WRITE_TYPE_NO_RESPONSE (the 3dda0004 file-transfer data chunks) Android's
+            // stack accepts only ONE unacknowledged write at a time: a back-to-back submit returns
+            // a busy/failure code and the chunk is silently DROPPED — which truncated the button
+            // file and made the watch time out the PUT (response 9). So on a busy no-response
+            // submit we briefly wait for the in-flight write's onCharacteristicWrite (the stack's
+            // "ready for next" signal) and RETRY, instead of dropping the chunk.
+            var ok = submitWrite(g, ch, data, writeType)
+            if (!ok && noResponse) {
+                var attempt = 0
+                while (!ok && attempt < NO_RESPONSE_MAX_RETRIES) {
+                    attempt++
+                    // The previous write's callback releases this latch when the stack is ready.
+                    writeLatch?.await(NO_RESPONSE_PACING_MS, TimeUnit.MILLISECONDS)
+                    writeLatch = CountDownLatch(1)
+                    expectedWriteUuid = uuid
+                    ok = submitWrite(g, ch, data, writeType)
                 }
+                if (!ok) Log.w(TAG, "writeCharacteristic($uuid) dropped after $attempt retries")
             }
             if (!ok) {
                 Log.w(TAG, "writeCharacteristic($uuid) submission failed")
@@ -444,21 +458,34 @@ class AndroidBleTransport(private val context: Context) : BleTransport {
                 expectedWriteUuid = null
                 return
             }
-            // WRITE_TYPE_NO_RESPONSE ("command" — e.g. the 3dda0004 file-transfer data chunks) is
-            // unacknowledged at the ATT layer: Android does NOT reliably deliver
-            // onCharacteristicWrite for it, so blocking on the write latch here stalled EVERY data
-            // chunk for the full OP_TIMEOUT_MS (~10s). On a multi-chunk file PUT that made the
-            // watch time out the transfer (the file never committed). For no-response writes the
-            // submit returning GATT_SUCCESS is the completion signal — don't wait. Only
-            // write-WITH-response ("request" — the indicate control chars) awaits the callback.
-            if (writeType == BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE) {
-                writeLatch = null
-                expectedWriteUuid = null
-                return
-            }
-            writeLatch?.await(OP_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            // Wait for completion. For no-response writes onCharacteristicWrite still fires as the
+            // stack's pacing/"ready" signal, so we await it with a SHORT timeout (flow control,
+            // not the 10s op timeout — a 10s-per-chunk stall previously timed the watch out). For
+            // write-with-response (the indicate control chars) we await the real ATT ack.
+            val waitMs = if (noResponse) NO_RESPONSE_PACING_MS else OP_TIMEOUT_MS
+            writeLatch?.await(waitMs, TimeUnit.MILLISECONDS)
             writeLatch = null
             expectedWriteUuid = null
+        }
+    }
+
+    /** Submit one characteristic write; returns true if the stack accepted it (GATT_SUCCESS). */
+    private fun submitWrite(
+        g: BluetoothGatt,
+        ch: BluetoothGattCharacteristic,
+        data: ByteArray,
+        writeType: Int,
+    ): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            // API 33+ returns a BluetoothStatusCodes value, not a BluetoothGatt status.
+            g.writeCharacteristic(ch, data, writeType) == android.bluetooth.BluetoothStatusCodes.SUCCESS
+        } else {
+            @Suppress("DEPRECATION")
+            run {
+                ch.value = data
+                ch.writeType = writeType
+                g.writeCharacteristic(ch)
+            }
         }
     }
 
