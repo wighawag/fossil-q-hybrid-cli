@@ -653,6 +653,21 @@ class WatchConnectionService : Service() {
                     "sync done mac=${result.mac} performed=${result.performed} " +
                         "skipped=${result.skipped} errors=${result.errors}",
                 )
+                // WP-SYNCSTATUS: stamp each PERFORMED unreadable section's per-watch `…SyncedAt` so
+                // the UI can mark rows "on watch". `performed` means the orchestrator ran the put
+                // (our truest signal — the sections are unreadable, so there's no read-back). The
+                // timestamp is captured AFTER the sync pass completes, so it is >= any row
+                // `updatedAt` written earlier in the same connect (seed-then-sync stays on-watch).
+                val mac = result.mac
+                if (mac != null) {
+                    val syncedAt = System.currentTimeMillis()
+                    val repo = WatchRepository(applicationContext)
+                    runBlocking {
+                        if (SyncSection.ALARMS in result.performed) repo.setAlarmsSyncedAt(mac, syncedAt)
+                        if (SyncSection.NOTIFICATION_FILTER in result.performed) repo.setNotificationFilterSyncedAt(mac, syncedAt)
+                        if (SyncSection.BUTTONS in result.performed) repo.setButtonsSyncedAt(mac, syncedAt)
+                    }
+                }
             }
         } catch (e: Exception) {
             // A failure loading the input (before the sync pass) — reportAround handles failures

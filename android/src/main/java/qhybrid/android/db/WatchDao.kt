@@ -55,6 +55,20 @@ interface WatchDao {
     @Query("UPDATE watches SET isActive = 1 WHERE macAddress = :mac")
     suspend fun setActiveFlag(mac: String)
 
+    // ---- WP-SYNCSTATUS: per-section "last pushed to the watch" stamps -------------
+
+    /** Mark the alarms section as last (re-)pushed to [mac] at [at] (epoch millis). */
+    @Query("UPDATE watches SET alarmsSyncedAt = :at WHERE macAddress = :mac")
+    suspend fun setAlarmsSyncedAt(mac: String, at: Long)
+
+    /** Mark the notification-filter section as last (re-)pushed to [mac] at [at]. */
+    @Query("UPDATE watches SET notificationFilterSyncedAt = :at WHERE macAddress = :mac")
+    suspend fun setNotificationFilterSyncedAt(mac: String, at: Long)
+
+    /** Mark the buttons section as last (re-)pushed to [mac] at [at]. */
+    @Query("UPDATE watches SET buttonsSyncedAt = :at WHERE macAddress = :mac")
+    suspend fun setButtonsSyncedAt(mac: String, at: Long)
+
     /**
      * Make [mac] the single active watch: clears the flag on every row, then sets it on
      * [mac]. Runs in one transaction so there is never more than one active watch.

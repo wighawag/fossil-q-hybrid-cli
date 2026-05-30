@@ -31,27 +31,35 @@ class TransferSettingsTest : DbTestBase() {
 
         repo.transferSettings(fromMac = a, toMac = b)
 
-        // B has identical rows, re-keyed under B's MAC.
+        // B has identical rows, re-keyed under B's MAC. WP-SYNCSTATUS: the clone re-stamps each
+        // row's `updatedAt` (so the cloned-onto watch shows them as pending until ITS sections are
+        // pushed), so compare modulo `updatedAt`.
         val aAlarms = alarmDao.getForWatch(a)
         val bAlarms = alarmDao.getForWatch(b)
         assertEquals(n, bAlarms.size)
         assertTrue(bAlarms.all { it.watchMac == b })
         assertEquals(
-            aAlarms.map { it.copy(watchMac = b) },
-            bAlarms,
+            aAlarms.map { it.copy(watchMac = b, updatedAt = 0) },
+            bAlarms.map { it.copy(updatedAt = 0) },
         )
 
         val aRules = ruleDao.getForWatch(a)
         val bRules = ruleDao.getForWatch(b)
         assertEquals(3, bRules.size)
         assertTrue(bRules.all { it.watchMac == b })
-        assertEquals(aRules.map { it.copy(watchMac = b) }, bRules)
+        assertEquals(
+            aRules.map { it.copy(watchMac = b, updatedAt = 0) },
+            bRules.map { it.copy(updatedAt = 0) },
+        )
 
         val aButtons = buttonDao.getForWatch(a)
         val bButtons = buttonDao.getForWatch(b)
         assertEquals(3, bButtons.size)
         assertTrue(bButtons.all { it.watchMac == b })
-        assertEquals(aButtons.map { it.copy(watchMac = b) }, bButtons)
+        assertEquals(
+            aButtons.map { it.copy(watchMac = b, updatedAt = 0) },
+            bButtons.map { it.copy(updatedAt = 0) },
+        )
 
         // A is untouched: same counts and still keyed under A.
         assertEquals(n, aAlarms.size)

@@ -20,6 +20,10 @@ class WatchRepository(
     private val alarmDao: WatchAlarmDao = db.watchAlarmDao(),
     private val ruleDao: NotificationRuleDao = db.notificationRuleDao(),
     private val buttonDao: ButtonMappingDao = db.buttonMappingDao(),
+    // WP-SYNCSTATUS — the clock used to stamp each child row's `updatedAt` on EVERY write path
+    // (single-row upsert + the bulk replace/seed/transfer paths). Injectable so the synced-marker
+    // derivation is unit-testable with a fixed clock. Production uses the wall clock.
+    private val now: () -> Long = System::currentTimeMillis,
 ) {
 
     constructor(context: Context) : this(AppDatabase.get(context))
@@ -53,6 +57,22 @@ class WatchRepository(
             }
         }
     }
+
+    /**
+     * WP-SYNCSTATUS — mark a per-watch section as last (re-)pushed to the watch at [at] (epoch
+     * millis), called from the WP3 service when a sync pass reports the section in
+     * [qhybrid.android.sync.SyncResult.performed]. The mac is normalized to upper-case to match the
+     * [WatchEntity] PK. [at] is captured AFTER the sync pass completes (>= any row `updatedAt`
+     * written earlier in the same connect), so a freshly seeded+synced row reads as "on watch".
+     */
+    suspend fun setAlarmsSyncedAt(mac: String, at: Long) =
+        watchDao.setAlarmsSyncedAt(mac.uppercase(), at)
+
+    suspend fun setNotificationFilterSyncedAt(mac: String, at: Long) =
+        watchDao.setNotificationFilterSyncedAt(mac.uppercase(), at)
+
+    suspend fun setButtonsSyncedAt(mac: String, at: Long) =
+        watchDao.setButtonsSyncedAt(mac.uppercase(), at)
 
     suspend fun getActiveWatch(): WatchEntity? = watchDao.getActive()
     fun observeActiveWatch(): Flow<WatchEntity?> = watchDao.observeActive()
@@ -95,7 +115,7 @@ class WatchRepository(
 
     suspend fun getAlarms(mac: String) = alarmDao.getForWatch(mac)
     fun observeAlarms(mac: String) = alarmDao.observeForWatch(mac)
-    suspend fun upsertAlarm(alarm: WatchAlarmEntity) = alarmDao.upsert(alarm)
+    suspend fun upsertAlarm(alarm: WatchAlarmEntity) = alarmDao.upsert(alarm.copy(updatedAt = now()))
     suspend fun deleteAlarmSlot(mac: String, slotId: Int) = alarmDao.deleteSlot(mac, slotId)
 
     /**
@@ -107,12 +127,12 @@ class WatchRepository(
 
     suspend fun getRules(mac: String) = ruleDao.getForWatch(mac)
     fun observeRules(mac: String) = ruleDao.observeForWatch(mac)
-    suspend fun upsertRule(rule: NotificationRuleEntity) = ruleDao.upsert(rule)
+    suspend fun upsertRule(rule: NotificationRuleEntity) = ruleDao.upsert(rule.copy(updatedAt = now()))
     suspend fun deleteRule(mac: String, pkg: String) = ruleDao.deleteRule(mac, pkg)
 
     suspend fun getButtons(mac: String) = buttonDao.getForWatch(mac)
     fun observeButtons(mac: String) = buttonDao.observeForWatch(mac)
-    suspend fun upsertButton(mapping: ButtonMappingEntity) = buttonDao.upsert(mapping)
+    suspend fun upsertButton(mapping: ButtonMappingEntity) = buttonDao.upsert(mapping.copy(updatedAt = now()))
     suspend fun getButton(mac: String, buttonId: Int) = buttonDao.getButton(mac, buttonId)
     suspend fun deleteButton(mac: String, buttonId: Int) = buttonDao.deleteButton(mac, buttonId)
 
@@ -141,15 +161,19 @@ class WatchRepository(
         replaceAlarms: Boolean = true,
     ) {
         val normalized = mac.uppercase()
+        // WP-SYNCSTATUS: stamp `updatedAt` on the seeded/replaced rows too, otherwise a freshly
+        // provisioned/applied row keeps `updatedAt = 0` and shows "pending" forever even after the
+        // same connect's sync stamps the section's `…SyncedAt`.
+        val ts = now()
         db.withTransaction {
             if (replaceAlarms) {
                 alarmDao.deleteForWatch(normalized)
-                alarmDao.upsertAll(alarms.map { it.copy(watchMac = normalized) })
+                alarmDao.upsertAll(alarms.map { it.copy(watchMac = normalized, updatedAt = ts) })
             }
             ruleDao.deleteForWatch(normalized)
-            ruleDao.upsertAll(rules.map { it.copy(watchMac = normalized) })
+            ruleDao.upsertAll(rules.map { it.copy(watchMac = normalized, updatedAt = ts) })
             buttonDao.deleteForWatch(normalized)
-            buttonDao.upsertAll(buttons.map { it.copy(watchMac = normalized) })
+            buttonDao.upsertAll(buttons.map { it.copy(watchMac = normalized, updatedAt = ts) })
         }
     }
 
@@ -165,10 +189,13 @@ class WatchRepository(
      * on [toMac] are left in place (matches the documented "bulk-insert with REPLACE").
      */
     suspend fun transferSettings(fromMac: String, toMac: String) {
+        val ts = now()
         db.withTransaction {
-            val alarms = alarmDao.getForWatch(fromMac).map { it.copy(watchMac = toMac) }
-            val rules = ruleDao.getForWatch(fromMac).map { it.copy(watchMac = toMac) }
-            val buttons = buttonDao.getForWatch(fromMac).map { it.copy(watchMac = toMac) }
+            // WP-SYNCSTATUS: re-stamp `updatedAt` on the cloned rows so the cloned-onto watch shows
+            // them as pending until ITS sections are pushed (the source's sync state never applies).
+            val alarms = alarmDao.getForWatch(fromMac).map { it.copy(watchMac = toMac, updatedAt = ts) }
+            val rules = ruleDao.getForWatch(fromMac).map { it.copy(watchMac = toMac, updatedAt = ts) }
+            val buttons = buttonDao.getForWatch(fromMac).map { it.copy(watchMac = toMac, updatedAt = ts) }
             alarmDao.upsertAll(alarms)
             ruleDao.upsertAll(rules)
             buttonDao.upsertAll(buttons)

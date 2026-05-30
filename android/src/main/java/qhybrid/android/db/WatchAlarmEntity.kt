@@ -28,5 +28,9 @@ data class WatchAlarmEntity(
     val isEnabled: Boolean,
     val daysMask: Int,           // Day bitmask (bit0=Sun, bit1=Mon ... bit6=Sat)
     val isRepeating: Boolean,    // true = repeats weekly, false = one-shot
-    val label: String? = null
+    val label: String? = null,
+    // WP-SYNCSTATUS — when this row was last written to the DB (stamped by WatchRepository on every
+    // upsert path). Compared against WatchEntity.alarmsSyncedAt to decide "on watch?".
+    // IGNORED by the WP14 compilers (no wire bytes change).
+    val updatedAt: Long = 0
 )
