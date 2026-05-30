@@ -616,6 +616,15 @@ class SettingsViewModelTest : DbTestBase() {
     }
 
     @Test
+    fun resyncCalendar_triggersRefresh() {
+        var refreshes = 0
+        val model = vm(calendarRefresh = { refreshes++ })
+        awaitState(model.uiState) { true }
+        assertTrue(model.resyncCalendar())
+        assertEquals(1, refreshes)
+    }
+
+    @Test
     fun calendarOffsetClampedToRange() {
         val prefs = FakePrefs()
         val model = vm(prefs = prefs)

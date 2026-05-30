@@ -302,6 +302,19 @@ open class SettingsViewModel(
     }
 
     /**
+     * WP13 — manually re-read the user's calendar and re-map the watch's calendar alarm slots
+     * (16–31), then silently push the alarm file if the rows changed. The escape hatch for when the
+     * user wants to force a refresh (e.g. just granted access, or added an event and doesn't want to
+     * wait for the observer). Forwards to the same injectable [calendarRefresh] trigger
+     * ([WatchConnectionService.refreshCalendarNow] in production). Always returns true (the trigger
+     * is fire-and-forget; the refresh itself no-ops if calendar access isn't granted yet).
+     */
+    fun resyncCalendar(): Boolean {
+        calendarRefresh()
+        return true
+    }
+
+    /**
      * Load the installed-app list for the music picker (reuses the WP16c provider).
      *
      * The production [InstalledAppsProvider] enumerates EVERY launcher app and loads each icon via

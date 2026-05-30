@@ -89,6 +89,7 @@ fun SettingsScreen(
         onSetNudge = vm::setNudge,
         onSetTimezone = vm::setSecondTimezoneOffset,
         onSetCalendarOffset = vm::setCalendarAlarmOffset,
+        onResyncCalendar = vm::resyncCalendar,
         onSetMusicApp = vm::setPreferredMusicApp,
         onTransfer = vm::transferSettings,
         onRemoveWatch = vm::removeActiveWatch,
@@ -112,6 +113,8 @@ fun SettingsContent(
     onSetMusicApp: (String?) -> Unit,
     // WP13: set the calendar-alarm ring offset (minutes before the event). No-op default.
     onSetCalendarOffset: (Int) -> Boolean = { false },
+    // WP13: manually re-read the calendar + re-map/push slots 16–31. No-op default.
+    onResyncCalendar: () -> Boolean = { false },
     onTransfer: (String, String) -> Boolean,
     onOpenLogs: () -> Unit,
     onOpenDefaults: () -> Unit = {},
@@ -160,7 +163,7 @@ fun SettingsContent(
             TestVibrationCard(state, progress, onVibrate) { note = it }
             NudgeCard(state, onSetNudge) { note = it }
             TimezoneCard(state, onSetTimezone) { note = it }
-            CalendarOffsetCard(state, onSetCalendarOffset) { note = it }
+            CalendarOffsetCard(state, onSetCalendarOffset, onResyncCalendar) { note = it }
             MusicAppCard(state, onSetMusicApp)
             HorizontalDivider()
             SyncAllCard(state, progress, onSyncAll) { note = it }
@@ -354,6 +357,7 @@ private fun NudgeCard(
 private fun CalendarOffsetCard(
     state: SettingsUiState,
     onSetCalendarOffset: (Int) -> Boolean,
+    onResyncCalendar: () -> Boolean,
     onNote: (String) -> Unit,
 ) {
     SettingCard("Calendar alarms") {
@@ -386,6 +390,14 @@ private fun CalendarOffsetCard(
                 },
             ) { Text("+ ${SettingsVocabulary.CAL_OFFSET_STEP_MINUTES}m") }
         }
+        // WP13: force a re-read of the calendar now (re-map slots 16–31 + silent push if changed).
+        OutlinedButton(
+            onClick = {
+                onResyncCalendar()
+                onNote("Resyncing calendar…")
+            },
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("Resync calendar now") }
     }
 }
 
