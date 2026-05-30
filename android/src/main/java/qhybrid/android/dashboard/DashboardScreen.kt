@@ -9,10 +9,13 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
@@ -66,6 +69,11 @@ fun DashboardScreen(
     val context = LocalContext.current
     val vm: DashboardViewModel = viewModel(factory = DashboardViewModel.factory(context))
     val state by vm.uiState.collectAsStateWithLifecycle()
+
+    // WP-ONBOARD: a blocking "Adding your watch…" modal while a brand-new watch is being
+    // provisioned (the connect + filter/alarm write takes a few seconds), resolving to Added/Failed.
+    val provisioning by qhybrid.android.onboard.ProvisioningState.status.collectAsStateWithLifecycle()
+    ProvisioningDialog(provisioning)
 
     DashboardContent(
         state = state,
@@ -131,6 +139,66 @@ fun DashboardContent(
             onAddWatch = onAddWatch,
         )
     }
+}
+
+/**
+ * WP-ONBOARD — blocking modal shown while a brand-new watch is being provisioned on its first
+ * connect ("Adding your watch…"), then a brief Added / Failed outcome the user can dismiss. While
+ * [ProvisioningState.Phase.PROVISIONING] the dialog cannot be dismissed (the work is in flight);
+ * the terminal phases offer an OK button. IDLE renders nothing.
+ */
+@Composable
+private fun ProvisioningDialog(status: qhybrid.android.onboard.ProvisioningState.Status) {
+    val phase = status.phase
+    if (phase == qhybrid.android.onboard.ProvisioningState.Phase.IDLE) return
+    // Acknowledge a terminal outcome locally so it dismisses without mutating the process-wide state.
+    var acknowledged by remember(status.lastUpdatedMillis) { mutableStateOf(false) }
+    if (acknowledged) return
+    val provisioning = phase == qhybrid.android.onboard.ProvisioningState.Phase.PROVISIONING
+    AlertDialog(
+        onDismissRequest = { if (!provisioning) acknowledged = true },
+        confirmButton = {
+            if (!provisioning) {
+                TextButton(onClick = { acknowledged = true }) { Text("OK") }
+            }
+        },
+        title = {
+            Text(
+                when (phase) {
+                    qhybrid.android.onboard.ProvisioningState.Phase.PROVISIONING -> "Adding your watch…"
+                    qhybrid.android.onboard.ProvisioningState.Phase.ADDED -> "Watch added"
+                    qhybrid.android.onboard.ProvisioningState.Phase.FAILED -> "Couldn't add the watch"
+                    else -> ""
+                }
+            )
+        },
+        text = {
+            when (phase) {
+                qhybrid.android.onboard.ProvisioningState.Phase.PROVISIONING -> Row(
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    androidx.compose.material3.CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp), strokeWidth = 2.dp,
+                    )
+                    Text(
+                        "Setting up your watch. This takes a few seconds while it connects and " +
+                            "saves the initial settings.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                qhybrid.android.onboard.ProvisioningState.Phase.ADDED -> Text(
+                    "Your watch is ready to use.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                qhybrid.android.onboard.ProvisioningState.Phase.FAILED -> Text(
+                    status.errorMessage ?: "Setup didn't finish. Keep the watch close and try again.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                else -> {}
+            }
+        },
+    )
 }
 
 /**

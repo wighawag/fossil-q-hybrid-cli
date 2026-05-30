@@ -366,10 +366,26 @@ class WatchConnectionService : Service() {
                             // buzz-critical notification filter upload SUCCEEDS; otherwise we leave it
                             // unregistered so the next connect re-provisions (no half-added watch).
                             Log.i(TAG, "provisioning new watch $mac")
+                            qhybrid.android.onboard.ProvisioningState.publish(
+                                qhybrid.android.onboard.ProvisioningState.Phase.PROVISIONING,
+                                mac = mac,
+                                nowMillis = System.currentTimeMillis(),
+                            )
                             if (provisionNewWatch(controller, mac)) {
                                 registerWatchRow(mac)
+                                qhybrid.android.onboard.ProvisioningState.publish(
+                                    qhybrid.android.onboard.ProvisioningState.Phase.ADDED,
+                                    mac = mac,
+                                    nowMillis = System.currentTimeMillis(),
+                                )
                             } else {
                                 Log.w(TAG, "provisioning $mac did not confirm the reserved filter — NOT marking added (will retry next connect)")
+                                qhybrid.android.onboard.ProvisioningState.publish(
+                                    qhybrid.android.onboard.ProvisioningState.Phase.FAILED,
+                                    mac = mac,
+                                    errorMessage = "Couldn't set up the watch. Make sure it stays close and try again.",
+                                    nowMillis = System.currentTimeMillis(),
+                                )
                             }
                         } else {
                             // A user-requested sync that was pending while the link was down.
@@ -415,6 +431,15 @@ class WatchConnectionService : Service() {
             )
             // WP-SYNCFIX: surface the connect/init failure to a pending Save-to-watch.
             failPendingSync("Could not sync: ${e.message ?: e.javaClass.simpleName}")
+            // WP-ONBOARD: if we were mid-provisioning a brand-new watch, the connect dropped before
+            // it could finish — report FAILED so the add-watch modal resolves (watch NOT added).
+            if (qhybrid.android.onboard.ProvisioningState.status.value.isProvisioning) {
+                qhybrid.android.onboard.ProvisioningState.publish(
+                    qhybrid.android.onboard.ProvisioningState.Phase.FAILED,
+                    errorMessage = "Lost connection while setting up. Move the watch closer and try again.",
+                    nowMillis = System.currentTimeMillis(),
+                )
+            }
             runCatching { controller.disconnect() }
             controllerRef.compareAndSet(controller, null)
         }
