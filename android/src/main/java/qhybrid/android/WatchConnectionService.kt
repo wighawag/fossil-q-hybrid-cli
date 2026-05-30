@@ -11,10 +11,26 @@ import android.content.pm.ServiceInfo
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
+import android.database.ContentObserver
+import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
+import android.provider.CalendarContract
 import android.util.Log
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import qhybrid.android.calendar.CalendarAccess
+import qhybrid.android.calendar.CalendarRefresher
+import qhybrid.android.calendar.ServiceCalendarPush
+import qhybrid.android.calendar.SystemCalendarSource
 import qhybrid.android.db.WatchRepository
+import qhybrid.android.sync.CoroutineDebouncer
+import qhybrid.android.sync.Debouncer
 import qhybrid.android.settings.SharedPreferencesSettingsPrefs
 import qhybrid.android.sync.ConnectSyncDecider
 import qhybrid.android.sync.SyncDataLoader
@@ -65,6 +81,10 @@ class WatchConnectionService : Service() {
         // WP11: a posted phone notification matched a per-app rule — play it on the watch (play-only
         // by package; the watch already holds the per-app vibe+hands in its NOTIFICATION_FILTER).
         const val ACTION_PLAY_NOTIFICATION = "qhybrid.android.action.PLAY_NOTIFICATION"
+        // WP13: re-read the user's calendar and full-replace alarm slots 16-31, then silently push
+        // the alarm file if the rows changed (no SYNCING modal). Driven by the ContentObserver,
+        // the on-connect hook, and the permission (re-)grant in Setup.
+        const val ACTION_REFRESH_CALENDAR = "qhybrid.android.action.REFRESH_CALENDAR"
         const val ACTION_DEVICE_APPEARED = "qhybrid.android.action.DEVICE_APPEARED"
         const val ACTION_STOP = "qhybrid.android.action.STOP"
         const val EXTRA_MAC = "mac"
@@ -82,6 +102,9 @@ class WatchConnectionService : Service() {
         const val EXTRA_PLAY_DEADLINE = "play_deadline"
         // WP11: how long (ms) a connect-then-play stays valid before it is dropped as stale.
         const val PLAY_STALE_AFTER_MS = 30_000L
+        // WP13: debounce window coalescing a burst of calendar provider changes into ONE refresh
+        // (the provider can fire several onChange callbacks for a single user edit / sync).
+        private const val CALENDAR_DEBOUNCE_MS = 1_500L
         // WP-SYNCFIX: which sync sections an explicit Save requested (section names). Absent =
         // full reconcile (connect / periodic). Present = targeted save (e.g. just BUTTONS).
         const val EXTRA_SECTIONS = "sections"
@@ -181,6 +204,19 @@ class WatchConnectionService : Service() {
                 action = ACTION_PLAY_NOTIFICATION
                 putExtra(EXTRA_PACKAGE, packageName)
                 putExtra(EXTRA_PLAY_DEADLINE, SystemClock.elapsedRealtime() + PLAY_STALE_AFTER_MS)
+            }
+            ContextCompatStartForeground(context, intent)
+        }
+
+        /**
+         * WP13 — re-read the user's calendar and full-replace alarm slots 16-31 (then SILENTLY push
+         * the alarm file if the rows changed). Used by the permission (re-)grant in Setup (the
+         * ContentObserver + on-connect hook drive the same [refreshCalendar] internally). Cheap
+         * no-op if `READ_CALENDAR` isn't granted yet.
+         */
+        fun refreshCalendarNow(context: Context) {
+            val intent = Intent(context, WatchConnectionService::class.java).apply {
+                action = ACTION_REFRESH_CALENDAR
             }
             ContextCompatStartForeground(context, intent)
         }
@@ -288,6 +324,19 @@ class WatchConnectionService : Service() {
     private val binder = LocalBinder()
     override fun onBind(intent: Intent?): IBinder = binder
 
+    // ---- WP13 calendar sync seams -------------------------------------------
+
+    /** Scope for the calendar [ContentObserver]-driven refresh (off the main thread). */
+    private val calendarScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    /** Coalesces a burst of calendar change notifications into ONE refresh (reuses WP-SYNCSTATUS). */
+    private val calendarDebouncer: Debouncer by lazy {
+        CoroutineDebouncer(calendarScope, windowMillis = CALENDAR_DEBOUNCE_MS)
+    }
+
+    /** The provider observer; registered when READ_CALENDAR is granted, unregistered in onDestroy. */
+    private var calendarObserver: ContentObserver? = null
+
     // ---- lifecycle ----------------------------------------------------------
 
     override fun onCreate() {
@@ -296,6 +345,10 @@ class WatchConnectionService : Service() {
         // Enter foreground immediately so we satisfy the FGS start contract even on the
         // boot-restart path before we have any device info.
         startForegroundCompat(buildNotification("Idle", "Waiting for watch"))
+        // WP13: observe the calendar provider for changes (debounced refresh of slots 16-31). Only
+        // registers if READ_CALENDAR is already granted; a later grant in Setup pokes
+        // ACTION_REFRESH_CALENDAR which (re-)registers via ensureCalendarObserver().
+        ensureCalendarObserver()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -343,6 +396,11 @@ class WatchConnectionService : Service() {
                     )
                 }
             }
+            ACTION_REFRESH_CALENDAR -> {
+                // WP13: a (re-)grant in Setup — (re-)register the observer + do an immediate refresh.
+                ensureCalendarObserver()
+                scheduleCalendarRefresh()
+            }
             ACTION_DISCONNECT -> submitDisconnect(stopAfter = false)
             ACTION_FORGET -> {
                 // Remove watch: suppress auto-reconnect, then disconnect. The flag is cleared after
@@ -362,9 +420,63 @@ class WatchConnectionService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        // WP13: unregister the calendar observer + cancel its refresh scope.
+        calendarObserver?.let { runCatching { contentResolver.unregisterContentObserver(it) } }
+        calendarObserver = null
+        calendarScope.cancel()
         runCatching { controllerRef.getAndSet(null)?.disconnect() }
         transportRef.set(null)
         worker.shutdownNow()
+    }
+
+    // ---- WP13 calendar refresh ----------------------------------------------
+
+    /**
+     * Register the calendar [ContentObserver] (idempotent) if `READ_CALENDAR` is granted. The
+     * observer debounces a burst of provider changes into ONE [scheduleCalendarRefresh]. No-op when
+     * the permission isn't granted yet (the Setup grant pokes ACTION_REFRESH_CALENDAR to re-try).
+     */
+    private fun ensureCalendarObserver() {
+        if (!CalendarAccess.isGranted(this)) {
+            Log.d(TAG, "calendar: READ_CALENDAR not granted — observer not registered")
+            return
+        }
+        if (calendarObserver != null) return
+        val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean, uri: Uri?) {
+                Log.d(TAG, "calendar changed (uri=$uri) — scheduling debounced refresh")
+                scheduleCalendarRefresh()
+            }
+        }
+        runCatching {
+            contentResolver.registerContentObserver(
+                CalendarContract.Instances.CONTENT_URI, /* notifyForDescendants */ true, observer,
+            )
+            calendarObserver = observer
+            Log.i(TAG, "calendar observer registered")
+        }.onFailure { Log.w(TAG, "calendar observer registration failed", it) }
+    }
+
+    /** Schedule a debounced calendar refresh (coalesces a burst into one read+map+replace+push). */
+    private fun scheduleCalendarRefresh() {
+        calendarDebouncer.schedule { calendarScope.launch { runCalendarRefresh() } }
+    }
+
+    /**
+     * Read the calendar via [SystemCalendarSource], map via the pure WP9 path, full-replace slots
+     * 16-31, and SILENTLY push the alarm file if the rows changed ([ServiceCalendarPush] — no
+     * SYNCING modal). No-op (cheap) when READ_CALENDAR isn't granted or there is no active watch.
+     */
+    private suspend fun runCalendarRefresh() {
+        if (!CalendarAccess.isGranted(this)) return
+        runCatching {
+            val refresher = CalendarRefresher(
+                WatchRepository(applicationContext),
+                SystemCalendarSource(applicationContext),
+            )
+            val result = refresher.refreshAndMaybePush(ServiceCalendarPush(applicationContext))
+            Log.i(TAG, "calendar refresh: changed=${result.changed} rows=${result.rowCount}")
+        }.onFailure { Log.w(TAG, "calendar refresh failed", it) }
     }
 
     // ---- work ----------------------------------------------------------------
@@ -558,6 +670,10 @@ class WatchConnectionService : Service() {
                     runCatching { controller.requestActivity(false) }
                         .onFailure { Log.w(TAG, "on-connect activity fetch failed", it) }
                 }
+                // WP13: refresh the calendar on connect (mirror of WP11's on-connect rule-cache
+                // refresh) so slots 16-31 track the user's calendar hands-free. Debounced + off the
+                // ble-worker; a changed refresh silently pushes the alarm file (no modal).
+                scheduleCalendarRefresh()
             } else {
                 publish(
                     WatchState.LinkState.INITIALIZED,

@@ -110,4 +110,30 @@ class CalendarRefresherTest {
         val result = refresher(listOf(CalendarEvent("A", at(2025, 6, 2, 9, 0)))).refresh()
         assertEquals(CalendarRefresher.Result.NONE, result)
     }
+
+    /** Recording fake push so we can assert the silent-push fires exactly once on a CHANGED refresh. */
+    private class RecordingPush : CalendarPush {
+        var pushes = 0
+            private set
+        override fun pushAlarmsSilently(): Boolean { pushes++; return true }
+    }
+
+    @Test
+    fun refreshAndMaybePush_changedRefresh_pushesOnce() = runTest {
+        val push = RecordingPush()
+        val result = refresher(listOf(CalendarEvent("A", at(2025, 6, 2, 9, 0)))).refreshAndMaybePush(push)
+        assertTrue(result.changed)
+        assertEquals(1, push.pushes)
+    }
+
+    @Test
+    fun refreshAndMaybePush_noOpRefresh_doesNotPush() = runTest {
+        val events = listOf(CalendarEvent("A", at(2025, 6, 2, 9, 0)))
+        // seed the rows first so the second refresh is a no-op
+        refresher(events).refresh()
+        val push = RecordingPush()
+        val result = refresher(events).refreshAndMaybePush(push)
+        assertFalse(result.changed)
+        assertEquals(0, push.pushes)
+    }
 }

@@ -503,6 +503,35 @@ class MainActivity : ComponentActivity() {
                 else "Notification access: NOT granted — per-app notification rules won't fire",
                 style = MaterialTheme.typography.bodySmall
             )
+
+            // WP13/WP10 — Calendar access (READ_CALENDAR). A NORMAL runtime permission (unlike
+            // notification access), so it is requested via the permissions API. On grant we poke
+            // the WP3 service to read the calendar + fill alarm slots 16-31 (silent push). The
+            // state re-reads from the permission result.
+            var calendarAccess by remember {
+                mutableStateOf(qhybrid.android.calendar.CalendarAccess.isGranted(this@MainActivity))
+            }
+            val calendarPermLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.RequestPermission()
+            ) { granted ->
+                calendarAccess = qhybrid.android.calendar.CalendarAccess.isGranted(granted)
+                if (granted) {
+                    // (Re-)register the observer + do an immediate calendar refresh of slots 16-31.
+                    WatchConnectionService.refreshCalendarNow(this@MainActivity)
+                }
+            }
+            OutlinedButton(
+                onClick = {
+                    calendarPermLauncher.launch(qhybrid.android.calendar.CalendarAccess.PERMISSION)
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Grant calendar access") }
+            Text(
+                if (calendarAccess)
+                    "Calendar access: granted ✅ — upcoming events fill the watch's calendar alarms"
+                else "Calendar access: NOT granted — calendar events won't sync to the watch",
+                style = MaterialTheme.typography.bodySmall
+            )
         }
     }
 

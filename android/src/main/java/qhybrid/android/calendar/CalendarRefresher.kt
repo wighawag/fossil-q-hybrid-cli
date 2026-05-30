@@ -51,6 +51,20 @@ class CalendarRefresher(
         return Result(changed = changed, rowCount = newRows.size)
     }
 
+    /**
+     * [refresh], then SILENTLY push the alarm file to the watch via [push] **only if the rows
+     * actually changed** — a no-op refresh (calendar unchanged) must not poke BLE. This is the
+     * single entry point the Step-3 [ContentObserver] / on-connect / on-grant callbacks drive
+     * (debounced by the shell). Returns the [Result] so callers can log/observe.
+     */
+    suspend fun refreshAndMaybePush(push: CalendarPush): Result {
+        val result = refresh()
+        if (result.changed) {
+            push.pushAlarmsSilently()
+        }
+        return result
+    }
+
     private companion object {
         /** Mirror of WP9 `CalendarAlarmMapper.WINDOW_DAYS` (kept local to avoid a wire-class dep). */
         private const val WINDOW_DAYS = 7
