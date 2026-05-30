@@ -42,6 +42,10 @@ object AlarmDays {
     /** Toggle a single-day bit in [mask] and return the new mask (masked to 7 bits). */
     fun toggle(mask: Int, dayBit: Int): Int = (mask xor dayBit) and EVERYDAY
 
+    /** Number of selected day bits in [mask] (0..7). Used by the editor to decide whether the
+     *  repeating toggle is meaningful (only for exactly one day). */
+    fun dayCount(mask: Int): Int = Integer.bitCount(mask and EVERYDAY)
+
     /** Human summary for a days mask, e.g. "Weekdays", "Every day", "Mon, Wed, Fri", "Once". */
     fun summary(mask: Int, repeating: Boolean): String {
         val m = mask and EVERYDAY

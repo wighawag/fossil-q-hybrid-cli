@@ -261,8 +261,20 @@ private fun AlarmEditorDialog(
         is24Hour = true,
     )
     var daysMask by remember { mutableStateOf(initial.daysMask and AlarmDays.EVERYDAY) }
-    var repeating by remember { mutableStateOf(initial.isRepeating) }
     var label by remember { mutableStateOf(initial.label ?: "") }
+    val dayCount = AlarmDays.dayCount(daysMask)
+    // The repeating SWITCH only makes sense for exactly ONE selected day (0 days = always one-off;
+    // 2+ days = always weekly). For the single-day case the toggle always (re-)defaults to ON every
+    // time you ENTER that regime: keying the remembered state on `dayCount` re-initializes it to
+    // true whenever the count returns to 1, so leaving and coming back to one day snaps back to
+    // "Repeats weekly" (the user can still turn it off while staying at one day).
+    var oneDayRepeating by remember(dayCount) { mutableStateOf(true) }
+    // Derived effective repeating: 0 days → one-off; 1 day → the (re-defaulting) toggle; 2+ → weekly.
+    val effectiveRepeating = when {
+        dayCount == 0 -> false
+        dayCount == 1 -> oneDayRepeating
+        else -> true
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -273,7 +285,7 @@ private fun AlarmEditorDialog(
                         hour = timeState.hour,
                         minute = timeState.minute,
                         daysMask = daysMask,
-                        isRepeating = repeating,
+                        isRepeating = effectiveRepeating,
                         label = label.ifBlank { null },
                     )
                 )
@@ -300,24 +312,30 @@ private fun AlarmEditorDialog(
                     }
                 }
 
-                // Shortcuts.
+                // Shortcuts (each selects 2+ days, which is inherently a weekly repeat).
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = { daysMask = AlarmDays.WEEKDAY; repeating = true }) {
-                        Text("Weekdays")
-                    }
-                    OutlinedButton(onClick = { daysMask = AlarmDays.WEEKEND; repeating = true }) {
-                        Text("Weekend")
-                    }
-                    OutlinedButton(onClick = { daysMask = AlarmDays.EVERYDAY; repeating = true }) {
-                        Text("Every day")
-                    }
+                    OutlinedButton(onClick = { daysMask = AlarmDays.WEEKDAY }) { Text("Weekdays") }
+                    OutlinedButton(onClick = { daysMask = AlarmDays.WEEKEND }) { Text("Weekend") }
+                    OutlinedButton(onClick = { daysMask = AlarmDays.EVERYDAY }) { Text("Every day") }
                 }
 
-                // One-shot vs repeating.
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Switch(checked = repeating, onCheckedChange = { repeating = it })
-                    Spacer(Modifier.width(8.dp))
-                    Text(if (repeating) "Repeats weekly" else "One-shot (fires once)")
+                // One-shot vs repeating — only meaningful for EXACTLY ONE day. With no days it's
+                // always a one-off; with 2+ days it's always weekly, so we hide the toggle and show
+                // the implied state instead (the saved isRepeating is derived the same way).
+                when (dayCount) {
+                    0 -> Text(
+                        "One-shot (fires once at the next occurrence of this time).",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    1 -> Row(verticalAlignment = Alignment.CenterVertically) {
+                        Switch(
+                            checked = oneDayRepeating,
+                            onCheckedChange = { oneDayRepeating = it },
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(if (oneDayRepeating) "Repeats weekly" else "One-shot (fires once)")
+                    }
+                    else -> Text("Repeats weekly", style = MaterialTheme.typography.bodySmall)
                 }
 
                 OutlinedTextField(
