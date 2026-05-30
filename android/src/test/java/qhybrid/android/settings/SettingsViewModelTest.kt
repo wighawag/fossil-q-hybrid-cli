@@ -107,6 +107,14 @@ class SettingsViewModelTest : DbTestBase() {
         override fun syncAll(): Boolean { count++; return wired }
     }
 
+    private class FakeWatchAdmin(private val wired: Boolean = true) : WatchAdminSync {
+        var count = 0
+        val removed = mutableListOf<String>()
+        override fun removeWatch(mac: String): Boolean {
+            count++; removed.add(mac); return wired
+        }
+    }
+
     private fun vm(
         prefs: SettingsPrefs = FakePrefs(),
         sync: SettingsSync = FakeSync(),
@@ -114,7 +122,18 @@ class SettingsViewModelTest : DbTestBase() {
         syncSource: FakeSyncStateSource = FakeSyncStateSource(),
         vibration: VibrationSync = FakeVibration(),
         fullSync: FullSync = FakeFullSync(),
-    ) = SettingsViewModel(repo, prefs, sync, apps, vibration, fullSync, vmScope, syncSource)
+        watchAdmin: WatchAdminSync = FakeWatchAdmin(),
+    ) = SettingsViewModel(
+        repo = repo,
+        prefs = prefs,
+        sync = sync,
+        appsProvider = apps,
+        vibration = vibration,
+        fullSync = fullSync,
+        watchAdmin = watchAdmin,
+        scope = vmScope,
+        syncSource = syncSource,
+    )
 
     private fun awaitState(
         flow: StateFlow<SettingsUiState>,
@@ -256,6 +275,35 @@ class SettingsViewModelTest : DbTestBase() {
         awaitState(model.uiState) { !it.hasActiveWatch }
         assertFalse(model.syncAll())
         assertEquals(0, full.count)
+    }
+
+    // ---- remove / re-provision this watch (WP-WATCHADMIN) --------------------
+
+    @Test
+    fun removeActiveWatchHitsSeamWithActiveMac() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }
+        val admin = FakeWatchAdmin(wired = true)
+        val model = vm(watchAdmin = admin)
+        awaitState(model.uiState) { it.hasActiveWatch }
+
+        assertTrue(model.removeActiveWatch())
+        assertEquals(1, admin.count)
+        assertEquals("AA:00:00:00:00:01", admin.removed.last())
+    }
+
+    @Test
+    fun removeActiveWatchNoOpWithoutActiveWatch() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = false)) }
+        val admin = FakeWatchAdmin()
+        val model = vm(watchAdmin = admin)
+        awaitState(model.uiState) { !it.hasActiveWatch }
+        assertFalse(model.removeActiveWatch())
+        assertEquals(0, admin.count)
+    }
+
+    @Test
+    fun productionWatchAdminIsWired() {
+        assertTrue(WatchAdminSync.WATCHADMIN_WIRED)
     }
 
     // ---- nudge: app pref + deferred live command -----------------------------

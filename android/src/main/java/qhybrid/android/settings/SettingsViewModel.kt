@@ -95,6 +95,8 @@ open class SettingsViewModel(
     private val vibration: VibrationSync = NoopVibrationSync,
     // WP-PULLSYNC: the manual "Sync all" seam (fake in tests).
     private val fullSync: FullSync = NoopFullSync,
+    // WP-WATCHADMIN: the "remove / re-provision this watch" seam (fake in tests).
+    private val watchAdmin: WatchAdminSync = NoopWatchAdminSync,
     // Tests inject a real/Unconfined scope; production passes null → uses [viewModelScope].
     scope: CoroutineScope? = null,
     // WP-PROGRESS (sub-part 3): the process-wide sync signal the Save/Apply controls observe.
@@ -174,6 +176,24 @@ open class SettingsViewModel(
     fun syncAll(): Boolean {
         if (uiState.value.activeWatch == null) return false
         return fullSync.syncAll()
+    }
+
+    // ---- remove / re-provision this watch (WP-WATCHADMIN) ---------------------
+
+    /**
+     * WP-WATCHADMIN — remove the active watch from the app: delete its DB row (+ CASCADE children)
+     * and clear its CDM association / presence / reconnect pointer, then disconnect. The next
+     * connect then looks brand-new and re-runs the one-time provisioning sync (which uploads the
+     * notification filter with the reserved buzz entries folded in). This is the user-facing
+     * replacement for the old Debug-Menu wipe. No-op (returns false) without an active watch;
+     * otherwise forwards to the injectable [WatchAdminSync] seam and returns whether it is wired.
+     *
+     * NOTE: this does NOT remove the OS Bluetooth bond — the UI advises the user to "Forget" the
+     * device in Android Settings if they want a full unpair.
+     */
+    fun removeActiveWatch(): Boolean {
+        val mac = uiState.value.activeMac ?: return false
+        return watchAdmin.removeWatch(mac)
     }
 
     // ---- inactivity nudge (APP PREF + deferred live command) -----------------
@@ -263,6 +283,16 @@ open class SettingsViewModel(
                             qhybrid.android.notifications.SystemInstalledAppsProvider(appContext),
                         vibration = ServiceVibrationSync(appContext),
                         fullSync = ServiceFullSync(appContext),
+                        watchAdmin = ServiceWatchAdminSync(
+                            context = appContext,
+                            removeFromDb = { mac -> WatchRepository(appContext).deleteWatch(mac) },
+                            launchDbRemoval = { block ->
+                                kotlinx.coroutines.CoroutineScope(
+                                    kotlinx.coroutines.Dispatchers.IO +
+                                        kotlinx.coroutines.SupervisorJob()
+                                ).launch { block() }
+                            },
+                        ),
                     ) as T
             }
         }

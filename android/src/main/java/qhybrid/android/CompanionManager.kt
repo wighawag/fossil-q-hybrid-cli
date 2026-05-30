@@ -140,6 +140,36 @@ object CompanionManager {
         }
     }
 
+    /**
+     * Drop the CDM association for [mac] (so the OS no longer wakes us for it and the app stops
+     * treating it as a paired companion). Best-effort + tolerant: matches the association by MAC
+     * across the T+ (`myAssociations` → `disassociate(id)`) and pre-T (`disassociate(String)`)
+     * APIs, and never throws. Pair with [stopObserving] + clearing [setAssociatedMac] when fully
+     * removing a watch. Does NOT touch the OS Bluetooth bond (that is the user's "Forget" in
+     * Settings).
+     */
+    @Suppress("DEPRECATION")
+    fun disassociate(context: Context, mac: String) {
+        val manager = cdm(context) ?: return
+        val target = mac.uppercase()
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val assoc = manager.myAssociations.firstOrNull {
+                    it.deviceMacAddress?.toString()?.uppercase() == target
+                }
+                if (assoc != null) {
+                    manager.disassociate(assoc.id)
+                    Log.i(TAG, "disassociate(id=${assoc.id}) for $target")
+                    return
+                }
+            }
+            manager.disassociate(target)
+            Log.i(TAG, "disassociate($target)")
+        } catch (e: Exception) {
+            Log.w(TAG, "disassociate failed for $target", e)
+        }
+    }
+
     /** Resolve the MAC for a CDM association id (used by [WatchPresenceService] on T+). */
     fun macForAssociationId(context: Context, id: Int): String? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return null

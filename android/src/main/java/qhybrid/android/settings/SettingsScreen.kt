@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenuItem
@@ -20,6 +21,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
@@ -83,6 +85,7 @@ fun SettingsScreen(
         onSetTimezone = vm::setSecondTimezoneOffset,
         onSetMusicApp = vm::setPreferredMusicApp,
         onTransfer = vm::transferSettings,
+        onRemoveWatch = vm::removeActiveWatch,
         onOpenLogs = onOpenLogs,
         modifier = modifier,
     )
@@ -109,6 +112,8 @@ fun SettingsContent(
     onVibrate: (Int) -> Boolean = { false },
     // WP-PULLSYNC: manual "Sync all" (full reconcile). No-op default for previews/tests.
     onSyncAll: () -> Boolean = { false },
+    // WP-WATCHADMIN: "remove / re-provision this watch". No-op default for previews/tests.
+    onRemoveWatch: () -> Boolean = { false },
 ) {
     var note by remember { mutableStateOf<String?>(null) }
 
@@ -146,6 +151,8 @@ fun SettingsContent(
             SyncAllCard(state, progress, onSyncAll) { note = it }
             HorizontalDivider()
             TransferCard(state, onTransfer) { note = it }
+            HorizontalDivider()
+            RemoveWatchCard(state, onRemoveWatch) { note = it }
             HorizontalDivider()
             LogsCard(onOpenLogs)
 
@@ -473,6 +480,69 @@ private fun TransferCard(
             },
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Transfer settings") }
+    }
+}
+
+// ---- remove / re-provision this watch (WP-WATCHADMIN) -----------------------
+
+/**
+ * WP-WATCHADMIN — "Remove watch" with a confirmation dialog. Removing the active watch deletes the
+ * app's knowledge of it (DB row + alarms/rules/buttons) and clears its CDM association / presence /
+ * reconnect pointer, then disconnects. The NEXT connect then looks brand-new and re-runs the
+ * one-time provisioning sync (which uploads the notification filter with the reserved buzz entries
+ * folded in). This is the user-facing replacement for the old Debug-Menu wipe.
+ *
+ * It does NOT unpair at the OS level — the dialog advises the user to "Forget" the device in
+ * Android Settings if they want a full Bluetooth unpair. Disabled when there is no active watch.
+ */
+@Composable
+private fun RemoveWatchCard(
+    state: SettingsUiState,
+    onRemoveWatch: () -> Boolean,
+    onNote: (String) -> Unit,
+) {
+    var confirming by remember { mutableStateOf(false) }
+    SettingCard("Remove watch") {
+        Text(
+            "Forget this watch in the app: deletes its alarms, notification rules, and button " +
+                "mappings, clears the pairing, and disconnects. Re-adding it later re-provisions it " +
+                "from scratch. (To fully unpair Bluetooth, also use Android Settings → Bluetooth → " +
+                "Forget.)",
+            style = MaterialTheme.typography.labelSmall,
+        )
+        OutlinedButton(
+            onClick = { confirming = true },
+            enabled = state.hasActiveWatch,
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("Remove watch") }
+    }
+
+    if (confirming) {
+        val mac = state.activeMac ?: ""
+        AlertDialog(
+            onDismissRequest = { confirming = false },
+            title = { Text("Remove this watch?") },
+            text = {
+                Text(
+                    "This deletes the app's alarms, notification rules, and button mappings for " +
+                        "$mac, clears the pairing, and disconnects. Your watch keeps its current " +
+                        "settings until you re-add and re-sync it. This cannot be undone.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirming = false
+                    val ok = onRemoveWatch()
+                    onNote(
+                        if (ok) "Removed $mac. Re-add it to provision again."
+                        else "No active watch to remove.",
+                    )
+                }) { Text("Remove") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirming = false }) { Text("Cancel") }
+            },
+        )
     }
 }
 
