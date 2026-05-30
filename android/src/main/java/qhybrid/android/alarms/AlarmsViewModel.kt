@@ -16,6 +16,8 @@ import kotlinx.coroutines.launch
 import qhybrid.android.db.WatchAlarmEntity
 import qhybrid.android.db.WatchEntity
 import qhybrid.android.db.WatchRepository
+import qhybrid.android.sync.CoroutineDebouncer
+import qhybrid.android.sync.Debouncer
 import qhybrid.android.sync.GlobalSyncStateSource
 import qhybrid.android.sync.SectionSyncStatus
 import qhybrid.android.sync.SyncProgressUi
@@ -83,9 +85,16 @@ open class AlarmsViewModel(
     scope: CoroutineScope? = null,
     // WP-PROGRESS (sub-part 3): the process-wide sync signal the Save button observes.
     syncSource: SyncStateSource = GlobalSyncStateSource(),
+    // WP-SYNCSTATUS (Step 4): debounces the auto-save so a burst of edits coalesces into ONE
+    // ALARMS_ONLY push (and ONE blocking "Saving…" modal), not one per keystroke. Injectable so the
+    // auto-save is unit-testable without real time. Defaulted lazily once the scope is resolved.
+    debouncer: Debouncer? = null,
 ) : ViewModel() {
 
     private val coroutineScope: CoroutineScope = scope ?: viewModelScope
+
+    // WP-SYNCSTATUS (Step 4): ~750 ms coalesce window on the resolved scope unless a test injects one.
+    private val autoSaveDebouncer: Debouncer = debouncer ?: CoroutineDebouncer(coroutineScope)
 
     val uiState: StateFlow<AlarmsUiState> =
         repo.observeActiveWatch()
@@ -144,6 +153,7 @@ open class AlarmsViewModel(
                 )
             )
         }
+        scheduleAutoSave()
     }
 
     /** Upsert an edited alarm row (slotId/watchMac is the composite PK, so it replaces). */
@@ -151,12 +161,26 @@ open class AlarmsViewModel(
         coroutineScope.launch {
             repo.upsertAlarm(alarm.copy(daysMask = alarm.daysMask and AlarmDays.EVERYDAY))
         }
+        scheduleAutoSave()
     }
 
     /** Delete the alarm in [slotId] of the active watch. No-op if no active watch. */
     fun deleteAlarm(slotId: Int) {
         val mac = uiState.value.activeMac ?: return
         coroutineScope.launch { repo.deleteAlarmSlot(mac, slotId) }
+        scheduleAutoSave()
+    }
+
+    /**
+     * WP-SYNCSTATUS (Step 4) — after an alarm add/edit/delete (the row is already written to Room),
+     * schedule a DEBOUNCED [SyncSection.ALARMS_ONLY] push (the whole 32-slot file re-push, exactly
+     * what the manual save did). A burst of edits coalesces into ONE push via [autoSaveDebouncer],
+     * so BLE isn't spammed and the blocking "Saving to watch…" modal appears once per coalesced
+     * save (the seam publishes SYNCING when it actually fires, not per keystroke). The synced-marker
+     * then flips each row to ✓ shortly after.
+     */
+    private fun scheduleAutoSave() {
+        autoSaveDebouncer.schedule { sync.saveToWatch() }
     }
 
     /** Flip the enabled flag of the alarm in [slotId]. */

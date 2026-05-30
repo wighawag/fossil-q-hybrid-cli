@@ -54,8 +54,8 @@ import qhybrid.android.sync.PendingSyncBanner
 import qhybrid.android.sync.PublishLeaveGuard
 import qhybrid.android.sync.SyncProgressUi
 import qhybrid.android.sync.SyncRowBadge
-import qhybrid.android.sync.SyncSaveButton
 import qhybrid.android.sync.SyncSavingDialog
+import qhybrid.android.sync.SyncStatusRow
 
 /**
  * WP16b — the Alarms screen (user slots 0–15 only). State comes from [AlarmsViewModel]
@@ -156,24 +156,17 @@ fun AlarmsContent(
                 )
 
                 else -> {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            "Alarms (${state.alarms.size}/${AlarmsUiState.USER_SLOT_COUNT})",
-                            style = MaterialTheme.typography.titleMedium,
-                        )
-                        // WP-PROGRESS: spinner + disable while SYNCING; transient success/error note.
-                        SyncSaveButton(
-                            progress = progress,
-                            hasActiveWatch = state.hasActiveWatch,
-                            onSave = { onSave() },
-                        )
-                    }
                     Text(
-                        "Slots 0–15 (user alarms). Calendar slots 16–31 are managed automatically.",
+                        "Alarms (${state.alarms.size}/${AlarmsUiState.USER_SLOT_COUNT})",
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    // WP-SYNCSTATUS (Step 4): alarm edits AUTO-SAVE to the watch (debounced), so
+                    // there's no manual "Save to watch" button here — the blocking modal +
+                    // SYNCING/result note appear automatically when a coalesced save fires.
+                    SyncStatusRow(progress = progress)
+                    Text(
+                        "Changes save to the watch automatically. Slots 0–15 (user alarms); " +
+                            "calendar slots 16–31 are managed automatically.",
                         style = MaterialTheme.typography.labelSmall,
                     )
 

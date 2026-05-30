@@ -48,7 +48,11 @@ class AlarmsViewModelTest : DbTestBase() {
     private fun vm(
         sync: AlarmSync = FakeAlarmSync(),
         syncSource: FakeSyncStateSource = FakeSyncStateSource(),
-    ) = AlarmsViewModel(repo, sync, vmScope, syncSource)
+        // Existing tests pass null → the real CoroutineDebouncer (delay never fires under Unconfined
+        // without virtual time, so those tests are unaffected by the Step-4 auto-save). Step-4 tests
+        // inject an ImmediateDebouncer / RecordingDebouncer to drive the auto-save deterministically.
+        debouncer: qhybrid.android.sync.Debouncer? = null,
+    ) = AlarmsViewModel(repo, sync, vmScope, syncSource, debouncer)
 
     private fun awaitState(
         flow: StateFlow<AlarmsUiState>,
@@ -359,5 +363,55 @@ class AlarmsViewModelTest : DbTestBase() {
         assertTrue(s.isOnWatch(0))
         assertFalse(s.isOnWatch(1))
         assertEquals(1, s.pendingCount)
+    }
+
+    // ---- WP-SYNCSTATUS (Step 4): alarm edits auto-save (debounced) ------------
+
+    @Test
+    fun addAlarmAutoSaves() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }
+        val sync = FakeAlarmSync(wired = true)
+        val model = vm(sync = sync, debouncer = qhybrid.android.sync.ImmediateDebouncer())
+        awaitState(model.uiState) { it.hasActiveWatch }
+
+        model.addAlarm(hour = 7, minute = 0)
+        // The immediate debouncer fires the auto-save synchronously → the ALARMS_ONLY push is hit.
+        assertEquals(1, sync.saveCount)
+    }
+
+    @Test
+    fun updateAndDeleteAlsoAutoSave() {
+        runBlocking {
+            watchDao.upsert(watch("AA:00:00:00:00:01", active = true))
+            alarmDao.upsert(userAlarm("AA:00:00:00:00:01", slot = 0))
+        }
+        val sync = FakeAlarmSync(wired = true)
+        val model = vm(sync = sync, debouncer = qhybrid.android.sync.ImmediateDebouncer())
+        val s = awaitState(model.uiState) { it.alarms.size == 1 }
+
+        model.updateAlarm(s.alarms.first().copy(hour = 9))
+        model.deleteAlarm(0)
+        // Each edit schedules (immediately fires) an auto-save.
+        assertEquals(2, sync.saveCount)
+    }
+
+    @Test
+    fun burstOfEditsCoalescesIntoOneSave() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }
+        val sync = FakeAlarmSync(wired = true)
+        val rec = qhybrid.android.sync.RecordingDebouncer()
+        val model = vm(sync = sync, debouncer = rec)
+        awaitState(model.uiState) { it.hasActiveWatch }
+
+        // A burst: three rapid edits. The recording debouncer keeps only the LAST scheduled action
+        // (coalescing), and nothing has fired yet.
+        model.addAlarm(hour = 7)
+        model.addAlarm(hour = 8)
+        model.addAlarm(hour = 9)
+        assertEquals(0, sync.saveCount) // not fired during the burst
+
+        // The window elapses once after the burst settles → exactly ONE push.
+        rec.fireNow()
+        assertEquals(1, sync.saveCount)
     }
 }
