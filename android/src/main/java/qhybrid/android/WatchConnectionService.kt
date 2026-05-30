@@ -473,6 +473,11 @@ class WatchConnectionService : Service() {
             val refresher = CalendarRefresher(
                 WatchRepository(applicationContext),
                 SystemCalendarSource(applicationContext),
+                // WP13: ring this many minutes before each event (Settings; default 1). Read each
+                // refresh so a Settings change takes effect on the next observer/connect refresh.
+                offsetMinutes = {
+                    SharedPreferencesSettingsPrefs(applicationContext).get().calendarAlarmOffsetMinutes
+                },
             )
             val result = refresher.refreshAndMaybePush(ServiceCalendarPush(applicationContext))
             Log.i(TAG, "calendar refresh: changed=${result.changed} rows=${result.rowCount}")

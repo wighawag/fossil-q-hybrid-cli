@@ -69,6 +69,9 @@ data class SettingsUiState(
         get() = SettingsVocabulary.normalizeTzOffset(appSettings.secondTimezoneOffsetMinutes)
     val preferredMusicApp: String
         get() = SettingsVocabulary.normalizeMusicApp(appSettings.preferredMusicApp)
+    /** WP13 — minutes the watch alarm rings BEFORE a calendar event (0 = at event time). */
+    val calendarAlarmOffsetMinutes: Int
+        get() = SettingsVocabulary.normalizeCalendarOffset(appSettings.calendarAlarmOffsetMinutes)
 
     /** True when a preferred music app is set. */
     val hasPreferredMusicApp: Boolean get() = preferredMusicApp != SettingsVocabulary.MUSIC_APP_NONE
@@ -101,6 +104,8 @@ open class SettingsViewModel(
     private val applyDefaults: ApplyDefaultsSync = NoopApplyDefaults,
     // WP-CLEARALARMS: the "clear all alarms on this watch" seam (fake in tests).
     private val clearAlarms: ClearAlarmsSync = NoopClearAlarms,
+    // WP13: trigger a calendar re-map + silent push after the ring-offset changes (no-op in tests).
+    private val calendarRefresh: () -> Unit = {},
     // Tests inject a real/Unconfined scope; production passes null → uses [viewModelScope].
     scope: CoroutineScope? = null,
     // WP-PROGRESS (sub-part 3): the process-wide sync signal the Save/Apply controls observe.
@@ -279,6 +284,23 @@ open class SettingsViewModel(
         appSettings.value = appSettings.value.copy(preferredMusicApp = normalized)
     }
 
+    // ---- calendar alarm ring offset (WP13 — APP PREF, applied in CalendarRefresher) ----
+
+    /**
+     * WP13 — persist the calendar-alarm ring offset (minutes before the event, clamped 0..120) and
+     * trigger a calendar refresh so the watch's slots 16–31 re-map to the new lead time (the
+     * refresh silently re-pushes the alarm file if the rows changed). Pure app-side pref + the
+     * existing refresh path; no new wire bytes. The [onChanged] callback is the injectable refresh
+     * trigger (production pokes the WP3 service; tests pass a recorder / no-op).
+     */
+    fun setCalendarAlarmOffset(minutes: Int): Boolean {
+        val normalized = SettingsVocabulary.normalizeCalendarOffset(minutes)
+        prefs.setCalendarAlarmOffset(normalized)
+        appSettings.value = appSettings.value.copy(calendarAlarmOffsetMinutes = normalized)
+        calendarRefresh()
+        return true
+    }
+
     /**
      * Load the installed-app list for the music picker (reuses the WP16c provider).
      *
@@ -349,6 +371,10 @@ open class SettingsViewModel(
                                 kotlinx.coroutines.Dispatchers.IO +
                                     kotlinx.coroutines.SupervisorJob()
                             ).launch { block() }
+                        },
+                        // WP13: re-read the calendar + re-map slots 16–31 with the new offset.
+                        calendarRefresh = {
+                            qhybrid.android.WatchConnectionService.refreshCalendarNow(appContext)
                         },
                     ) as T
             }

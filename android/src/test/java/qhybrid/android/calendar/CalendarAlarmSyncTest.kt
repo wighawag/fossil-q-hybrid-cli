@@ -90,4 +90,32 @@ class CalendarAlarmSyncTest {
         val row = CalendarAlarmSync.mapEventsToRows(mac.lowercase(), events, now, zone).single()
         assertEquals(mac.uppercase(), row.watchMac)
     }
+
+    @Test
+    fun offset_ringsBeforeEvent() {
+        // Event at 10:15 with a 30-min offset -> alarm at 09:45.
+        val events = listOf(CalendarEvent("Standup", at(2025, 6, 3, 10, 15)))
+        val row = CalendarAlarmSync.mapEventsToRows(mac, events, now, zone, offsetMinutes = 30).single()
+        assertEquals(9, row.hour)
+        assertEquals(45, row.minute)
+    }
+
+    @Test
+    fun offset_crossesMidnight_shiftsDayAndDaysMask() {
+        // Event Tue 2025-06-03 00:10 with a 30-min offset -> alarm Mon 2025-06-02 23:40.
+        // Monday bit1 = 0x02.
+        val events = listOf(CalendarEvent("Late", at(2025, 6, 3, 0, 10)))
+        val row = CalendarAlarmSync.mapEventsToRows(mac, events, now, zone, offsetMinutes = 30).single()
+        assertEquals(23, row.hour)
+        assertEquals(40, row.minute)
+        assertEquals(0x02, row.daysMask) // Monday (shifted back across midnight)
+    }
+
+    @Test
+    fun offset_zero_ringsAtEventTime() {
+        val events = listOf(CalendarEvent("A", at(2025, 6, 3, 10, 15)))
+        val row = CalendarAlarmSync.mapEventsToRows(mac, events, now, zone, offsetMinutes = 0).single()
+        assertEquals(10, row.hour)
+        assertEquals(15, row.minute)
+    }
 }

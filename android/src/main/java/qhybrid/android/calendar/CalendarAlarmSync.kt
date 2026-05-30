@@ -26,10 +26,16 @@ object CalendarAlarmSync {
     /**
      * Map [events] to the calendar-owned alarm rows (slots 16–31) for [mac].
      *
+     * The watch alarm rings [offsetMinutes] BEFORE each event start (0 = at the event time). The
+     * offset is applied by shifting each event's start time earlier BEFORE the pure WP9 mapper runs,
+     * so all of WP9's windowing / weekday / dedup / sort logic operates on the actual ring time (an
+     * event at 10:15 with a 30-min offset is mapped as a 09:45 alarm, including its weekday bit).
+     *
      * @param mac            the active watch mac (re-keyed onto each row; normalized upper-case)
      * @param events         the upcoming calendar events (may be empty)
      * @param nowEpochMillis the injected "now" (UTC epoch millis); window start
      * @param zone           the local zone for weekday/hour/minute computation
+     * @param offsetMinutes  lead time in minutes (ring this many minutes before the event); >= 0
      * @return up to 16 non-repeating, enabled rows in slots 16, 17, … (empty when no events map)
      */
     fun mapEventsToRows(
@@ -37,10 +43,15 @@ object CalendarAlarmSync {
         events: List<CalendarEvent>,
         nowEpochMillis: Long,
         zone: ZoneId,
+        offsetMinutes: Int = 0,
     ): List<WatchAlarmEntity> {
         val normalized = mac.uppercase()
+        val offsetMillis = offsetMinutes.toLong().coerceAtLeast(0L) * 60_000L
+        val shifted = if (offsetMillis == 0L) events else events.map { e ->
+            CalendarEvent(e.title, e.startEpochMillis - offsetMillis)
+        }
         return CalendarAlarmMapper
-            .mapEventsToAlarmSlots(events, nowEpochMillis, zone)
+            .mapEventsToAlarmSlots(shifted, nowEpochMillis, zone)
             .map { slot -> slot.toEntity(normalized) }
     }
 

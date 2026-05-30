@@ -51,6 +51,7 @@ class SettingsViewModelTest : DbTestBase() {
         var nudgeWrites = 0
         var tzWrites = 0
         var musicWrites = 0
+        var calOffsetWrites = 0
         override fun get(): AppSettings = current
         override fun setNudge(enabled: Boolean, minutes: Int) {
             nudgeWrites++
@@ -68,6 +69,12 @@ class SettingsViewModelTest : DbTestBase() {
         override fun setPreferredMusicApp(pkg: String?) {
             musicWrites++
             current = current.copy(preferredMusicApp = SettingsVocabulary.normalizeMusicApp(pkg))
+        }
+        override fun setCalendarAlarmOffset(minutes: Int) {
+            calOffsetWrites++
+            current = current.copy(
+                calendarAlarmOffsetMinutes = SettingsVocabulary.normalizeCalendarOffset(minutes),
+            )
         }
     }
 
@@ -136,6 +143,7 @@ class SettingsViewModelTest : DbTestBase() {
         watchAdmin: WatchAdminSync = FakeWatchAdmin(),
         applyDefaults: ApplyDefaultsSync = FakeApplyDefaults(),
         clearAlarms: ClearAlarmsSync = FakeClearAlarms(),
+        calendarRefresh: () -> Unit = {},
     ) = SettingsViewModel(
         repo = repo,
         prefs = prefs,
@@ -146,6 +154,7 @@ class SettingsViewModelTest : DbTestBase() {
         watchAdmin = watchAdmin,
         applyDefaults = applyDefaults,
         clearAlarms = clearAlarms,
+        calendarRefresh = calendarRefresh,
         scope = vmScope,
         syncSource = syncSource,
     )
@@ -587,6 +596,43 @@ class SettingsViewModelTest : DbTestBase() {
     }
 
     // ---- empty/partial tolerance ---------------------------------------------
+
+    // ---- calendar alarm ring offset (WP13 — app pref + refresh trigger) ------
+
+    @Test
+    fun calendarOffsetRoundTripsThroughPrefsAndTriggersRefresh() {
+        val prefs = FakePrefs()
+        var refreshes = 0
+        val model = vm(prefs = prefs, calendarRefresh = { refreshes++ })
+        awaitState(model.uiState) { true }
+
+        assertTrue(model.setCalendarAlarmOffset(15))
+        assertEquals(1, prefs.calOffsetWrites)
+        assertEquals(15, prefs.current.calendarAlarmOffsetMinutes)
+        assertEquals(1, refreshes) // changing the offset re-maps + re-pushes the calendar slots
+
+        val s = awaitState(model.uiState) { it.calendarAlarmOffsetMinutes == 15 }
+        assertEquals(15, s.calendarAlarmOffsetMinutes)
+    }
+
+    @Test
+    fun calendarOffsetClampedToRange() {
+        val prefs = FakePrefs()
+        val model = vm(prefs = prefs)
+        awaitState(model.uiState) { true }
+        model.setCalendarAlarmOffset(9999)
+        assertEquals(SettingsVocabulary.CAL_OFFSET_MAX_MINUTES, prefs.current.calendarAlarmOffsetMinutes)
+        model.setCalendarAlarmOffset(-5)
+        assertEquals(SettingsVocabulary.CAL_OFFSET_MIN_MINUTES, prefs.current.calendarAlarmOffsetMinutes)
+    }
+
+    @Test
+    fun calendarOffsetDefaultIsOneMinute() {
+        val model = vm(prefs = FakePrefs())
+        val s = awaitState(model.uiState) { true }
+        assertEquals(1, s.calendarAlarmOffsetMinutes)
+        assertEquals(1, SettingsVocabulary.CAL_OFFSET_DEFAULT_MINUTES)
+    }
 
     @Test
     fun emptyDbNoCrash() {

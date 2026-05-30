@@ -23,6 +23,9 @@ class CalendarRefresher(
     private val zone: () -> ZoneId = { ZoneId.systemDefault() },
     private val now: () -> Long = System::currentTimeMillis,
     private val windowDays: Int = WINDOW_DAYS,
+    // WP13 — how many minutes BEFORE each event the watch alarm rings (0 = at event time). Read
+    // lazily each refresh so a Settings change takes effect on the next refresh without re-wiring.
+    private val offsetMinutes: () -> Int = { 0 },
 ) {
 
     /** The outcome of one [refresh]: did the calendar rows actually change, and how many. */
@@ -41,7 +44,7 @@ class CalendarRefresher(
         val mac = repo.getActiveWatch()?.macAddress ?: return Result.NONE
         val nowMillis = now()
         val events = source.upcomingEvents(nowMillis, windowDays)
-        val newRows = CalendarAlarmSync.mapEventsToRows(mac, events, nowMillis, zone())
+        val newRows = CalendarAlarmSync.mapEventsToRows(mac, events, nowMillis, zone(), offsetMinutes())
 
         val existing = repo.getAlarms(mac).filter { it.slotId in 16..31 }
         val changed = !sameCalendarRows(existing, newRows)

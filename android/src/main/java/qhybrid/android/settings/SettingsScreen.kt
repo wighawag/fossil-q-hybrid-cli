@@ -88,6 +88,7 @@ fun SettingsScreen(
         onClearAlarms = vm::clearAlarmsOnActiveWatch,
         onSetNudge = vm::setNudge,
         onSetTimezone = vm::setSecondTimezoneOffset,
+        onSetCalendarOffset = vm::setCalendarAlarmOffset,
         onSetMusicApp = vm::setPreferredMusicApp,
         onTransfer = vm::transferSettings,
         onRemoveWatch = vm::removeActiveWatch,
@@ -109,6 +110,8 @@ fun SettingsContent(
     onSetNudge: (Boolean, Int) -> Boolean,
     onSetTimezone: (Int) -> Boolean,
     onSetMusicApp: (String?) -> Unit,
+    // WP13: set the calendar-alarm ring offset (minutes before the event). No-op default.
+    onSetCalendarOffset: (Int) -> Boolean = { false },
     onTransfer: (String, String) -> Boolean,
     onOpenLogs: () -> Unit,
     onOpenDefaults: () -> Unit = {},
@@ -157,6 +160,7 @@ fun SettingsContent(
             TestVibrationCard(state, progress, onVibrate) { note = it }
             NudgeCard(state, onSetNudge) { note = it }
             TimezoneCard(state, onSetTimezone) { note = it }
+            CalendarOffsetCard(state, onSetCalendarOffset) { note = it }
             MusicAppCard(state, onSetMusicApp)
             HorizontalDivider()
             SyncAllCard(state, progress, onSyncAll) { note = it }
@@ -340,6 +344,47 @@ private fun NudgeCard(
                     onNote(applyNote("Inactivity nudge", wired))
                 },
             ) { Text("+ ${SettingsVocabulary.NUDGE_STEP_MINUTES}m") }
+        }
+    }
+}
+
+// ---- calendar alarm ring offset (WP13 — APP PREF, applied in CalendarRefresher) ----
+
+@Composable
+private fun CalendarOffsetCard(
+    state: SettingsUiState,
+    onSetCalendarOffset: (Int) -> Boolean,
+    onNote: (String) -> Unit,
+) {
+    SettingCard("Calendar alarms") {
+        Text(
+            "How long before each calendar event the watch alarm rings. Changing this re-maps the " +
+                "calendar alarm slots (16–31) and pushes them to the watch.",
+            style = MaterialTheme.typography.labelSmall,
+        )
+        Text(
+            "Ring: ${SettingsVocabulary.calendarOffsetLabel(state.calendarAlarmOffsetMinutes)}",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = {
+                    val next = SettingsVocabulary.normalizeCalendarOffset(
+                        state.calendarAlarmOffsetMinutes - SettingsVocabulary.CAL_OFFSET_STEP_MINUTES
+                    )
+                    onSetCalendarOffset(next)
+                    onNote("Calendar alarms: ring " + SettingsVocabulary.calendarOffsetLabel(next))
+                },
+            ) { Text("− ${SettingsVocabulary.CAL_OFFSET_STEP_MINUTES}m") }
+            OutlinedButton(
+                onClick = {
+                    val next = SettingsVocabulary.normalizeCalendarOffset(
+                        state.calendarAlarmOffsetMinutes + SettingsVocabulary.CAL_OFFSET_STEP_MINUTES
+                    )
+                    onSetCalendarOffset(next)
+                    onNote("Calendar alarms: ring " + SettingsVocabulary.calendarOffsetLabel(next))
+                },
+            ) { Text("+ ${SettingsVocabulary.CAL_OFFSET_STEP_MINUTES}m") }
         }
     }
 }

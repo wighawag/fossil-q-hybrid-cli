@@ -48,6 +48,18 @@ events into the concrete dated occurrences inside the range — exactly what WP9
 would need manual RRULE expansion. Projects `TITLE` + `BEGIN` + `ALL_DAY`, sorted by `BEGIN ASC`,
 read off the main thread.
 
+## Ring offset (lead time) — Settings, default 1 min before the event
+
+A **calendar-alarm ring offset** (`AppSettings.calendarAlarmOffsetMinutes`, default **1 min**, range
+0..120) lets the watch ring N minutes BEFORE each event. Applied in the **pure** `CalendarAlarmSync`
+by shifting each event's start earlier (`start - offset`) BEFORE the WP9 mapper runs, so all of WP9's
+windowing / weekday / dedup / sort logic operates on the actual ring time (a 10:15 event with a
+30-min offset maps to a 09:45 alarm — including the correct weekday bit, even across midnight).
+Persisted via `SettingsPrefs` (`SettingsVocabulary.normalizeCalendarOffset`); the Settings
+"Calendar alarms" card steps it ±1 min. Changing it calls `SettingsViewModel.setCalendarAlarmOffset`
+→ pokes `WatchConnectionService.refreshCalendarNow` so slots 16–31 re-map + silently re-push. No new
+wire bytes (just a different wall-clock minute/hour in the same alarm file).
+
 ## All-day handling: skip (decided + documented)
 
 All-day events (`Instances.ALL_DAY = 1`) are **skipped**. An all-day event's `BEGIN` is midnight UTC,
@@ -106,6 +118,7 @@ change detection + the silent-push-on-change-only rule (`CalendarRefresherTest`)
 ## Gates at completion
 
 - `:protocol:test` — **124 / 0 / 0** (untouched; no wire bytes).
-- `:android:testDebugUnitTest` — **461 / 0 / 0** (was 441 at WP start; +20).
+- `:android:testDebugUnitTest` — **468 / 0 / 0** (was 441 at WP start; +27, incl. the read-only
+  calendar section + the ring-offset setting).
 - `:android:lintDebug :android:assembleDebug` — succeed.
 - `:cli:shadowJar` + `./fossil-q --help` md5 — **unchanged** (`7533ceccb6b29f81f6172bd5a71c5b98`).

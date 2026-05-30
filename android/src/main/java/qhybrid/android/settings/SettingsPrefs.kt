@@ -36,6 +36,11 @@ data class AppSettings(
     val secondTimezoneOffsetMinutes: Int = SettingsVocabulary.TZ_DEFAULT_OFFSET_MINUTES,
     /** Preferred music-app package id, or [SettingsVocabulary.MUSIC_APP_NONE] if unset. */
     val preferredMusicApp: String = SettingsVocabulary.MUSIC_APP_NONE,
+    /**
+     * WP13 — how many minutes BEFORE a calendar event the watch alarm rings (0 = at event time).
+     * Applied by [qhybrid.android.calendar.CalendarRefresher] before the pure WP9 mapper. Default 1.
+     */
+    val calendarAlarmOffsetMinutes: Int = SettingsVocabulary.CAL_OFFSET_DEFAULT_MINUTES,
 )
 
 /**
@@ -54,6 +59,9 @@ interface SettingsPrefs {
 
     /** Persist the preferred music-app package (blank/null clears it to NONE). */
     fun setPreferredMusicApp(pkg: String?)
+
+    /** WP13 — persist the calendar-alarm ring offset in minutes (normalized 0..120). */
+    fun setCalendarAlarmOffset(minutes: Int)
 }
 
 /**
@@ -80,6 +88,9 @@ class SharedPreferencesSettingsPrefs(context: Context) : SettingsPrefs {
             preferredMusicApp = SettingsVocabulary.normalizeMusicApp(
                 p.getString(KEY_MUSIC_APP, SettingsVocabulary.MUSIC_APP_NONE)
             ),
+            calendarAlarmOffsetMinutes = SettingsVocabulary.normalizeCalendarOffset(
+                p.getInt(KEY_CAL_OFFSET, SettingsVocabulary.CAL_OFFSET_DEFAULT_MINUTES)
+            ),
         )
     }
 
@@ -102,11 +113,18 @@ class SharedPreferencesSettingsPrefs(context: Context) : SettingsPrefs {
             .apply()
     }
 
+    override fun setCalendarAlarmOffset(minutes: Int) {
+        prefs.edit()
+            .putInt(KEY_CAL_OFFSET, SettingsVocabulary.normalizeCalendarOffset(minutes))
+            .apply()
+    }
+
     private companion object {
         const val PREFS = "fossilq_settings"
         const val KEY_NUDGE_ENABLED = "nudge_enabled"
         const val KEY_NUDGE_MINUTES = "nudge_minutes"
         const val KEY_TZ_OFFSET = "second_tz_offset_minutes"
         const val KEY_MUSIC_APP = "preferred_music_app"
+        const val KEY_CAL_OFFSET = "calendar_alarm_offset_minutes"
     }
 }

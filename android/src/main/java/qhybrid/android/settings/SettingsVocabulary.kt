@@ -98,6 +98,34 @@ object SettingsVocabulary {
         return "UTC%s%02d:%02d".format(sign, h, m)
     }
 
+    // ---- calendar alarm ring offset (WP13; app pref, applied in CalendarRefresher) ----
+
+    /**
+     * How many minutes BEFORE a calendar event the watch alarm should ring. 0 = ring exactly at the
+     * event start. The alarm wall-clock time is computed as `eventStart - offset` before the pure
+     * WP9 mapper runs, so all windowing/dedup/weekday logic stays in terms of the ring time.
+     */
+    const val CAL_OFFSET_MIN_MINUTES = 0
+
+    /** Maximum lead time (2 hours) the offset stepper allows. */
+    const val CAL_OFFSET_MAX_MINUTES = 120
+
+    /** Default lead time: ring 1 minute before the event. */
+    const val CAL_OFFSET_DEFAULT_MINUTES = 1
+
+    /** Step size for the calendar-offset stepper. */
+    const val CAL_OFFSET_STEP_MINUTES = 1
+
+    /** Clamp an arbitrary calendar offset onto [CAL_OFFSET_MIN_MINUTES]..[CAL_OFFSET_MAX_MINUTES]. */
+    fun normalizeCalendarOffset(value: Int): Int =
+        value.coerceIn(CAL_OFFSET_MIN_MINUTES, CAL_OFFSET_MAX_MINUTES)
+
+    /** Format a calendar lead time: `At event time` / `1 min before` / `15 min before`. */
+    fun calendarOffsetLabel(offsetMinutes: Int): String {
+        val o = normalizeCalendarOffset(offsetMinutes)
+        return if (o == 0) "At event time" else "$o min before"
+    }
+
     // ---- preferred music app (app pref; pure app-side, no live watch command) -
 
     /**

@@ -28,6 +28,7 @@ class SyncDataLoaderTest : DbTestBase() {
         override fun setNudge(enabled: Boolean, minutes: Int) {}
         override fun setSecondTimezoneOffset(minutes: Int) {}
         override fun setPreferredMusicApp(pkg: String?) {}
+        override fun setCalendarAlarmOffset(minutes: Int) {}
     }
 
     private fun userAlarm(mac: String, slot: Int) =
