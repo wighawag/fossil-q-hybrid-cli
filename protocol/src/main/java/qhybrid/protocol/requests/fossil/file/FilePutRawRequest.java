@@ -270,8 +270,11 @@ public class FilePutRawRequest extends FossilRequest {
             buffer2.order(ByteOrder.LITTLE_ENDIAN);
             buffer2.put((byte) 4);
             buffer2.putShort(this.handle);
+            // Fire-and-forget: the watch needs the close to finalise the transfer, but it sends no
+            // ack to it — a blocking write would stall the serial request queue for the op-timeout
+            // (~10s) and delay the next put (the buzz's play file). See WriteBatch.writeNoWait.
             adapter.getDeviceSupport().createWriteBatch("file close")
-                    .write(UUID.fromString("3dda0003-957f-7d4a-34a6-74696673696d"), buffer2.array())
+                    .writeNoWait(UUID.fromString("3dda0003-957f-7d4a-34a6-74696673696d"), buffer2.array())
                     .queue();
         } catch (RuntimeException e) {
             PUTLOG.warn("FilePut[0x{}] close frame failed (ignored — already complete): {}",

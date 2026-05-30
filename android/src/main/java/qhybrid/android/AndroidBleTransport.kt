@@ -419,7 +419,18 @@ class AndroidBleTransport(private val context: Context) : BleTransport {
         }
     }
 
-    override fun writeCharacteristic(uuid: UUID, data: ByteArray) {
+    override fun writeCharacteristic(uuid: UUID, data: ByteArray) = writeCharacteristic(uuid, data, awaitResponse = true)
+
+    /**
+     * WP-BUZZTEST: fire-and-forget write — submit but do NOT block on completion. Used for the
+     * file-PUT type-4 close frame (see [BleTransport.writeCharacteristicNoWait]): the watch never
+     * acks the close on the INDICATE control char, so a blocking write would stall this thread for
+     * the full op-timeout (~10s) and delay the next file-PUT (the buzz's play file).
+     */
+    override fun writeCharacteristicNoWait(uuid: UUID, data: ByteArray) =
+        writeCharacteristic(uuid, data, awaitResponse = false)
+
+    private fun writeCharacteristic(uuid: UUID, data: ByteArray, awaitResponse: Boolean) {
         synchronized(opLock) {
             val g = gatt ?: return
             val ch = findCharacteristic(uuid) ?: run {
@@ -454,6 +465,14 @@ class AndroidBleTransport(private val context: Context) : BleTransport {
             }
             if (!ok) {
                 Log.w(TAG, "writeCharacteristic($uuid) submission failed")
+                writeLatch = null
+                expectedWriteUuid = null
+                return
+            }
+            // WP-BUZZTEST: fire-and-forget writes (the file-PUT close frame) return as soon as the
+            // stack accepts the submit — we never block waiting for an ack the watch won't send,
+            // which would stall the serial request queue (no buzz). The submit already succeeded.
+            if (!awaitResponse) {
                 writeLatch = null
                 expectedWriteUuid = null
                 return

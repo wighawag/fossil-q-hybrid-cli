@@ -29,6 +29,16 @@ public class WriteBatch {
         return this;
     }
 
+    /**
+     * WP-BUZZTEST: queue a <b>fire-and-forget</b> write (submit, do not block on completion). Used
+     * for the file-PUT type-4 close frame so a watch that never acks the close cannot stall the
+     * serial request queue. See {@link BleTransport#writeCharacteristicNoWait(UUID, byte[])}.
+     */
+    public WriteBatch writeNoWait(UUID uuid, byte... data) {
+        ops.add(() -> transport.writeCharacteristicNoWait(uuid, data));
+        return this;
+    }
+
     public WriteBatch requestMtu(int mtu) {
         ops.add(() -> transport.requestMtu(mtu));
         return this;
