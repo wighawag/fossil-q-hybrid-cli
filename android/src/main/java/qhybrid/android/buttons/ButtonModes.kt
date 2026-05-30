@@ -107,8 +107,8 @@ object ButtonDialModes {
     const val DATE = "DATE"
     const val TWENTY_FOUR_HOUR = "TWENTY_FOUR_HOUR"
 
-    /** All dial modes in display order. */
-    val ALL = listOf(ALERT, TIMEZONE_2, ALARM, DATE, TWENTY_FOUR_HOUR)
+    /** All dial modes in display/cycle order (2nd timezone first, date second). */
+    val ALL = listOf(TIMEZONE_2, DATE, ALERT, ALARM, TWENTY_FOUR_HOUR)
 
     private val LABELS = mapOf(
         ALERT to "Alert",
