@@ -57,9 +57,16 @@ alarm **auto-save shows the blocking spinner modal** like a manual save (Step 4)
   NUDGE, SECOND_TIMEZONE }` + `ALARMS_ONLY`/`NOTIFICATIONS_ONLY`/`BUTTONS_ONLY`/`SETTINGS_ONLY`/`ALL`.
   `ServiceSaveToWatch.trigger(context, sections, forceProvision=false)` → `WatchConnectionService
   .syncNow(...)`. The service runs the pass in `submitSync(...)` (`WatchConnectionService.kt`
-  ~line 644): after `val result = SyncStateReporter.reportAround(...) { SyncOrchestrator.sync(...) }`
-  there is an `if (result != null) { Log… }` block — **this is the hook point** to write the
-  per-section `…SyncedAt` for each `section in result.performed`.
+  ~line 644–657): after `val result = SyncStateReporter.reportAround(...) { SyncOrchestrator.sync(...) }`
+  there is an `if (result != null) { Log.i(TAG, "sync done …") }` block — **add the per-section
+  `…SyncedAt` write right there**, for each `section in result.performed`.
+- **`WatchRepository` upsert paths (ALL must stamp `updatedAt`):** single-row `upsertAlarm` /
+  `upsertRule` / `upsertButton` (lines ~98/110/115) AND the multi-row `upsertAll` paths used by
+  defaults-seed / transfer / provisioning — `replaceDefaultsSections(...)` (line ~136) and the seed/
+  transfer block (lines ~147–174). If you stamp `updatedAt` only on the single-row path, seeded/
+  provisioned rows keep `updatedAt = 0` and show "pending" forever. So set it at the **repository
+  layer in every write path** (single + `upsertAll` + replace/seed). See the ordering caveat in
+  Step 1.
 - **Per-screen save seams + screens (mirror these):**
   - Notifications: `NotificationsViewModel` (`saveToWatch()`, `playRule(pkg)`, intents `addRule`/
     `updateRule`/`deleteRule`/`setVibePattern`/`setHandPosition`; injects `NotificationSync`,
@@ -116,6 +123,13 @@ alarm **auto-save shows the blocking spinner modal** like a manual save (Step 4)
   && sectionSyncedAt > 0` and `fun pendingCount(rows: List<Long>, sectionSyncedAt: Long): Int`.
   Decide the `sectionSyncedAt == 0` (never synced) case explicitly → everything pending. Unit-test
   thoroughly (never-synced, edited-after-sync, edited-before-sync, equal timestamps, empty rows).
+- **ORDERING CAVEAT (decide + test):** a provision/seed writes the rows (`updatedAt = now`) and then
+  the same connect's sync sets `…SyncedAt = now`. Because the comparison is `rowUpdatedAt <=
+  sectionSyncedAt`, the sync timestamp is taken AFTER the row writes, so a freshly seeded+synced row
+  is correctly "on watch" (equal or earlier `updatedAt`). Make sure the `…SyncedAt` write uses a
+  timestamp captured when the sync pass COMPLETES (after the row writes), and that `isOnWatch` uses
+  `<=` (not `<`) so an equal timestamp counts as synced. Add a test for the seed-then-sync case
+  (seeded rows show on-watch after the provisioning sync performs the section).
 - Gate → commit (`wp-syncstatus: …`).
 
 ### Step 2 — Per-row badge + pending banner (Notifications, Alarms, Buttons)
@@ -222,8 +236,8 @@ Android count helper:
 ```
 
 Prefer read/grep/find/ls over bash for exploration; `edit` for precise changes. **Git is clean at
-commit `bff5fe6`** (WP11 + the per-app Play button, all landed). Do NOT push; do NOT touch the CLI or
-wire bytes.
+commit `13a6a69`** (this prompt; the last CODE commit is `bff5fe6` — WP11 + the per-app Play button,
+all landed). Do NOT push; do NOT touch the CLI or wire bytes.
 
 ## Before coding
 
@@ -233,4 +247,3 @@ Report the current gate counts (confirm 124 / 402 green). Then read: `WP11-STATU
 screen+VM+sync-seam trio (Notifications is the freshest). Then present a 4–6 bullet refined plan
 (esp. the exact Room migration + where you set `updatedAt` + the nav-leave interception approach) and
 **wait for approval before editing code.**
-```
