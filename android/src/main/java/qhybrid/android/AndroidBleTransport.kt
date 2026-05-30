@@ -419,18 +419,7 @@ class AndroidBleTransport(private val context: Context) : BleTransport {
         }
     }
 
-    override fun writeCharacteristic(uuid: UUID, data: ByteArray) = writeCharacteristic(uuid, data, awaitResponse = true)
-
-    /**
-     * WP-BUZZTEST: fire-and-forget write — submit but do NOT block on completion. Used for the
-     * file-PUT type-4 close frame (see [BleTransport.writeCharacteristicNoWait]): the watch never
-     * acks the close on the INDICATE control char, so a blocking write would stall this thread for
-     * the full op-timeout (~10s) and delay the next file-PUT (the buzz's play file).
-     */
-    override fun writeCharacteristicNoWait(uuid: UUID, data: ByteArray) =
-        writeCharacteristic(uuid, data, awaitResponse = false)
-
-    private fun writeCharacteristic(uuid: UUID, data: ByteArray, awaitResponse: Boolean) {
+    override fun writeCharacteristic(uuid: UUID, data: ByteArray) {
         synchronized(opLock) {
             val g = gatt ?: return
             val ch = findCharacteristic(uuid) ?: run {
@@ -465,20 +454,6 @@ class AndroidBleTransport(private val context: Context) : BleTransport {
             }
             if (!ok) {
                 Log.w(TAG, "writeCharacteristic($uuid) submission failed")
-                writeLatch = null
-                expectedWriteUuid = null
-                return
-            }
-            // WP-BUZZTEST: fire-and-forget writes (the file-PUT close frame) must NOT block on the
-            // watch's app-level ack (it never sends one for the close) — but we still wait a SHORT,
-            // bounded time for the stack's own onCharacteristicWrite "ready" signal. Android allows
-            // only ONE outstanding GATT op: if we returned immediately, the very next write (the
-            // next file-PUT's open request on this same control char) would be submitted while the
-            // close is still in flight and the stack would REJECT it ("submission failed") — so the
-            // next put never opened and the buzz's play file never ran. The short wait lets the
-            // close clear without the 10s op-timeout hang.
-            if (!awaitResponse) {
-                writeLatch?.await(NO_RESPONSE_PACING_MS, TimeUnit.MILLISECONDS)
                 writeLatch = null
                 expectedWriteUuid = null
                 return
