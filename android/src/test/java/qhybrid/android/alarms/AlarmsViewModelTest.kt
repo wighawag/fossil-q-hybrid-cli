@@ -109,9 +109,26 @@ class AlarmsViewModelTest : DbTestBase() {
         val s = awaitState(model.uiState) { it.alarms.size == 3 }
         assertEquals("AA:00:00:00:00:01", s.activeMac)
         assertEquals(listOf(0, 5, 15), s.alarms.map { it.slotId })
+        // The calendar slot (16) is NOT in the editable user list.
+        assertTrue(s.alarms.none { it.slotId == 16 })
         assertTrue(s.hasActiveWatch)
         assertFalse(s.isFull)
         assertEquals(1, s.nextFreeSlot) // lowest free after {0,5,15}
+    }
+
+    @Test
+    fun calendarSlots16to31_surfacedReadOnly_separateFromUserAlarms() {
+        runBlocking {
+            watchDao.upsert(watch("AA:00:00:00:00:02", name = "Two", active = true))
+            alarmDao.upsert(userAlarm("AA:00:00:00:00:02", slot = 0)) // user
+            alarmDao.upsert(userAlarm("AA:00:00:00:00:02", slot = 17)) // calendar
+            alarmDao.upsert(userAlarm("AA:00:00:00:00:02", slot = 16)) // calendar (out of order)
+        }
+        val model = vm()
+        val s = awaitState(model.uiState) { it.calendarAlarms.size == 2 }
+        // User list = only 0; calendar list = 16,17 sorted; the two never overlap.
+        assertEquals(listOf(0), s.alarms.map { it.slotId })
+        assertEquals(listOf(16, 17), s.calendarAlarms.map { it.slotId })
     }
 
     @Test

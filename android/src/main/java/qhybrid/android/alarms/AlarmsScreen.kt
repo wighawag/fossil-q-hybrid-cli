@@ -170,16 +170,18 @@ fun AlarmsContent(
                         style = MaterialTheme.typography.labelSmall,
                     )
 
-                    if (state.alarms.isEmpty()) {
-                        Text(
-                            "No alarms yet — tap “Add alarm”.",
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
-                    } else {
-                        LazyColumn(
-                            modifier = Modifier.fillMaxSize(),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        if (state.alarms.isEmpty()) {
+                            item(key = "no-user-alarms") {
+                                Text(
+                                    "No alarms yet — tap “Add alarm”.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                            }
+                        } else {
                             items(state.alarms, key = { it.slotId }) { alarm ->
                                 AlarmRow(
                                     alarm = alarm,
@@ -187,6 +189,35 @@ fun AlarmsContent(
                                     onClick = { editing = alarm },
                                     onToggleEnabled = { onToggleEnabled(alarm.slotId) },
                                     onDelete = { onDelete(alarm.slotId) },
+                                )
+                            }
+                        }
+
+                        // WP13 — the read-only calendar alarms (slots 16–31), mirrored from the
+                        // user's system calendar. Shown only when there are any. NOT editable here.
+                        if (state.calendarAlarms.isNotEmpty()) {
+                            item(key = "calendar-header") {
+                                Column(
+                                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                                    modifier = Modifier.padding(top = 12.dp),
+                                ) {
+                                    HorizontalDivider()
+                                    Text(
+                                        "From your calendar (${state.calendarAlarms.size})",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        modifier = Modifier.padding(top = 8.dp),
+                                    )
+                                    Text(
+                                        "Upcoming events (next 7 days) synced automatically as " +
+                                            "one-off alarms. Read-only — edit them in your calendar app.",
+                                        style = MaterialTheme.typography.labelSmall,
+                                    )
+                                }
+                            }
+                            items(state.calendarAlarms, key = { it.slotId }) { alarm ->
+                                CalendarAlarmRow(
+                                    alarm = alarm,
+                                    onWatch = state.isOnWatch(alarm.slotId),
                                 )
                             }
                         }
@@ -249,6 +280,42 @@ private fun AlarmRow(
             Switch(checked = alarm.isEnabled, onCheckedChange = { onToggleEnabled() })
             IconButton(onClick = onDelete) {
                 Icon(Icons.Filled.Delete, contentDescription = "Delete alarm")
+            }
+        }
+    }
+}
+
+/**
+ * WP13 — a READ-ONLY calendar-alarm row (slots 16–31). No switch, no delete, no edit click: these
+ * are mirrored from the user's system calendar and managed automatically. Shows the time, the day
+ * summary, the event title (label), and the on-watch ✓ badge (shared `alarmsSyncedAt` marker).
+ */
+@Composable
+private fun CalendarAlarmRow(
+    alarm: WatchAlarmEntity,
+    onWatch: Boolean,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    formatTime(alarm.hour, alarm.minute),
+                    style = MaterialTheme.typography.headlineSmall,
+                )
+                Text(
+                    AlarmDays.summary(alarm.daysMask, alarm.isRepeating),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                alarm.label?.takeIf { it.isNotBlank() }?.let {
+                    Text(it, style = MaterialTheme.typography.labelSmall)
+                }
+                // WP-SYNCSTATUS: ✓ on-watch vs ⏳ not-synced (shared alarms section marker).
+                SyncRowBadge(onWatch = onWatch)
             }
         }
     }

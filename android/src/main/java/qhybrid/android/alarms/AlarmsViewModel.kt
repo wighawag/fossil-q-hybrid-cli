@@ -33,6 +33,13 @@ data class AlarmsUiState(
     val activeWatch: WatchEntity? = null,
     /** Slot-0–15 alarms for the active watch, sorted by slotId ascending. */
     val alarms: List<WatchAlarmEntity> = emptyList(),
+    /**
+     * WP13 — the calendar-auto alarms (slots 16–31), sorted by slotId. **READ-ONLY** here: they are
+     * mirrored from the user's system calendar by WP13 and are NOT editable on this screen (no
+     * add/update/delete/toggle). Surfaced so the user can SEE which upcoming events became watch
+     * alarms.
+     */
+    val calendarAlarms: List<WatchAlarmEntity> = emptyList(),
 ) {
     val activeMac: String? get() = activeWatch?.macAddress
     val hasActiveWatch: Boolean get() = activeWatch != null
@@ -52,9 +59,13 @@ data class AlarmsUiState(
     /** When the watch's alarms section was last (re-)pushed. 0 = never synced. */
     val alarmsSyncedAt: Long get() = activeWatch?.alarmsSyncedAt ?: 0
 
-    /** True iff [slotId]'s alarm has been pushed to the watch since its last edit. */
+    /**
+     * True iff [slotId]'s alarm has been pushed to the watch since its last edit. Covers both the
+     * user slots (0–15) and the WP13 calendar slots (16–31) — they share the per-watch
+     * `alarmsSyncedAt` marker (the whole 32-slot file is one upload).
+     */
     fun isOnWatch(slotId: Int): Boolean {
-        val alarm = alarms.firstOrNull { it.slotId == slotId } ?: return false
+        val alarm = (alarms + calendarAlarms).firstOrNull { it.slotId == slotId } ?: return false
         return SectionSyncStatus.isOnWatch(alarm.updatedAt, alarmsSyncedAt)
     }
 
@@ -65,6 +76,10 @@ data class AlarmsUiState(
         const val USER_SLOT_MIN = 0
         const val USER_SLOT_MAX = 15
         const val USER_SLOT_COUNT = USER_SLOT_MAX - USER_SLOT_MIN + 1 // 16
+
+        // WP13 — the calendar-auto slot range (read-only on this screen).
+        const val CALENDAR_SLOT_MIN = 16
+        const val CALENDAR_SLOT_MAX = 31
     }
 }
 
@@ -117,7 +132,11 @@ open class AlarmsViewModel(
             val userAlarms = rows
                 .filter { it.slotId in AlarmsUiState.USER_SLOT_MIN..AlarmsUiState.USER_SLOT_MAX }
                 .sortedBy { it.slotId }
-            AlarmsUiState(activeWatch = active, alarms = userAlarms)
+            // WP13: the calendar-auto slots 16–31 (read-only).
+            val calendarAlarms = rows
+                .filter { it.slotId in AlarmsUiState.CALENDAR_SLOT_MIN..AlarmsUiState.CALENDAR_SLOT_MAX }
+                .sortedBy { it.slotId }
+            AlarmsUiState(activeWatch = active, alarms = userAlarms, calendarAlarms = calendarAlarms)
         }
     }
 
