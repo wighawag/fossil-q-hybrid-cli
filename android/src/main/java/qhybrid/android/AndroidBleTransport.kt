@@ -469,10 +469,16 @@ class AndroidBleTransport(private val context: Context) : BleTransport {
                 expectedWriteUuid = null
                 return
             }
-            // WP-BUZZTEST: fire-and-forget writes (the file-PUT close frame) return as soon as the
-            // stack accepts the submit — we never block waiting for an ack the watch won't send,
-            // which would stall the serial request queue (no buzz). The submit already succeeded.
+            // WP-BUZZTEST: fire-and-forget writes (the file-PUT close frame) must NOT block on the
+            // watch's app-level ack (it never sends one for the close) — but we still wait a SHORT,
+            // bounded time for the stack's own onCharacteristicWrite "ready" signal. Android allows
+            // only ONE outstanding GATT op: if we returned immediately, the very next write (the
+            // next file-PUT's open request on this same control char) would be submitted while the
+            // close is still in flight and the stack would REJECT it ("submission failed") — so the
+            // next put never opened and the buzz's play file never ran. The short wait lets the
+            // close clear without the 10s op-timeout hang.
             if (!awaitResponse) {
+                writeLatch?.await(NO_RESPONSE_PACING_MS, TimeUnit.MILLISECONDS)
                 writeLatch = null
                 expectedWriteUuid = null
                 return
