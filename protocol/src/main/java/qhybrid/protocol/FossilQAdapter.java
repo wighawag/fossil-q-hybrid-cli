@@ -95,7 +95,11 @@ public class FossilQAdapter {
         return t;
     });
     private ScheduledFuture<?> timeoutFuture;
-    private static final int REQUEST_TIMEOUT_SECS = 300; // 5 minutes
+    // WP-BUZZTEST (C): a real request completes in well under a second; the former 5-minute value
+    // meant a stalled handshake (e.g. a missing file-PUT close-ack on this firmware) hung the
+    // WHOLE request queue for 5 minutes — so a follow-up buzz/sync silently did nothing. 30s is
+    // still generous for any genuine transfer but lets the queue recover promptly on a stall.
+    private static final int REQUEST_TIMEOUT_SECS = 30;
 
     // Init mode: full (animation + config sync + filter upload) vs minimal (auth only)
     private boolean fullInit = false;

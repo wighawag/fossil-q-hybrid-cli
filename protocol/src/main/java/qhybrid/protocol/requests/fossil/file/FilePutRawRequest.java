@@ -29,6 +29,9 @@ import java.util.ArrayList;
 import java.util.UUID;
 import java.util.zip.CRC32;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import qhybrid.protocol.WriteBatch;
 import qhybrid.protocol.FossilWatchAdapter;
 import qhybrid.protocol.file.FileHandle;
@@ -36,6 +39,10 @@ import qhybrid.protocol.requests.fossil.FossilRequest;
 import qhybrid.protocol.requests.fossil.file.ResultCode;
 
 public class FilePutRawRequest extends FossilRequest {
+
+    // WP-BUZZTEST diagnostics (C): INFO-level trace of the file-PUT handshake so on-device logcat
+    // shows WHY a put stalls (e.g. a missing type-4 close-ack). Logging only — no behaviour change.
+    private static final Logger PUTLOG = LoggerFactory.getLogger(FilePutRawRequest.class);
     public enum UploadState {INITIALIZED, UPLOADING, CLOSING, UPLOADED}
 
     public UploadState state;
@@ -81,6 +88,9 @@ public class FilePutRawRequest extends FossilRequest {
         if (uuid.toString().equals("3dda0003-957f-7d4a-34a6-74696673696d")) {
             int responseType = value[0] & 0x0F;
             log("response: " + responseType);
+            // WP-BUZZTEST (C): trace every control-channel frame the put sees, with handle + state.
+            PUTLOG.info("FilePut[0x{}] state={} <- control type={} ({} bytes)",
+                    String.format("%04X", handle), state, responseType, value.length);
             switch (responseType) {
                 case 3: {
                     if (value.length != 5 || (value[0] & 0x0F) != 3) {
@@ -92,6 +102,8 @@ public class FilePutRawRequest extends FossilRequest {
                     java.util.UUID uploadCharacteristic = (UUID.fromString("3dda0004-957f-7d4a-34a6-74696673696d"));
 
                     this.prepareFilePackets(this.file);
+                    PUTLOG.info("FilePut[0x{}] accepted — writing {} data chunk(s) ({} bytes)",
+                            String.format("%04X", handle), packets.size(), file.length);
 
                     for (int i = 0, packetCount = packets.size(); i < packetCount; i++) {
                         byte[] packet = packets.get(i);
@@ -137,6 +149,8 @@ public class FilePutRawRequest extends FossilRequest {
                             .queue();
 
                     this.state = UploadState.CLOSING;
+                    PUTLOG.info("FilePut[0x{}] CRC confirmed — sent close (type 4), awaiting close-ack",
+                            String.format("%04X", handle));
                     break;
                 }
                 case 4: {
@@ -167,10 +181,14 @@ public class FilePutRawRequest extends FossilRequest {
                     onFilePut(true);
 
                     log("uploaded file");
+                    PUTLOG.info("FilePut[0x{}] COMPLETE (close-ack received)",
+                            String.format("%04X", handle));
 
                     break;
                 }
                 case 9: {
+                    PUTLOG.warn("FilePut[0x{}] WATCH-SIDE TIMEOUT (control type 9) in state {}",
+                            String.format("%04X", handle), state);
                     this.onFilePut(false);
                     throw new RuntimeException("file put timeout");
                     /*timeout = true;
