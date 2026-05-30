@@ -54,6 +54,14 @@ fun DashboardScreen(
     // Add a watch by scanning for Fossil watches (the OS chooser). Hosted by MainActivity because
     // CDM association needs an Activity for the IntentSender; default no-op for previews.
     onAddWatch: () -> Unit = {},
+    // Fallback: scan showing ALL nearby BLE devices (when the Fossil filter finds nothing).
+    onShowAllDevices: () -> Unit = {},
+    // Fallback: open Setup to type a MAC (the reliable path for an already-bonded watch).
+    onEnterMacManually: () -> Unit = {},
+    // Already-bonded (OS-paired) Fossil watches not yet added in the app (mac to label).
+    bondedWatches: List<Pair<String, String>> = emptyList(),
+    // Add a specific already-bonded watch by its MAC (one-tap, no scan).
+    onAddBondedWatch: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
     val vm: DashboardViewModel = viewModel(factory = DashboardViewModel.factory(context))
@@ -67,6 +75,10 @@ fun DashboardScreen(
         onSync = vm::sync,
         onFindWatch = vm::findWatch,
         onAddWatch = onAddWatch,
+        onShowAllDevices = onShowAllDevices,
+        onEnterMacManually = onEnterMacManually,
+        bondedWatches = bondedWatches,
+        onAddBondedWatch = onAddBondedWatch,
         modifier = modifier,
     )
 }
@@ -85,6 +97,10 @@ fun DashboardContent(
     onFindWatch: () -> Unit,
     modifier: Modifier = Modifier,
     onAddWatch: () -> Unit = {},
+    onShowAllDevices: () -> Unit = {},
+    onEnterMacManually: () -> Unit = {},
+    bondedWatches: List<Pair<String, String>> = emptyList(),
+    onAddBondedWatch: (String) -> Unit = {},
 ) {
     Column(
         modifier = modifier
@@ -95,8 +111,8 @@ fun DashboardContent(
     ) {
         if (state.watches.isEmpty()) {
             // First-run / no-watch state: a prominent CTA to add a watch (replaces the old passive
-            // hint + the hardcoded-MAC setup field). Discovery filters the chooser to Fossil watches.
-            NoWatchCard(onAddWatch)
+            // hint + the hardcoded-MAC setup field), with fallbacks for when the scan finds nothing.
+            NoWatchCard(onAddWatch, onShowAllDevices, onEnterMacManually, bondedWatches, onAddBondedWatch)
             return@Column
         }
         StatusCard(state)
@@ -119,23 +135,63 @@ fun DashboardContent(
 
 /**
  * Empty-state card shown when no watch is registered: explains the app needs a watch and offers a
- * single "Add a watch" action that scans for Fossil watches via the OS companion-device chooser.
+ * primary "Add a watch" scan (Fossil-filtered) plus two fallbacks — "Show all Bluetooth devices"
+ * (when the Fossil filter finds nothing because the advertised name changed) and "Enter MAC
+ * manually" (the reliable path for a watch that's already paired/bonded and so won't show in any
+ * scan — FINDINGS #7).
  */
 @Composable
-private fun NoWatchCard(onAddWatch: () -> Unit) {
+private fun NoWatchCard(
+    onAddWatch: () -> Unit,
+    onShowAllDevices: () -> Unit,
+    onEnterMacManually: () -> Unit,
+    bondedWatches: List<Pair<String, String>>,
+    onAddBondedWatch: (String) -> Unit,
+) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.fillMaxWidth().padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text("No watch yet", style = MaterialTheme.typography.titleMedium)
-            Text(
-                "Add your Fossil Q hybrid watch to get started. Make sure it's nearby and " +
-                    "Bluetooth is on, then tap below to scan.",
-                style = MaterialTheme.typography.bodyMedium,
-            )
+
+            // Already-paired (OS-bonded) Fossil watches: one-tap add, no scan/forget needed.
+            if (bondedWatches.isNotEmpty()) {
+                Text(
+                    "Already paired with this phone — tap to add:",
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                bondedWatches.forEach { (mac, label) ->
+                    Button(
+                        onClick = { onAddBondedWatch(mac) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        // Show name + MAC so two same-named "Fossil" watches are distinguishable.
+                        Text(if (label.equals(mac, ignoreCase = true)) "Add $mac" else "Add $label ($mac)")
+                    }
+                }
+                Text("Or add a different watch:", style = MaterialTheme.typography.labelLarge)
+            } else {
+                Text(
+                    "Add your Fossil Q hybrid watch to get started. Make sure it's nearby, " +
+                        "Bluetooth is on, and the watch is NOT already paired to another phone or " +
+                        "computer (a paired watch won't show up in a scan).",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+
             Button(onClick = onAddWatch, modifier = Modifier.fillMaxWidth()) {
                 Text("Add a watch")
+            }
+            Text(
+                "Watch not showing up?",
+                style = MaterialTheme.typography.labelLarge,
+            )
+            OutlinedButton(onClick = onShowAllDevices, modifier = Modifier.fillMaxWidth()) {
+                Text("Show all Bluetooth devices")
+            }
+            OutlinedButton(onClick = onEnterMacManually, modifier = Modifier.fillMaxWidth()) {
+                Text("Enter MAC manually")
             }
         }
     }

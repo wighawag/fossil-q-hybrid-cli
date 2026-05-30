@@ -97,8 +97,9 @@ class SettingsViewModelTest : DbTestBase() {
     private class FakeVibration(private val wired: Boolean = true) : VibrationSync {
         var count = 0
         val patterns = mutableListOf<Int>()
-        override fun buzz(pattern: Int): Boolean {
-            count++; patterns.add(pattern); return wired
+        val forceFilterFlags = mutableListOf<Boolean>()
+        override fun buzz(pattern: Int, forceFilterPlay: Boolean): Boolean {
+            count++; patterns.add(pattern); forceFilterFlags.add(forceFilterPlay); return wired
         }
     }
 
@@ -247,6 +248,39 @@ class SettingsViewModelTest : DbTestBase() {
         val model = vm(vibration = vibe)
         awaitState(model.uiState) { !it.hasActiveWatch }
         assertFalse(model.vibrateWatch(VibrationSync.PATTERN_SINGLE))
+        assertEquals(0, vibe.count)
+    }
+
+    @Test
+    fun vibrateWatchPlainUsesPlayOnlyPath() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }
+        val vibe = FakeVibration(wired = true)
+        val model = vm(vibration = vibe)
+        awaitState(model.uiState) { it.hasActiveWatch }
+        model.vibrateWatch(VibrationSync.PATTERN_SINGLE)
+        assertEquals(1, vibe.count)
+        assertFalse(vibe.forceFilterFlags.last()) // default play-only (no forced filter)
+    }
+
+    @Test
+    fun vibrateWatchWithFilterForcesFilterPlay() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }
+        val vibe = FakeVibration(wired = true)
+        val model = vm(vibration = vibe)
+        awaitState(model.uiState) { it.hasActiveWatch }
+        val wired = model.vibrateWatchWithFilter(VibrationSync.PATTERN_SINGLE)
+        assertTrue(wired)
+        assertEquals(1, vibe.count)
+        assertTrue(vibe.forceFilterFlags.last()) // diagnostic path forces filter+play
+    }
+
+    @Test
+    fun vibrateWatchWithFilterNoOpWithoutActiveWatch() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = false)) }
+        val vibe = FakeVibration()
+        val model = vm(vibration = vibe)
+        awaitState(model.uiState) { !it.hasActiveWatch }
+        assertFalse(model.vibrateWatchWithFilter(VibrationSync.PATTERN_SINGLE))
         assertEquals(0, vibe.count)
     }
 

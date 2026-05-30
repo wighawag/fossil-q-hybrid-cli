@@ -7,11 +7,6 @@ import android.companion.CompanionDeviceManager
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
-import qhybrid.android.db.WatchRepository
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.launch
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -137,6 +132,9 @@ class MainActivity : ComponentActivity() {
         // gears overlay on top of whichever home tab is selected.
         var tab by remember { mutableStateOf(HomeTab.DASHBOARD) }
         val onHome = !showDebug && !showSetup && !showLogs
+        // Bumped whenever an association completes so the "already paired" bonded-watch list (and
+        // anything else watch-registry-derived) recomputes WITHOUT needing an app relaunch.
+        var bondedRefresh by remember { mutableStateOf(0) }
 
         // Hoisted CDM association launcher so BOTH the Dashboard "Add watch" CTA and the Setup
         // screen's "Associate watch" can start the OS device chooser. The chosen device's MAC is
@@ -148,13 +146,40 @@ class MainActivity : ComponentActivity() {
             if (chosenMac != null) {
                 Log.i(TAG, "Associated with $chosenMac")
                 onAssociated(chosenMac)
+                bondedRefresh++ // drop the just-added watch from the "already paired" list
             } else {
                 Log.w(TAG, "Association cancelled / no device (resultCode=${result.resultCode})")
             }
         }
-        // Add a watch by SCAN (no MAC) — the OS chooser lists only Fossil watches. The Dashboard
-        // empty-state and action button both call this; manual-MAC entry stays in Setup.
-        val addWatchByScan: () -> Unit = { startAssociate(null, associateLauncher::launch) }
+        // Add a watch by SCAN (no MAC). Fossil-only is the default; "show all" is the fallback when
+        // the Fossil filter finds nothing (e.g. the watch's advertised name changed after a prior
+        // pairing). Manual-MAC entry lives in Setup (the reliable path for an already-bonded watch).
+        val addWatchByScan: () -> Unit = {
+            startAssociate(null, associateLauncher::launch, CompanionManager.ScanMode.FOSSIL)
+        }
+        val addWatchShowAll: () -> Unit = {
+            startAssociate(null, associateLauncher::launch, CompanionManager.ScanMode.ALL)
+        }
+        val openSetupForMac: () -> Unit = { showSetup = true; showDebug = false; showLogs = false }
+        // Already-bonded (OS-paired) Fossil watches that aren't added in the app yet — offered for
+        // one-tap add so the user need not "Forget" + re-pair. Recomputed when entering the home
+        // surface (cheap; reads the OS bonded-device list). Adding one associates by its exact MAC.
+        val bondedWatches: List<Pair<String, String>> = remember(onHome, bondedRefresh) {
+            if (hasPermissions()) {
+                CompanionManager.bondedFossilWatches(this).map { it.mac to it.name }
+            } else emptyList()
+        }
+        // The watch is ALREADY OS-bonded, so CDM association (which does a BLE SCAN to confirm the
+        // device) can't be used: a bonded watch directed-advertises and the scan never sees it (the
+        // chooser would spin forever / silently do nothing). We don't need CDM to bond it — it's
+        // already bonded — so we adopt it directly: persist the associated MAC, arm presence, and
+        // connect by MAC (the same direct-connect path the CLI uses). The service then provisions it
+        // (no DB row yet) so the reserved buzz filter is uploaded.
+        val addBondedWatch: (String) -> Unit = { mac ->
+            Log.i(TAG, "Adopting already-bonded watch $mac (skip CDM scan)")
+            onAssociated(mac)
+            bondedRefresh++
+        }
         val title = when {
             showDebug -> "Debug Menu"
             showSetup -> "Setup"
@@ -244,7 +269,13 @@ class MainActivity : ComponentActivity() {
                     tab == HomeTab.CALIBRATION -> CalibrationScreen()
                     tab == HomeTab.SLEEP -> SleepActivityScreen()
                     tab == HomeTab.SETTINGS -> SettingsScreen(onOpenLogs = { showLogs = true })
-                    else -> DashboardScreen(onAddWatch = addWatchByScan)
+                    else -> DashboardScreen(
+                        onAddWatch = addWatchByScan,
+                        onShowAllDevices = addWatchShowAll,
+                        onEnterMacManually = openSetupForMac,
+                        bondedWatches = bondedWatches,
+                        onAddBondedWatch = addBondedWatch,
+                    )
                 }
             }
         }
@@ -385,11 +416,15 @@ class MainActivity : ComponentActivity() {
     /**
      * Begin CDM association; the chooser IntentSender is fired via [launch].
      *
-     * [mac] null/blank → scan for Fossil watches by advertised name (the OS picker is filtered to
-     * Fossil watches). A valid MAC → a single-device request for that exact address (re-pair a
-     * known/bonded watch). An invalid MAC string falls back to the name scan.
+     * [mac] null/blank → scan for watches ([scanMode] = Fossil-only by default, or ALL devices as a
+     * fallback when the Fossil filter shows nothing). A valid MAC → a single-device request for that
+     * exact address (re-pair a known/bonded watch). An invalid MAC string falls back to the scan.
      */
-    private fun startAssociate(mac: String?, launch: (IntentSenderRequest) -> Unit) {
+    private fun startAssociate(
+        mac: String?,
+        launch: (IntentSenderRequest) -> Unit,
+        scanMode: CompanionManager.ScanMode = CompanionManager.ScanMode.FOSSIL,
+    ) {
         if (!hasPermissions()) {
             Log.w(TAG, "associate: missing Bluetooth permission")
         }
@@ -397,6 +432,7 @@ class MainActivity : ComponentActivity() {
         CompanionManager.associate(
             context = this,
             mac = filterMac,
+            scanMode = scanMode,
             callback = object : CompanionDeviceManager.Callback() {
                 override fun onDeviceFound(chooserLauncher: IntentSender) {
                     // May arrive on a binder thread — bounce to main to fire the launcher.
@@ -419,15 +455,13 @@ class MainActivity : ComponentActivity() {
         CompanionManager.setAssociatedMac(this, mac)
         CompanionManager.startObserving(this, mac)
         ReconnectFallback.arm(this, mac)
+        // Connect + init. The SERVICE registers the Room row itself, AFTER deciding newness
+        // (isNewWatch) so a brand-new watch still gets its one-time provisioning sync (which uploads
+        // the notification filter incl. the reserved buzz entries). We deliberately do NOT register
+        // the row here: doing so raced the connect and could mark the watch "known" before the
+        // newness check, skipping provisioning — which left a freshly-added watch unable to buzz
+        // (the play-only buzz needs the reserved filter that provisioning writes).
         WatchConnectionService.connectNow(this, mac)
-        // WP4: mirror the association into the Room registry and mark it the active
-        // watch. Fire-and-forget on IO so it never touches the WP3 connect path above
-        // (CompanionManager's SharedPreferences pref remains the CDM reconnect pointer).
-        val appContext = applicationContext
-        CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
-            runCatching { WatchRepository(appContext).registerWatch(mac, name = mac) }
-                .onFailure { Log.w(TAG, "WP4 registerWatch failed", it) }
-        }
     }
 
     /** Pull the chosen device's MAC from the chooser result, across API variants. */

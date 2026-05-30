@@ -20,10 +20,13 @@ import qhybrid.android.sync.ServiceBuzz
  */
 interface VibrationSync {
     /**
-     * Make the watch vibrate NOW with the given vibration [pattern] byte. Returns whether the buzz
-     * pipeline is wired (`true` — see [VIBRATION_WIRED]).
+     * Make the watch vibrate NOW with the given vibration [pattern] byte. When [forceFilterPlay] is
+     * true, use the self-contained two-put path (NOTIFICATION_FILTER + NOTIFICATION_PLAY) that works
+     * even if the reserved buzz filter isn't on the watch (the diagnostic "put filter + send buzz");
+     * otherwise a reserved pattern uses the single play-only put. Returns whether the buzz pipeline
+     * is wired (`true` — see [VIBRATION_WIRED]).
      */
-    fun buzz(pattern: Int): Boolean
+    fun buzz(pattern: Int, forceFilterPlay: Boolean = false): Boolean
 
     companion object {
         /** Strong single buzz (ONE_SHORT_VIBE). Hardware-tested pattern byte. */
@@ -43,8 +46,8 @@ interface VibrationSync {
 class ServiceVibrationSync(context: Context) : VibrationSync {
     private val appContext = context.applicationContext
 
-    override fun buzz(pattern: Int): Boolean =
-        ServiceBuzz.trigger(appContext, pattern) && VIBRATION_WIRED
+    override fun buzz(pattern: Int, forceFilterPlay: Boolean): Boolean =
+        ServiceBuzz.trigger(appContext, pattern, forceFilterPlay) && VIBRATION_WIRED
 
     companion object {
         /** WP-BUZZTEST: the manual buzz is wired (buzzNow → FossilController.buzz). */
@@ -58,5 +61,5 @@ class ServiceVibrationSync(context: Context) : VibrationSync {
  * `false` (nothing was triggered).
  */
 object NoopVibrationSync : VibrationSync {
-    override fun buzz(pattern: Int): Boolean = false
+    override fun buzz(pattern: Int, forceFilterPlay: Boolean): Boolean = false
 }

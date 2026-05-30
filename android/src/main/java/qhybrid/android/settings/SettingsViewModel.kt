@@ -165,6 +165,17 @@ open class SettingsViewModel(
         return vibration.buzz(pattern)
     }
 
+    /**
+     * Diagnostic "put filter + send buzz": vibrate via the self-contained two-put path
+     * (NOTIFICATION_FILTER + NOTIFICATION_PLAY) that works even when the reserved buzz filter isn't
+     * on the watch — used to isolate whether a non-buzzing watch is missing the reserved filter.
+     * No-op (returns false) without an active watch.
+     */
+    fun vibrateWatchWithFilter(pattern: Int): Boolean {
+        if (uiState.value.activeWatch == null) return false
+        return vibration.buzz(pattern, forceFilterPlay = true)
+    }
+
     // ---- manual "Sync all" (WP-PULLSYNC) -------------------------------------
 
     /**

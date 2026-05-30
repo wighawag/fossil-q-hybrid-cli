@@ -81,8 +81,12 @@ object SyncOrchestrator {
         }
 
         // 2. Notification filter ----------------------------------------------
+        // ALWAYS upload (even with no user rules): the uploader folds the RESERVED buzz entries
+        // (WP-BUZZ-PLAYONLY) into the filter, and those must be on the watch for the play-only buzz
+        // to work. Skipping an empty rule set here would leave a freshly-provisioned watch with no
+        // reserved filter → manual buzz silently does nothing. The user rules (possibly empty) are
+        // passed through; the uploader merges the reserved entries on top.
         runSection(SyncSection.NOTIFICATION_FILTER, sections, performed, skipped, errors) {
-            if (input.rules.isEmpty()) return@runSection false
             val entries = input.rules.map { it.toFilterEntry() }
             uploader.uploadNotificationFilter(entries)
         }

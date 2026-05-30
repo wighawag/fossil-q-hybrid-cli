@@ -2,6 +2,7 @@ package qhybrid.android
 
 import android.app.Activity
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothManager
 import android.bluetooth.le.ScanFilter
 import android.companion.AssociationRequest
 import android.companion.BluetoothLeDeviceFilter
@@ -39,10 +40,25 @@ object CompanionManager {
     /**
      * Advertised-name pattern for Fossil Q hybrid watches. A fresh (unbonded) Q hybrid advertises
      * as `Fossil` / `FossilQ Hybrid` (FINDINGS #6), so this restricts the CDM chooser to Fossil
-     * watches when adding by scan (no MAC given). NOTE: a watch that is ALREADY bonded uses directed
-     * advertising and won't appear in a general scan (FINDINGS #7) — re-add it by typing its MAC.
+     * watches when adding by scan. Matches anywhere in the name (not anchored) so variants like
+     * `Fossil Q Commuter` / `FossilQ Hybrid` / a post-pair renamed `... Fossil ...` all match.
+     *
+     * NOTE: a watch that is ALREADY bonded uses directed advertising and won't appear in ANY general
+     * scan (FINDINGS #7) — re-add it by typing its MAC. And the advertised name CHANGES after
+     * pairing (FINDINGS #6), so if the name filter shows nothing, fall back to [ScanMode.ALL].
      */
-    const val FOSSIL_NAME_PATTERN = "(?i)fossil.*"
+    const val FOSSIL_NAME_PATTERN = "(?i).*fossil.*"
+
+    /** BLE manufacturer id seen in Fossil Q hybrid advertisements (FINDINGS #6: key 0x00DF). */
+    private const val FOSSIL_MANUFACTURER_ID = 0x00DF
+
+    /** How the CDM chooser should filter the BLE scan when adding a watch. */
+    enum class ScanMode {
+        /** Show only devices that look like Fossil watches (by advertised name OR manufacturer id). */
+        FOSSIL,
+        /** Show ALL nearby BLE devices (fallback when the Fossil filter finds nothing). */
+        ALL,
+    }
 
     // ---- associated-MAC persistence (isolated; WP4 can replace) -------------
 
@@ -54,6 +70,46 @@ object CompanionManager {
             .edit().apply {
                 if (mac == null) remove(KEY_MAC) else putString(KEY_MAC, mac.uppercase())
             }.apply()
+    }
+
+    /** A Bluetooth device already bonded at the OS level that the app can offer to add. */
+    data class BondedWatch(val mac: String, val name: String)
+
+    // ---- already-bonded (OS-paired) watches ---------------------------------
+
+    /**
+     * Enumerate watches that are ALREADY BONDED at the Android OS level (Settings → Bluetooth →
+     * paired) but NOT yet associated with this app. A bonded watch uses directed advertising, so it
+     * never appears in the CDM scan chooser — without this, the user would have to "Forget" it in
+     * Android settings and re-pair just to add it here. This lets us offer it for one-tap add
+     * instead (we associate by its exact MAC).
+     *
+     * Filters to LIKELY Fossil watches by bonded-device name (contains "fossil"); falls back to
+     * returning all bonded devices with no obvious name match is intentionally avoided to keep the
+     * list watch-only. Requires BLUETOOTH_CONNECT (API 31+); returns empty without it.
+     */
+    @RequiresPermission(value = "android.permission.BLUETOOTH_CONNECT", conditional = true)
+    fun bondedFossilWatches(context: Context): List<BondedWatch> {
+        val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)
+            ?.adapter ?: return emptyList()
+        val fossil = java.util.regex.Pattern.compile(FOSSIL_NAME_PATTERN)
+        return try {
+            adapter.bondedDevices.orEmpty()
+                .mapNotNull { dev ->
+                    val mac = runCatching { dev.address }.getOrNull()?.uppercase() ?: return@mapNotNull null
+                    val name = runCatching { dev.name }.getOrNull() ?: ""
+                    if (!fossil.matcher(name).matches()) return@mapNotNull null
+                    if (isAssociated(context, mac)) return@mapNotNull null // already added
+                    BondedWatch(mac, name.ifBlank { mac })
+                }
+                .distinctBy { it.mac }
+        } catch (e: SecurityException) {
+            Log.w(TAG, "bondedFossilWatches: missing BLUETOOTH_CONNECT", e)
+            emptyList()
+        } catch (e: Exception) {
+            Log.w(TAG, "bondedFossilWatches failed", e)
+            emptyList()
+        }
     }
 
     // ---- CompanionDeviceManager ---------------------------------------------
@@ -78,23 +134,42 @@ object CompanionManager {
      *
      * - **With a valid [mac]** → a single-device request filtered to that exact address (used to
      *   re-pair a known watch, incl. a previously-bonded one that only directed-advertises).
-     * - **Without a MAC** → a multi-device scan chooser filtered by the Fossil advertised-name
-     *   pattern ([FOSSIL_NAME_PATTERN]) so the OS picker lists ONLY Fossil watches the user can add.
+     * - **Without a MAC** → a multi-device scan chooser. [scanMode] = [ScanMode.FOSSIL] filters to
+     *   Fossil watches (by advertised name OR manufacturer id) so the picker is watch-only;
+     *   [ScanMode.ALL] shows every nearby BLE device (the reliable fallback when the name/mfg filter
+     *   misses the watch — e.g. its advertised name changed after a previous pairing).
      */
-    private fun buildRequest(mac: String?): AssociationRequest {
-        val filterBuilder = BluetoothLeDeviceFilter.Builder()
+    private fun buildRequest(mac: String?, scanMode: ScanMode): AssociationRequest {
         val hasMac = mac != null && BluetoothAdapter.checkBluetoothAddress(mac)
+        val builder = AssociationRequest.Builder()
         if (hasMac) {
-            val scan = ScanFilter.Builder().setDeviceAddress(mac).build()
-            filterBuilder.setScanFilter(scan)
-        } else {
-            // No MAC: scan for Fossil watches by advertised name so the chooser is watch-only.
-            filterBuilder.setNamePattern(java.util.regex.Pattern.compile(FOSSIL_NAME_PATTERN))
+            val f = BluetoothLeDeviceFilter.Builder()
+                .setScanFilter(ScanFilter.Builder().setDeviceAddress(mac).build())
+                .build()
+            return builder.addDeviceFilter(f).setSingleDevice(true).build()
         }
-        return AssociationRequest.Builder()
-            .addDeviceFilter(filterBuilder.build())
-            .setSingleDevice(hasMac)
-            .build()
+        when (scanMode) {
+            ScanMode.FOSSIL -> {
+                // Two filters (OR semantics across filters): match by advertised NAME, and also by
+                // Fossil MANUFACTURER id, so a watch that advertises one but not the other is found.
+                val byName = BluetoothLeDeviceFilter.Builder()
+                    .setNamePattern(java.util.regex.Pattern.compile(FOSSIL_NAME_PATTERN))
+                    .build()
+                val byMfg = BluetoothLeDeviceFilter.Builder()
+                    .setScanFilter(
+                        ScanFilter.Builder()
+                            .setManufacturerData(FOSSIL_MANUFACTURER_ID, byteArrayOf())
+                            .build()
+                    )
+                    .build()
+                builder.addDeviceFilter(byName).addDeviceFilter(byMfg)
+            }
+            ScanMode.ALL -> {
+                // No criteria → the chooser lists every nearby BLE device (user picks the watch).
+                builder.addDeviceFilter(BluetoothLeDeviceFilter.Builder().build())
+            }
+        }
+        return builder.setSingleDevice(false).build()
     }
 
     /**
@@ -102,12 +177,17 @@ object CompanionManager {
      * [callback] (the Activity must then start the returned IntentSender for result —
      * see [MainActivity]). If [mac] is already associated, [onAlreadyAssociated] is
      * invoked instead and no chooser is shown.
+     *
+     * [scanMode] (only relevant when [mac] is null) chooses how the scan chooser filters: Fossil-only
+     * ([ScanMode.FOSSIL], default) or all nearby BLE devices ([ScanMode.ALL], the fallback when the
+     * Fossil filter shows nothing because the watch's advertised name changed after a prior pairing).
      */
     fun associate(
         context: Context,
         mac: String?,
         callback: CompanionDeviceManager.Callback,
         onAlreadyAssociated: (String) -> Unit,
+        scanMode: ScanMode = ScanMode.FOSSIL,
     ) {
         val manager = cdm(context) ?: run {
             Log.e(TAG, "No CompanionDeviceManager")
@@ -119,8 +199,8 @@ object CompanionManager {
             onAlreadyAssociated(mac)
             return
         }
-        Log.i(TAG, "Starting CDM association request (mac=$mac)")
-        manager.associate(buildRequest(mac), callback, null)
+        Log.i(TAG, "Starting CDM association request (mac=$mac, scanMode=$scanMode)")
+        manager.associate(buildRequest(mac, scanMode), callback, null)
     }
 
     /** Arm event-driven presence wakeups for [mac] (API 31+). No-op (false) below S. */

@@ -61,6 +61,10 @@ class WatchConnectionService : Service() {
         const val EXTRA_KEEP = "keep"
         // WP-BUZZTEST: which vibration pattern byte a manual "vibrate the watch now" should play.
         const val EXTRA_PATTERN = "pattern"
+        // Force the self-contained two-put buzz (NOTIFICATION_FILTER + NOTIFICATION_PLAY) instead of
+        // the single play-only put — a diagnostic path that works even if the reserved filter is
+        // missing from the watch ("put filter + send buzz").
+        const val EXTRA_FORCE_FILTER = "force_filter"
         // WP-SYNCFIX: which sync sections an explicit Save requested (section names). Absent =
         // full reconcile (connect / periodic). Present = targeted save (e.g. just BUTTONS).
         const val EXTRA_SECTIONS = "sections"
@@ -121,10 +125,11 @@ class WatchConnectionService : Service() {
          * dropping the request. Reuses the golden NOTIFICATION_FILTER + NOTIFICATION_PLAY path via
          * [FossilController.buzz] — invents NO new wire bytes.
          */
-        fun buzzNow(context: Context, pattern: Int) {
+        fun buzzNow(context: Context, pattern: Int, forceFilterPlay: Boolean = false) {
             val intent = Intent(context, WatchConnectionService::class.java).apply {
                 action = ACTION_BUZZ
                 putExtra(EXTRA_PATTERN, pattern)
+                putExtra(EXTRA_FORCE_FILTER, forceFilterPlay)
             }
             ContextCompatStartForeground(context, intent)
         }
@@ -169,6 +174,8 @@ class WatchConnectionService : Service() {
     // vibration pattern byte to play on connect (null = no buzz pending). Cleared once the connect
     // attempt resolves (success runs the buzz; failure publishes the error).
     private val pendingBuzzPattern = AtomicReference<Int?>(null)
+    // Whether the pending connect-then-buzz should force the self-contained filter+play path.
+    private val pendingBuzzForceFilter = AtomicBoolean(false)
 
     /** WP-SYNCFIX: decode the requested sync sections from a SYNC_NOW intent (null = reconcile). */
     private fun parseSections(intent: Intent?): Set<SyncSection>? {
@@ -221,7 +228,10 @@ class WatchConnectionService : Service() {
             }
             ACTION_SYNC_NOW -> submitSync(parseSections(intent))
             ACTION_REQUEST_ACTIVITY -> submitRequestActivity(intent.getBooleanExtra(EXTRA_KEEP, false))
-            ACTION_BUZZ -> submitBuzz(intent.getIntExtra(EXTRA_PATTERN, 5))
+            ACTION_BUZZ -> submitBuzz(
+                intent.getIntExtra(EXTRA_PATTERN, 5),
+                intent.getBooleanExtra(EXTRA_FORCE_FILTER, false),
+            )
             ACTION_DISCONNECT -> submitDisconnect(stopAfter = false)
             ACTION_STOP -> submitDisconnect(stopAfter = true)
             else -> Log.d(TAG, "unhandled action $action")
@@ -357,7 +367,9 @@ class WatchConnectionService : Service() {
                 // WP-BUZZTEST: a manual buzz requested while the link was down connects here, then
                 // buzzes (we're already on the ble-worker). Runs AFTER any pending sync so it is
                 // sequenced behind those writes on the single control channel.
-                pendingBuzzPattern.getAndSet(null)?.let { pattern -> runBuzz(controller, pattern) }
+                pendingBuzzPattern.getAndSet(null)?.let { pattern ->
+                    runBuzz(controller, pattern, forceFilterPlay = pendingBuzzForceFilter.getAndSet(false))
+                }
                 // WP-ACTIVITY: also pull the activity file on connect so the Sleep screen +
                 // Dashboard steps are populated hands-free. We are already on the ble-worker, so
                 // drive the existing fetch path directly; the result is published by
@@ -562,12 +574,12 @@ class WatchConnectionService : Service() {
      * watch we publish an immediate error. The app-side already published SYNCING (see
      * [qhybrid.android.sync.ServiceBuzz]) so the blocking "Buzzing…" modal appears on tap.
      */
-    private fun submitBuzz(pattern: Int) {
+    private fun submitBuzz(pattern: Int, forceFilterPlay: Boolean = false) {
         worker.execute {
             val c = controllerRef.get()
-            Log.i(TAG, "buzzNow: controller=${c != null} linkUp=${isLinkUp()} pattern=$pattern")
+            Log.i(TAG, "buzzNow: controller=${c != null} linkUp=${isLinkUp()} pattern=$pattern forceFilter=$forceFilterPlay")
             if (c != null && isLinkUp()) {
-                runBuzz(c, pattern)
+                runBuzz(c, pattern, forceFilterPlay)
                 return@execute
             }
             // Link is down — connect first, then buzz on connect.
@@ -581,8 +593,9 @@ class WatchConnectionService : Service() {
                 )
                 return@execute
             }
-            Log.i(TAG, "buzzNow: link down — connecting then buzzing ($mac) pattern=$pattern")
+            Log.i(TAG, "buzzNow: link down — connecting then buzzing ($mac) pattern=$pattern forceFilter=$forceFilterPlay")
             pendingBuzzPattern.set(pattern)
+            pendingBuzzForceFilter.set(forceFilterPlay)
             submitConnect(mac)
         }
     }
@@ -596,15 +609,19 @@ class WatchConnectionService : Service() {
      * [FossilController.buzz] for a non-reserved pattern. Publishes [SyncState] SYNCING →
      * SUCCESS/ERROR. Always called on the ble-worker (from [submitBuzz] or the on-connect hook).
      */
-    private fun runBuzz(controller: FossilController, pattern: Int) {
+    private fun runBuzz(controller: FossilController, pattern: Int, forceFilterPlay: Boolean = false) {
         val now = System.currentTimeMillis()
         SyncState.publish(SyncState.SyncPhase.SYNCING, nowMillis = now)
         runCatching {
-            if (qhybrid.protocol.requests.fossil.notification.BuzzPatterns.isReservedPattern(pattern)) {
+            val reserved = qhybrid.protocol.requests.fossil.notification.BuzzPatterns.isReservedPattern(pattern)
+            if (reserved && !forceFilterPlay) {
                 Log.i(TAG, "buzz (play-only): pattern=$pattern")
                 controller.buzzPlayOnly(pattern)
             } else {
-                Log.i(TAG, "buzz (filter+play, non-reserved pattern): pattern=$pattern")
+                // forceFilterPlay (diagnostic "put filter + send buzz") OR a non-reserved pattern:
+                // the self-contained two-put path (NOTIFICATION_FILTER + NOTIFICATION_PLAY) that
+                // works even when the reserved buzz filter isn't on the watch.
+                Log.i(TAG, "buzz (filter+play): pattern=$pattern reserved=$reserved force=$forceFilterPlay")
                 controller.buzz(pattern)
             }
         }.onSuccess {

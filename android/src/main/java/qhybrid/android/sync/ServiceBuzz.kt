@@ -29,10 +29,11 @@ object ServiceBuzz {
     fun trigger(
         context: Context,
         pattern: Int,
+        forceFilterPlay: Boolean = false,
         now: () -> Long = System::currentTimeMillis,
     ): Boolean {
         SyncState.publish(SyncState.SyncPhase.SYNCING, nowMillis = now())
-        WatchConnectionService.buzzNow(context.applicationContext, pattern)
+        WatchConnectionService.buzzNow(context.applicationContext, pattern, forceFilterPlay)
         return true
     }
 }

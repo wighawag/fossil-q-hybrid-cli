@@ -101,15 +101,15 @@ class ConnectUploadPolicyTest {
     }
 
     @Test
-    fun newWatchProvisioning_noRules_skipsFilterPut() {
-        // With no notification rules the orchestrator skips the (empty) filter file. The reserved
-        // entries still ride along on the FIRST real notification sync via the fold-in (covered by
-        // the ServiceUploader fold-in tests), not by an empty provisioning filter.
+    fun newWatchProvisioning_noRules_stillPutsFilterForReservedEntries() {
+        // Even with NO user notification rules, provisioning uploads the filter so the uploader can
+        // fold in the reserved buzz entries (WP-BUZZ-PLAYONLY) — otherwise a freshly-provisioned
+        // watch with no rules could never buzz play-only. (Regression: this used to be skipped.)
         val up = RecordingUploader()
         val d = runConnect(up, SyncInput(watch = watch()), hadPendingSync = false, isNewWatch = true)
 
         assertTrue(d is ConnectSyncDecider.Decision.Sync)
-        assertEquals(0, up.filterUploads)
+        assertEquals(1, up.filterUploads)
     }
 
     // ---- pending user sync on a known watch: honoured (not a per-connect put) -

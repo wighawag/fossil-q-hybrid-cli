@@ -115,16 +115,19 @@ class SyncOrchestratorTest {
     // ---- empty / partial ------------------------------------------------------
 
     @Test
-    fun emptyConfigSkipsEverythingExceptSettings() {
+    fun emptyConfigSkipsEverythingExceptNotificationFilter() {
         val up = FakeUploader()
-        // No alarms/rules/buttons; settings all null → nothing uploaded.
+        // No alarms/rules/buttons; settings all null. The notification filter STILL uploads (with no
+        // user rules) so the reserved buzz entries reach the watch via the uploader's fold-in
+        // (WP-BUZZ-PLAYONLY) — otherwise a fresh watch couldn't buzz. Everything else is skipped.
         val result = SyncOrchestrator.sync(
             SyncInput(watch = watch(), settings = SyncSettings(vibrationStrength = null)), up,
         )
-        assertTrue(up.order.isEmpty())
-        assertTrue(result.performed.isEmpty())
+        assertEquals(listOf(SyncSection.NOTIFICATION_FILTER), up.order)
+        assertEquals(listOf(SyncSection.NOTIFICATION_FILTER), result.performed)
+        // The (empty) user rule list is passed through; the uploader folds reserved entries on top.
+        assertEquals(emptyList<NotificationFilterEntry>(), up.filterEntries)
         assertTrue(SyncSection.ALARMS in result.skipped)
-        assertTrue(SyncSection.NOTIFICATION_FILTER in result.skipped)
         assertTrue(SyncSection.BUTTONS in result.skipped)
     }
 

@@ -80,6 +80,7 @@ fun SettingsScreen(
         progress = progress,
         onSetVibration = vm::setVibrationStrength,
         onVibrate = vm::vibrateWatch,
+        onVibrateWithFilter = vm::vibrateWatchWithFilter,
         onSyncAll = vm::syncAll,
         onSetNudge = vm::setNudge,
         onSetTimezone = vm::setSecondTimezoneOffset,
@@ -110,6 +111,8 @@ fun SettingsContent(
     // WP-BUZZTEST: manual "vibrate the watch now" test buttons (pattern byte). No-op default so
     // existing previews/tests that don't exercise the buzz keep compiling.
     onVibrate: (Int) -> Boolean = { false },
+    // Diagnostic: buzz via the self-contained filter+play path (works without the reserved filter).
+    onVibrateWithFilter: (Int) -> Boolean = { false },
     // WP-PULLSYNC: manual "Sync all" (full reconcile). No-op default for previews/tests.
     onSyncAll: () -> Boolean = { false },
     // WP-WATCHADMIN: "remove / re-provision this watch". No-op default for previews/tests.
@@ -143,7 +146,7 @@ fun SettingsContent(
             }
 
             VibrationCard(state, onSetVibration) { note = it }
-            TestVibrationCard(state, progress, onVibrate) { note = it }
+            TestVibrationCard(state, progress, onVibrate, onVibrateWithFilter) { note = it }
             NudgeCard(state, onSetNudge) { note = it }
             TimezoneCard(state, onSetTimezone) { note = it }
             MusicAppCard(state, onSetMusicApp)
@@ -213,6 +216,7 @@ private fun TestVibrationCard(
     state: SettingsUiState,
     progress: SyncProgressUi,
     onVibrate: (Int) -> Boolean,
+    onVibrateWithFilter: (Int) -> Boolean,
     onNote: (String) -> Unit,
 ) {
     SettingCard("Test vibration") {
@@ -240,6 +244,17 @@ private fun TestVibrationCard(
                 modifier = Modifier.weight(1f),
             ) { Text("Vibrate (triple)") }
         }
+        // Diagnostic fallback: forces NOTIFICATION_FILTER + NOTIFICATION_PLAY (the self-contained
+        // path) so it buzzes even if the reserved play-only filter isn't on the watch. Use this to
+        // tell "reserved filter missing" (this works, the play-only buttons don't) from other issues.
+        OutlinedButton(
+            onClick = {
+                val wired = onVibrateWithFilter(VibrationSync.PATTERN_SINGLE)
+                onNote(buzzNote("single, filter+play", wired))
+            },
+            enabled = enabled,
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("Put filter + send buzz") }
     }
 }
 
