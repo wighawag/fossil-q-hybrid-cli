@@ -447,6 +447,36 @@ treatment for consistent SUCCESS/ERROR reporting; consider a non-blocking "Savin
 
 ---
 
+## WP-BUZZTEST — Manual "Vibrate" buttons + the file-PUT handshake discovery (IN PROGRESS)
+
+**Shipped:** two Settings "Vibrate (single/triple)" buttons (`vibrateWatch(5/1)` → seam → WP3
+service connect-then-buzz → `FossilController.buzz` = `playNotificationWithPattern`); provable core
+unit-tested. Also shipped **WP-PULLSYNC**: removed auto-sync-on-connect + the periodic safety-sync
+(deleted `SyncScheduler`/`SyncSafetyWorker`/`SyncScheduleDecider`); sync is now user-initiated
+(per-screen Save, or a Settings "Sync all" button); a brand-new watch still gets one full
+provisioning sync on first connect (`ConnectSyncDecider`).
+
+**On-device blocker found (the important discovery).** The buzz did not vibrate on Android. Peeling
+back the logcat layer-by-layer (auto-sync contention → "no type-4 ack" → stale-ack-aborts-next-put →
+close-write-blocks-10s → close-collides-with-next-open → close-swallowed-watch-stalls) revealed the
+root cause: **our `:protocol` file-PUT completion handshake was implemented by guessing and is
+wrong** (see FINDINGS.md §30, decoded from the official Fossil app). We treated `EOF_REACH(0x88)` as
+completion and `VERIFY_FILE(0x84)` as a fire-and-forget "close". The real flow is
+`PUT(3) → data → EOF_REACH(8)+CRC-check → VERIFY_FILE(4) → 0x84 success == committed`. Over BlueZ
+(CLI) the wrong handshake survived (BlueZ paces + delivers responses); over Android GATT it didn't,
+so the watch `ABORT_FILE(0x89 / "type-9")`'d and the play file never committed → no buzz.
+
+**Next (correctness foundation):** `WP-FILEPUT-RELIABLE` (see `WP-FILEPUT-RELIABLE-PROMPT.md`) —
+re-own `FilePutRawRequest` to the official VERIFY-based flow. This is shared `:protocol` code, so it
+makes EVERY file-PUT (filter / buttons / alarms / config / buzz play) reliably **verifiable** on
+Android, not just BlueZ. FILE byte formats unchanged (no wire change) — only the control handshake.
+The CLI must not regress (gate + on-device check). After it lands, the manual buzz works with the
+existing filter+play, and `WP-BUZZ-PLAYONLY` (see `WP-BUZZ-PLAYONLY-PROMPT.md`: upload reserved
+pattern filters once at connect, buzz = single verified play PUT) becomes an optional clean
+optimization rather than a correctness requirement.
+
+---
+
 ## Suggested execution order
 
 1. **WP-BTN** (fixes a real correctness bug; small, self-contained).

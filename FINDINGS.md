@@ -207,10 +207,19 @@ The complete Fossil protocol init sequence executes successfully:
 
 File transfer protocol (used by steps 5-7):
 ```
-Write file-put header to 3dda0003 → receive acceptance (type 3)
-Write data chunks to 3dda0004 → receive CRC confirmation (type 8)  
-Write file-close to 3dda0003 → receive close confirmation (type 4)
+Write PUT_FILE(op 3) header to 3dda0003 → receive accept (resp 0x83)
+Write data chunks to 3dda0004 (write-WITHOUT-response, paced)
+Watch reports EOF_REACH(resp 0x88) / WAITING_REQUEST(resp 0x8A): sizeWritten + its CRC32
+Write VERIFY_FILE(op 4) to 3dda0003 → receive VERIFY success (resp 0x84) == COMMITTED
 ```
+
+> ⚠️ **CORRECTION (2026-05-30, see §30 below).** An earlier version of this section described the
+> handshake as "data chunks → CRC confirmation (type 8) → file-close (type 4) → close
+> confirmation". That was a **mislabel decoded by guessing**, and it caused a long Android buzz
+> debugging saga. The op `8` frame is **EOF_REACH** (a progress/finish report carrying the watch's
+> CRC), NOT the final ack; op `4` is **VERIFY_FILE**, a request we must SEND and then WAIT for its
+> `0x84` success response (with retries) — it is the real "file committed" signal, NOT a
+> fire-and-forget "close". The authoritative decode (from the official Fossil app) is in §30.
 
 ---
 
@@ -2358,3 +2367,75 @@ fossil-q -d <MAC> hand-anim all
 # WARNING: Overwrites button config! Restore with:
 fossil-q -d <MAC> buttons stopwatch second_timezone forward_to_phone
 ```
+
+---
+
+## 30. File-PUT Protocol — Authoritative Decode from the Official Fossil App (2026-05-30)
+
+**Source:** deobfuscated official Fossil app under `tmp/FossilOfficialApp-deobf`, packages
+`com/fossil/blesdk/device/logic/{request,phase}`. This is **ground truth** and supersedes the
+guessed handshake previously documented in §8.
+
+### Control channel & operation codes
+
+- Control = **FTC characteristic `3dda0003`** (write-with-response / INDICATE).
+- Data = **`3dda0004`** (write-WITHOUT-response).
+- `FileControlOperationCode` (request byte; **response byte = request | 0x80**):
+
+| Op | Code | Response | Meaning |
+|----|------|----------|---------|
+| GET_FILE | 1 | 0x81 | read a file |
+| LIST_FILE | 2 | 0x82 | list files |
+| **PUT_FILE** | **3** | **0x83** | open a write (offset + length) |
+| **VERIFY_FILE** | **4** | **0x84** | finalize/verify — **this is "committed"** |
+| GET_SIZE_WRITTEN | 5 | 0x85 | query bytes written |
+| VERIFY_DATA | 6 | 0x86 | verify a data segment |
+| ERASE_DATA | 7 | 0x87 | erase |
+| **EOF_REACH** | **8** | **0x88** | watch's progress/finish report (sizeWritten + CRC32) |
+| **ABORT_FILE** | **9** | **0x89** | abort (e.g. the watch's PUT timeout) |
+| **WAITING_REQUEST** | **10** | **0x8A** | watch tells the app how long to wait (uint32 timeout) |
+| DELETE_FILE | 11 | 0x8B | delete a file |
+
+Control frame layout (little-endian): `[opByte][handle:2][status:1][...]`. Status SUCCESS is checked
+at offset 3; `WAITING_REQUEST` carries a firmware-proposed timeout (uint32) at offset 5
+(`FileControlRequest.java`).
+
+### The actual PUT sequence (`TransmitDataPhase.java`)
+
+1. **PUT_FILE(3)** request → watch accepts (**0x83**).
+2. Transfer data chunks on `3dda0004` (write-without-response, MTU-bounded, paced).
+3. Watch reports **EOF_REACH(0x88)** / **WAITING_REQUEST(0x8A)** carrying **sizeWritten + a CRC32 of
+   the bytes it received**. The app compares that CRC to its OWN `Crc32Calculator.CRC32` of the data
+   it sent (`TransmitDataPhase.m11139a`):
+   - bytes complete **and** CRC matches → step 4.
+   - otherwise → **loop back to PUT_FILE(3)** to resume from the written offset (bounded: aborts after
+     3 no-progress retries → `DATA_TRANSFER_RETRY_REACH_THRESHOLD`, `m11144q`).
+4. **VERIFY_FILE(4)** request (`VerifyFileRequest`, a `FileControlRequest` with **retryThreshold = 3**):
+   write `[0x04][handle]` on `3dda0003`, then **WAIT for the 0x84 response with SUCCESS status**.
+   **0x84-success is the only real "file committed" confirmation.**
+
+The official app sets the write type on the **characteristic** (via properties), not per-write
+(`WriteCharacteristicCommand.java`): `3dda0003` = write-with-response, `3dda0004` =
+write-without-response. It does NOT send any extra "close" beyond VERIFY_FILE.
+
+### Why our earlier implementation failed on Android (the buzz saga)
+
+Our `FilePutRawRequest` was implemented by guessing and **mislabeled the handshake**:
+- treated **op 8 (EOF_REACH)** as completion — it's only a progress/CRC report;
+- treated **op 4 (VERIFY_FILE)** as a fire-and-forget "close" — it's the finalize **request** that
+  must be sent and whose **0x84 success** must be awaited (with retries);
+- never compared the watch-reported CRC to ours;
+- ignored WAITING_REQUEST's proposed timeout.
+
+Over **BlueZ (CLI)** this still worked: BlueZ paces writes and delivers `0x84` reliably/in-order, so
+even the mislabeled path eventually completed. Over **Android GATT** it did not: we never sent a
+proper VERIFY, so the watch sat in its internal timeout (~10s) and then **ABORT_FILE (0x89)** — the
+"type-9 timeout" we kept seeing — so the file never committed and the manual buzz never fired.
+
+### Consequence / action
+
+The fix is to re-own `FilePutRawRequest` to this real flow (PUT → data → EOF/CRC-check →
+**VERIFY(0x84)**), shared by CLI + Android. This makes **every** file-PUT (notification filter,
+buttons, alarms, config, and the buzz's play file) reliably verifiable on Android, not just BlueZ.
+The FILE byte formats are unchanged — only the control handshake. Tracked in
+`WP-FILEPUT-RELIABLE-PROMPT.md`.
