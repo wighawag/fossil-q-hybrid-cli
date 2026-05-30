@@ -37,10 +37,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import qhybrid.android.notifications.VibePatterns
 import qhybrid.android.sync.ConnectionBanner
 import qhybrid.android.sync.SyncProgressUi
 import qhybrid.android.sync.SyncSavingDialog
 import qhybrid.android.sync.SyncStatusRow
+import qhybrid.protocol.requests.fossil.notification.BuzzPatterns
 
 /**
  * WP16g — the Settings screen (the SEVENTH and LAST user-facing screen). State comes from
@@ -81,7 +83,6 @@ fun SettingsScreen(
         progress = progress,
         onSetVibration = vm::setVibrationStrength,
         onVibrate = vm::vibrateWatch,
-        onVibrateWithFilter = vm::vibrateWatchWithFilter,
         onSyncAll = vm::syncAll,
         onApplyDefaults = vm::applyDefaultsToActiveWatch,
         onClearAlarms = vm::clearAlarmsOnActiveWatch,
@@ -116,8 +117,6 @@ fun SettingsContent(
     // WP-BUZZTEST: manual "vibrate the watch now" test buttons (pattern byte). No-op default so
     // existing previews/tests that don't exercise the buzz keep compiling.
     onVibrate: (Int) -> Boolean = { false },
-    // Diagnostic: buzz via the self-contained filter+play path (works without the reserved filter).
-    onVibrateWithFilter: (Int) -> Boolean = { false },
     // WP-PULLSYNC: manual "Sync all" (full reconcile). No-op default for previews/tests.
     onSyncAll: () -> Boolean = { false },
     // WP-DEFAULTS: manual "Apply defaults to this watch" (overwrite buttons + filter). No-op default.
@@ -155,7 +154,7 @@ fun SettingsContent(
             }
 
             VibrationCard(state, onSetVibration) { note = it }
-            TestVibrationCard(state, progress, onVibrate, onVibrateWithFilter) { note = it }
+            TestVibrationCard(state, progress, onVibrate) { note = it }
             NudgeCard(state, onSetNudge) { note = it }
             TimezoneCard(state, onSetTimezone) { note = it }
             MusicAppCard(state, onSetMusicApp)
@@ -219,57 +218,75 @@ private fun VibrationCard(
  * makes the watch buzz immediately (connecting first if the link is down; an honest error if
  * unreachable, surfaced via the shared [SyncStatusRow] + the blocking [SyncSavingDialog]).
  *
- *   - "Vibrate (single)" → pattern 5 (ONE_SHORT_VIBE — strong single buzz)
- *   - "Vibrate (triple)" → pattern 1 (CALL — triple buzz)
+ * WP-SYNCSTATUS: replaced the old fixed two buttons + diagnostic "put filter + send buzz" button
+ * with a **vibration-pattern dropdown + a single "Buzz" button** so the user can feel each useful
+ * pattern. The dropdown lists EXACTLY the reserved patterns
+ * ([qhybrid.protocol.requests.fossil.notification.BuzzPatterns.RESERVED_PATTERNS] = {1,2,3,5,6,7,8}
+ * — silent 0/9 and the 4≡3 duplicate are skipped) because those are the ones already on the watch
+ * in the reserved filter, so a **play-only** buzz ([onVibrate]/`VibrationSync.buzz` with
+ * `forceFilterPlay=false`) applies them. Default selection is 5 ([VibrationSync.PATTERN_SINGLE]).
  *
- * The buttons are disabled while a buzz/sync is in flight and when there is no active watch
- * (reusing [SyncProgressUi.saveEnabled], the same rule the Save-to-watch buttons use). No new wire
- * bytes — reuses [qhybrid.protocol.FossilController.buzz]. UI rendering is on-device-pending.
+ * The button is disabled while a buzz/sync is in flight and when there is no active watch (reusing
+ * [SyncProgressUi.saveEnabled]). No new wire bytes — reuses the WP3 service's play-only buzz path.
+ * UI rendering is on-device-pending.
  */
 @Composable
 private fun TestVibrationCard(
     state: SettingsUiState,
     progress: SyncProgressUi,
     onVibrate: (Int) -> Boolean,
-    onVibrateWithFilter: (Int) -> Boolean,
     onNote: (String) -> Unit,
 ) {
     SettingCard("Test vibration") {
         Text(
-            "Make the watch buzz now to test it. Connects first if needed; reports an error if the " +
-                "watch is unreachable.",
+            "Pick a vibration pattern and buzz the watch to feel it. Connects first if needed; " +
+                "reports an error if the watch is unreachable.",
             style = MaterialTheme.typography.labelSmall,
         )
         val enabled = progress.saveEnabled(state.hasActiveWatch)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(
-                onClick = {
-                    val wired = onVibrate(VibrationSync.PATTERN_SINGLE)
-                    onNote(buzzNote("single", wired))
-                },
-                enabled = enabled,
-                modifier = Modifier.weight(1f),
-            ) { Text("Vibrate (single)") }
-            Button(
-                onClick = {
-                    val wired = onVibrate(VibrationSync.PATTERN_TRIPLE)
-                    onNote(buzzNote("triple", wired))
-                },
-                enabled = enabled,
-                modifier = Modifier.weight(1f),
-            ) { Text("Vibrate (triple)") }
+        // Only the reserved (useful) patterns are offered — those are on the watch's reserved
+        // filter, so the play-only buzz can apply them.
+        var selected by remember { mutableStateOf(VibrationSync.PATTERN_SINGLE) }
+        var expanded by remember { mutableStateOf(false) }
+        ExposedDropdownMenuBox(
+            expanded = expanded,
+            onExpandedChange = { expanded = it },
+        ) {
+            OutlinedTextField(
+                value = "$selected — ${VibePatterns.label(selected)}",
+                onValueChange = {},
+                readOnly = true,
+                label = { Text("Vibration pattern") },
+                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .menuAnchor(MenuAnchorType.PrimaryNotEditable),
+            )
+            ExposedDropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false },
+            ) {
+                BuzzPatterns.RESERVED_PATTERNS.forEach { p ->
+                    DropdownMenuItem(
+                        text = { Text("$p — ${VibePatterns.label(p)}") },
+                        onClick = {
+                            selected = p
+                            expanded = false
+                        },
+                    )
+                }
+            }
         }
-        // Diagnostic fallback: forces NOTIFICATION_FILTER + NOTIFICATION_PLAY (the self-contained
-        // path) so it buzzes even if the reserved play-only filter isn't on the watch. Use this to
-        // tell "reserved filter missing" (this works, the play-only buttons don't) from other issues.
-        OutlinedButton(
+        Button(
             onClick = {
-                val wired = onVibrateWithFilter(VibrationSync.PATTERN_SINGLE)
-                onNote(buzzNote("single, filter+play", wired))
+                // Play-only: the reserved patterns are already on the watch, so a single
+                // NOTIFICATION_PLAY put buzzes the selected pattern.
+                val wired = onVibrate(selected)
+                onNote(buzzNote(VibePatterns.label(selected), wired))
             },
             enabled = enabled,
             modifier = Modifier.fillMaxWidth(),
-        ) { Text("Put filter + send buzz") }
+        ) { Text("Buzz") }
     }
 }
 

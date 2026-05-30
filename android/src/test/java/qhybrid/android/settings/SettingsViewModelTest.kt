@@ -298,6 +298,33 @@ class SettingsViewModelTest : DbTestBase() {
         assertEquals(0, vibe.count)
     }
 
+    // ---- WP-SYNCSTATUS: vibration-pattern dropdown (reserved patterns, play-only) ----
+
+    @Test
+    fun dropdownOffersExactlyTheReservedPatterns() {
+        // The Settings dropdown's source: distinct useful patterns only (no silent 0/9, no 4≡3 dup).
+        assertEquals(
+            listOf(1, 2, 3, 5, 6, 7, 8),
+            qhybrid.protocol.requests.fossil.notification.BuzzPatterns.RESERVED_PATTERNS.toList(),
+        )
+    }
+
+    @Test
+    fun eachReservedPatternDrivesPlayOnlyBuzz() {
+        // The Buzz button calls vibrateWatch(selected) (play-only) for whatever reserved pattern
+        // the dropdown selected — all 7 are already on the watch in the reserved filter.
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }
+        for (p in qhybrid.protocol.requests.fossil.notification.BuzzPatterns.RESERVED_PATTERNS) {
+            val vibe = FakeVibration(wired = true)
+            val model = vm(vibration = vibe)
+            awaitState(model.uiState) { it.hasActiveWatch }
+            model.vibrateWatch(p)
+            assertEquals(1, vibe.count)
+            assertEquals(p, vibe.patterns.last())
+            assertFalse("reserved buzz is play-only (no forced filter)", vibe.forceFilterFlags.last())
+        }
+    }
+
     @Test
     fun productionVibrationIsWired() {
         assertTrue(ServiceVibrationSync.VIBRATION_WIRED)
