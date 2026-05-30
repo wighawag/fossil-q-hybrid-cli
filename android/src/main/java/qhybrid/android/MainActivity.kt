@@ -128,10 +128,13 @@ class MainActivity : ComponentActivity() {
         // existing WP15 log viewer (LogConsole) as an overlay surface — NOT a second viewer,
         // and reachable in release builds too (the Debug Menu stays release-gated).
         var showLogs by remember { mutableStateOf(false) }
+        // WP-DEFAULTS: the Settings tab has a "Defaults for new watches" entry that opens the
+        // app-level defaults editor as an overlay surface (same overlay pattern as the log viewer).
+        var showDefaults by remember { mutableStateOf(false) }
         // WP16b: bottom-nav between the Dashboard and the Alarms screen. The Setup/Debug
         // gears overlay on top of whichever home tab is selected.
         var tab by remember { mutableStateOf(HomeTab.DASHBOARD) }
-        val onHome = !showDebug && !showSetup && !showLogs
+        val onHome = !showDebug && !showSetup && !showLogs && !showDefaults
         // Bumped whenever an association completes so the "already paired" bonded-watch list (and
         // anything else watch-registry-derived) recomputes WITHOUT needing an app relaunch.
         var bondedRefresh by remember { mutableStateOf(0) }
@@ -160,7 +163,9 @@ class MainActivity : ComponentActivity() {
         val addWatchShowAll: () -> Unit = {
             startAssociate(null, associateLauncher::launch, CompanionManager.ScanMode.ALL)
         }
-        val openSetupForMac: () -> Unit = { showSetup = true; showDebug = false; showLogs = false }
+        val openSetupForMac: () -> Unit = { showSetup = true; showDebug = false; showLogs = false; showDefaults = false }
+        // WP-DEFAULTS: system-back closes the defaults editor / log overlays back to the home tabs.
+        androidx.activity.compose.BackHandler(enabled = showDefaults) { showDefaults = false }
         // Already-bonded (OS-paired) Fossil watches that aren't added in the app yet — offered for
         // one-tap add so the user need not "Forget" + re-pair. Recomputed when entering the home
         // surface (cheap; reads the OS bonded-device list). Adding one associates by its exact MAC.
@@ -184,6 +189,7 @@ class MainActivity : ComponentActivity() {
             showDebug -> "Debug Menu"
             showSetup -> "Setup"
             showLogs -> "Logs"
+            showDefaults -> "Defaults for new watches"
             tab == HomeTab.ALARMS -> "Alarms"
             tab == HomeTab.NOTIFICATIONS -> "Notifications"
             tab == HomeTab.BUTTONS -> "Buttons"
@@ -197,11 +203,11 @@ class MainActivity : ComponentActivity() {
                 TopAppBar(
                     title = { Text(title) },
                     actions = {
-                        IconButton(onClick = { showSetup = !showSetup; showDebug = false; showLogs = false }) {
+                        IconButton(onClick = { showSetup = !showSetup; showDebug = false; showLogs = false; showDefaults = false }) {
                             Icon(Icons.Filled.Settings, contentDescription = "Setup")
                         }
                         if (DebugMenu.isEnabled()) {
-                            IconButton(onClick = { showDebug = !showDebug; showSetup = false; showLogs = false }) {
+                            IconButton(onClick = { showDebug = !showDebug; showSetup = false; showLogs = false; showDefaults = false }) {
                                 Icon(Icons.Filled.Build, contentDescription = "Debug menu")
                             }
                         }
@@ -263,12 +269,16 @@ class MainActivity : ComponentActivity() {
                     showDebug && DebugMenu.isEnabled() -> DebugMenuScreen()
                     showSetup -> HomeScreen()
                     showLogs -> LogConsole()
+                    showDefaults -> qhybrid.android.defaults.DefaultsScreen()
                     tab == HomeTab.ALARMS -> AlarmsScreen()
                     tab == HomeTab.NOTIFICATIONS -> NotificationsScreen()
                     tab == HomeTab.BUTTONS -> ButtonsScreen()
                     tab == HomeTab.CALIBRATION -> CalibrationScreen()
                     tab == HomeTab.SLEEP -> SleepActivityScreen()
-                    tab == HomeTab.SETTINGS -> SettingsScreen(onOpenLogs = { showLogs = true })
+                    tab == HomeTab.SETTINGS -> SettingsScreen(
+                        onOpenLogs = { showLogs = true },
+                        onOpenDefaults = { showDefaults = true },
+                    )
                     else -> DashboardScreen(
                         onAddWatch = addWatchByScan,
                         onShowAllDevices = addWatchShowAll,

@@ -65,6 +65,7 @@ import qhybrid.android.sync.SyncStatusRow
 @Composable
 fun SettingsScreen(
     onOpenLogs: () -> Unit,
+    onOpenDefaults: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -89,6 +90,7 @@ fun SettingsScreen(
         onTransfer = vm::transferSettings,
         onRemoveWatch = vm::removeActiveWatch,
         onOpenLogs = onOpenLogs,
+        onOpenDefaults = onOpenDefaults,
         modifier = modifier,
     )
 }
@@ -107,6 +109,7 @@ fun SettingsContent(
     onSetMusicApp: (String?) -> Unit,
     onTransfer: (String, String) -> Boolean,
     onOpenLogs: () -> Unit,
+    onOpenDefaults: () -> Unit = {},
     modifier: Modifier = Modifier,
     progress: SyncProgressUi = SyncProgressUi.IDLE,
     // WP-BUZZTEST: manual "vibrate the watch now" test buttons (pattern byte). No-op default so
@@ -155,6 +158,8 @@ fun SettingsContent(
             MusicAppCard(state, onSetMusicApp)
             HorizontalDivider()
             SyncAllCard(state, progress, onSyncAll) { note = it }
+            HorizontalDivider()
+            DefaultsEntryCard(onOpenDefaults)
             HorizontalDivider()
             ApplyDefaultsCard(state, progress, onApplyDefaults) { note = it }
             HorizontalDivider()
@@ -457,6 +462,24 @@ private fun SyncAllCard(
             enabled = progress.saveEnabled(state.hasActiveWatch),
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Sync all") }
+    }
+}
+
+// ---- defaults editor entry (WP-DEFAULTS sub-part 4) -------------------------
+
+/** WP-DEFAULTS — a card that navigates to the app-level "Defaults for new watches" editor. */
+@Composable
+private fun DefaultsEntryCard(onOpenDefaults: () -> Unit) {
+    SettingCard("Defaults for new watches") {
+        Text(
+            "Edit the buttons / alarms / notification rules applied when you ADD a new watch (the " +
+                "sections the watch can't report back). Readable settings (vibration, step goal, " +
+                "nudge, 2nd timezone) are read FROM the watch, so they're not here.",
+            style = MaterialTheme.typography.labelSmall,
+        )
+        OutlinedButton(onClick = onOpenDefaults, modifier = Modifier.fillMaxWidth()) {
+            Text("Edit defaults")
+        }
     }
 }
 
