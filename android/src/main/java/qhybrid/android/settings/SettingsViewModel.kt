@@ -296,7 +296,7 @@ open class SettingsViewModel(
                         fullSync = ServiceFullSync(appContext),
                         watchAdmin = ServiceWatchAdminSync(
                             context = appContext,
-                            removeFromDb = { mac -> WatchRepository(appContext).deleteWatch(mac) },
+                            removeFromDb = { mac -> WatchRepository(appContext).deleteWatchAndPromote(mac) },
                             launchDbRemoval = { block ->
                                 kotlinx.coroutines.CoroutineScope(
                                     kotlinx.coroutines.Dispatchers.IO +

@@ -32,6 +32,28 @@ class WatchRepository(
     fun observeWatches(): Flow<List<WatchEntity>> = watchDao.observeAll()
     suspend fun deleteWatch(mac: String) = watchDao.deleteByMac(mac)
 
+    /**
+     * Delete [mac]'s row (+ CASCADE children) and, if it was the active watch, PROMOTE one of the
+     * remaining watches to active so the app is never left "watch-less" while other watches still
+     * exist. Runs in a single transaction so there is never a window with zero/multiple active rows.
+     *
+     * Fixes the Settings-screen symptom where removing the active watch (with another watch still
+     * registered) left no active watch — disabling the per-watch controls (incl. "Remove watch")
+     * even though a remaining watch could be administered. The promoted watch is the
+     * first by name ([WatchDao.getAll] is ordered by name), matching the registry's ordering.
+     */
+    suspend fun deleteWatchAndPromote(mac: String) {
+        val normalized = mac.uppercase()
+        db.withTransaction {
+            val wasActive = watchDao.getByMac(normalized)?.isActive == true
+            watchDao.deleteByMac(normalized)
+            if (wasActive) {
+                val next = watchDao.getAll().firstOrNull()
+                if (next != null) watchDao.setActive(next.macAddress)
+            }
+        }
+    }
+
     suspend fun getActiveWatch(): WatchEntity? = watchDao.getActive()
     fun observeActiveWatch(): Flow<WatchEntity?> = watchDao.observeActive()
     suspend fun setActiveWatch(mac: String) = watchDao.setActive(mac)
