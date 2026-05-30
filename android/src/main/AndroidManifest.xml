@@ -36,6 +36,11 @@
     <!-- WP3: show the persistent foreground-service notification on Android 13+. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- WP13: read the user's calendar to mirror upcoming events into the watch's calendar alarm
+         slots (16..31). A normal runtime permission (requested via the permissions API from
+         Setup); the read is app-only (CalendarContract.Instances) — no wire bytes change. -->
+    <uses-permission android:name="android.permission.READ_CALENDAR" />
+
     <!-- WP16c: package visibility for the installed-app picker (Notifications screen).
          Android 11+ (API 30+) filters PackageManager queries to your visible set unless you
          declare what you need to see. This <queries> entry surfaces apps that have a LAUNCHER

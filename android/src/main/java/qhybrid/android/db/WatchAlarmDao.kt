@@ -31,6 +31,14 @@ interface WatchAlarmDao {
     @Query("DELETE FROM watch_alarms WHERE watchMac = :mac AND slotId BETWEEN 0 AND 15")
     suspend fun deleteStandardForWatch(mac: String)
 
+    /**
+     * WP13 — delete only the CALENDAR-sync slots (16..31, owned by WP9/WP13) for [mac], leaving the
+     * standard user alarm slots (0..15) intact. Used by [WatchRepository.replaceCalendarAlarms] for
+     * the calendar full-replace (mirror of [deleteStandardForWatch]).
+     */
+    @Query("DELETE FROM watch_alarms WHERE watchMac = :mac AND slotId BETWEEN 16 AND 31")
+    suspend fun deleteCalendarForWatch(mac: String)
+
     @Query("DELETE FROM watch_alarms WHERE watchMac = :mac AND slotId = :slotId")
     suspend fun deleteSlot(mac: String, slotId: Int)
 

@@ -125,6 +125,25 @@ class WatchRepository(
      */
     suspend fun clearStandardAlarms(mac: String) = alarmDao.deleteStandardForWatch(mac.uppercase())
 
+    /**
+     * WP13 — full-REPLACE the CALENDAR-owned alarm slots (16..31) for [mac] with [rows], in one
+     * transaction: delete the existing 16..31 rows then upsert the supplied ones. The standard
+     * user alarm slots (0..15, the WP16b Alarms screen) are NEVER touched — [rows] must already be
+     * in the calendar range (WP9 assigns slots 16, 17, …). Each row is re-keyed to the normalized
+     * (upper-case) [mac] and its `updatedAt` is stamped (the single WP-SYNCSTATUS chokepoint), so a
+     * calendar refresh shows the new rows as "pending" until the next alarm sync re-pushes the
+     * 32-slot file (then `alarmsSyncedAt` flips them to "on watch"). Mirrors
+     * [replaceDefaultsSections] but scoped to the calendar range.
+     */
+    suspend fun replaceCalendarAlarms(mac: String, rows: List<WatchAlarmEntity>) {
+        val normalized = mac.uppercase()
+        val ts = now()
+        db.withTransaction {
+            alarmDao.deleteCalendarForWatch(normalized)
+            alarmDao.upsertAll(rows.map { it.copy(watchMac = normalized, updatedAt = ts) })
+        }
+    }
+
     suspend fun getRules(mac: String) = ruleDao.getForWatch(mac)
     fun observeRules(mac: String) = ruleDao.observeForWatch(mac)
     suspend fun upsertRule(rule: NotificationRuleEntity) = ruleDao.upsert(rule.copy(updatedAt = now()))
