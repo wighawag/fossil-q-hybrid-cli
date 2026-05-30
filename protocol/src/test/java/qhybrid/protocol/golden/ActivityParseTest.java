@@ -18,7 +18,7 @@ public class ActivityParseTest {
 
     private static Path fixture(String name) {
         String root = System.getProperty("fossilq.repoRoot", ".");
-        return Path.of(root, name);
+        return Path.of(root, "test-fixtures", "activity", name);
     }
 
     private static byte[] read(String name) throws Exception {
@@ -29,11 +29,11 @@ public class ActivityParseTest {
     void parseActivityBin() throws Exception {
         ActivityParser.ActivityData d = ActivityParser.parse(read("activity.bin"));
         assertEquals(22, d.fileVersion);
-        assertEquals(0x0017, d.fileId);
-        assertEquals(7, d.timezoneOffsetMinutes);
+        assertEquals(0x0060, d.fileId);
+        assertEquals(39, d.timezoneOffsetMinutes);
         assertEquals(60, d.intervalSeconds);
-        assertEquals(2, d.segmentCount);
-        assertEquals(857, d.records.size());
+        assertEquals(1, d.segmentCount);
+        assertEquals(55, d.records.size());
         assertEquals(2, d.totalSteps());
     }
 

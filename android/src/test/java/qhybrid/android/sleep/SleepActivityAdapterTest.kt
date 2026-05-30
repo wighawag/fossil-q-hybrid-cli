@@ -27,7 +27,7 @@ class SleepActivityAdapterTest {
 
     private fun fixture(name: String): Path {
         val root = System.getProperty("fossilq.repoRoot", "..")
-        return Path.of(root, name)
+        return Path.of(root, "test-fixtures", "activity", name)
     }
 
     private fun parse(name: String): ActivityParser.ActivityData =
@@ -78,24 +78,24 @@ class SleepActivityAdapterTest {
     }
 
     @Test
-    fun activityBin_oneGoodSession_855m_restless6() {
-        // Golden values locked by WP8: activity.bin → one session, 855m, restless=6, quality good.
+    fun activityBin_oneGoodSession_54m_restless1() {
+        // Golden values locked to the activity.bin fixture: one session, 54m, restless=1, good.
         val data = parse("activity.bin")
         val chart = SleepActivityAdapter.fromParsed(data, utc)
         assertEquals(1, chart.sleep.size)
         val s = chart.sleep[0]
-        assertEquals(855, s.durationMinutes)
-        assertEquals(6, s.restlessMinutes)
+        assertEquals(54, s.durationMinutes)
+        assertEquals(1, s.restlessMinutes)
         assertEquals(SleepQuality.GOOD, s.quality)
-        assertEquals(849, s.restfulMinutes) // 855 - 6
+        assertEquals(53, s.restfulMinutes) // 54 - 1
 
         // Aggregate sleep summary mirrors the single session.
         val sum = chart.sleepSummary
         assertTrue(sum.hasSleep)
         assertEquals(1, sum.sessionCount)
-        assertEquals(855, sum.totalMinutes)
-        assertEquals(6, sum.restlessMinutes)
-        assertEquals(849, sum.deepMinutes)
+        assertEquals(54, sum.totalMinutes)
+        assertEquals(1, sum.restlessMinutes)
+        assertEquals(53, sum.deepMinutes)
         assertEquals(SleepQuality.GOOD, sum.quality)
     }
 

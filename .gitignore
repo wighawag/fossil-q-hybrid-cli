@@ -27,6 +27,9 @@ local.properties
 !gradle-wrapper.properties
 
 *.bin
+# ...but DO track the activity test fixtures (golden inputs for the activity/sleep tests).
+!test-fixtures/
+!test-fixtures/**
 
 *.log
 notes

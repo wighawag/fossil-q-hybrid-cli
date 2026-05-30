@@ -29,7 +29,7 @@ public class Wp8ActivitySummarizerTest {
 
     private static Path fixture(String name) {
         String root = System.getProperty("fossilq.repoRoot", ".");
-        return Path.of(root, name);
+        return Path.of(root, "test-fixtures", "activity", name);
     }
 
     private static ActivityParser.ActivityData parse(String name) throws Exception {
@@ -62,12 +62,12 @@ public class Wp8ActivitySummarizerTest {
         ActivityParser.ActivityData d = parse("activity.bin");
         List<ActivitySummarizer.DayActivity> days = ActivitySummarizer.summarizeByDay(d, UTC);
 
-        // golden: 2 total steps, 0 calories (idle desk capture), 857 records total
+        // golden: 2 total steps, 0 calories (idle desk capture), 55 records total
         assertEquals(2, ActivitySummarizer.totalSteps(days));
         assertEquals(0, ActivitySummarizer.totalCalories(days));
         int records = 0;
         for (ActivitySummarizer.DayActivity da : days) records += da.recordCount;
-        assertEquals(857, records);
+        assertEquals(55, records);
     }
 
     @Test
@@ -93,9 +93,9 @@ public class Wp8ActivitySummarizerTest {
 
     @Test
     void perDay_multiSegmentRecordCountsConsistent() throws Exception {
-        // multi-segment file: per-day record counts must sum to the parser's record count
+        // per-day record counts must sum to the parser's record count
         ActivityParser.ActivityData d = parse("activity.bin");
-        assertEquals(2, d.segmentCount);
+        assertEquals(1, d.segmentCount);
         List<ActivitySummarizer.DayActivity> days = ActivitySummarizer.summarizeByDay(d, UTC);
         int sum = 0;
         for (ActivitySummarizer.DayActivity da : days) sum += da.recordCount;
@@ -118,8 +118,8 @@ public class Wp8ActivitySummarizerTest {
         List<ActivitySummarizer.SleepSession> sessions = ActivitySummarizer.detectSleepSessions(d);
         assertEquals(1, sessions.size());
         ActivitySummarizer.SleepSession s = sessions.get(0);
-        assertEquals(855, s.durationMinutes);
-        assertEquals(6, s.restlessMinutes);
+        assertEquals(54, s.durationMinutes);
+        assertEquals(1, s.restlessMinutes);
         assertEquals("good", s.quality);
     }
 

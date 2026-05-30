@@ -49,7 +49,12 @@ import qhybrid.android.db.WatchEntity
  * in tests). On-device verification pending: live rendering and the Find Watch choreography.
  */
 @Composable
-fun DashboardScreen(modifier: Modifier = Modifier) {
+fun DashboardScreen(
+    modifier: Modifier = Modifier,
+    // Add a watch by scanning for Fossil watches (the OS chooser). Hosted by MainActivity because
+    // CDM association needs an Activity for the IntentSender; default no-op for previews.
+    onAddWatch: () -> Unit = {},
+) {
     val context = LocalContext.current
     val vm: DashboardViewModel = viewModel(factory = DashboardViewModel.factory(context))
     val state by vm.uiState.collectAsStateWithLifecycle()
@@ -61,6 +66,7 @@ fun DashboardScreen(modifier: Modifier = Modifier) {
         onDisconnect = vm::disconnect,
         onSync = vm::sync,
         onFindWatch = vm::findWatch,
+        onAddWatch = onAddWatch,
         modifier = modifier,
     )
 }
@@ -78,6 +84,7 @@ fun DashboardContent(
     onSync: () -> Unit,
     onFindWatch: () -> Unit,
     modifier: Modifier = Modifier,
+    onAddWatch: () -> Unit = {},
 ) {
     Column(
         modifier = modifier
@@ -86,6 +93,12 @@ fun DashboardContent(
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        if (state.watches.isEmpty()) {
+            // First-run / no-watch state: a prominent CTA to add a watch (replaces the old passive
+            // hint + the hardcoded-MAC setup field). Discovery filters the chooser to Fossil watches.
+            NoWatchCard(onAddWatch)
+            return@Column
+        }
         StatusCard(state)
         StepsCard(state)
         ActiveWatchSelector(
@@ -99,7 +112,32 @@ fun DashboardContent(
             onDisconnect = onDisconnect,
             onSync = onSync,
             onFindWatch = onFindWatch,
+            onAddWatch = onAddWatch,
         )
+    }
+}
+
+/**
+ * Empty-state card shown when no watch is registered: explains the app needs a watch and offers a
+ * single "Add a watch" action that scans for Fossil watches via the OS companion-device chooser.
+ */
+@Composable
+private fun NoWatchCard(onAddWatch: () -> Unit) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text("No watch yet", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Add your Fossil Q hybrid watch to get started. Make sure it's nearby and " +
+                    "Bluetooth is on, then tap below to scan.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Button(onClick = onAddWatch, modifier = Modifier.fillMaxWidth()) {
+                Text("Add a watch")
+            }
+        }
     }
 }
 
@@ -230,6 +268,7 @@ private fun ActionButtons(
     onDisconnect: () -> Unit,
     onSync: () -> Unit,
     onFindWatch: () -> Unit,
+    onAddWatch: () -> Unit = {},
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(
@@ -264,6 +303,11 @@ private fun ActionButtons(
                 onClick = onFindWatch,
             ) { Text("Find Watch") }
         }
+        // Add another watch (the app supports a multi-watch registry; single active at a time).
+        OutlinedButton(
+            modifier = Modifier.fillMaxWidth(),
+            onClick = onAddWatch,
+        ) { Text("Add another watch") }
         // On-device-pending note: Find Watch choreography (phone→watch) is a WP16a stub.
         Text(
             "Find Watch is wired but the on-watch alert choreography is pending on-device work.",

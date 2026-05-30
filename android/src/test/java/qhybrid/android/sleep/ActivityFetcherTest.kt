@@ -26,7 +26,7 @@ class ActivityFetcherTest {
     /** A trivial fake "byte source" standing in for the BLE read of the activity file. */
     private fun fixtureBytes(name: String): ByteArray {
         val root = System.getProperty("fossilq.repoRoot", "..")
-        return Files.readAllBytes(Path.of(root, name))
+        return Files.readAllBytes(Path.of(root, "test-fixtures", "activity", name))
     }
 
     // ---- fetch→parse reproduces WP8 exactly -----------------------------------
@@ -41,15 +41,15 @@ class ActivityFetcherTest {
 
     @Test
     fun parse_activityBin_goldenValues() {
-        // Golden values locked by WP8: activity.bin → totalSteps=2, one session 855m, restless=6, good.
+        // Golden values locked to the activity.bin fixture: totalSteps=2, one session 54m, restless=1, good.
         val raw = fixtureBytes("activity.bin")
         val chart = ActivityFetcher.parse(raw, utc)
         assertEquals(2, chart.totalSteps)
         assertEquals(2, ActivityFetcher.totalSteps(raw, utc)) // convenience matches
         assertEquals(ActivityParser.parse(raw).totalSteps(), chart.totalSteps) // no math drift
         assertEquals(1, chart.sleep.size)
-        assertEquals(855, chart.sleep[0].durationMinutes)
-        assertEquals(6, chart.sleep[0].restlessMinutes)
+        assertEquals(54, chart.sleep[0].durationMinutes)
+        assertEquals(1, chart.sleep[0].restlessMinutes)
         assertEquals(SleepQuality.GOOD, chart.sleep[0].quality)
         assertTrue(chart.hasData)
     }

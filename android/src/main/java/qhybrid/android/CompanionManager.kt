@@ -36,6 +36,14 @@ object CompanionManager {
     private const val PREFS = "fossilq_companion"
     private const val KEY_MAC = "associated_mac"
 
+    /**
+     * Advertised-name pattern for Fossil Q hybrid watches. A fresh (unbonded) Q hybrid advertises
+     * as `Fossil` / `FossilQ Hybrid` (FINDINGS #6), so this restricts the CDM chooser to Fossil
+     * watches when adding by scan (no MAC given). NOTE: a watch that is ALREADY bonded uses directed
+     * advertising and won't appear in a general scan (FINDINGS #7) — re-add it by typing its MAC.
+     */
+    const val FOSSIL_NAME_PATTERN = "(?i)fossil.*"
+
     // ---- associated-MAC persistence (isolated; WP4 can replace) -------------
 
     fun getAssociatedMac(context: Context): String? =
@@ -66,18 +74,26 @@ object CompanionManager {
     }
 
     /**
-     * Build the CDM association request for a single BLE device, optionally filtered to
-     * a known MAC. Returns null if BLE filtering isn't possible.
+     * Build the CDM association request.
+     *
+     * - **With a valid [mac]** → a single-device request filtered to that exact address (used to
+     *   re-pair a known watch, incl. a previously-bonded one that only directed-advertises).
+     * - **Without a MAC** → a multi-device scan chooser filtered by the Fossil advertised-name
+     *   pattern ([FOSSIL_NAME_PATTERN]) so the OS picker lists ONLY Fossil watches the user can add.
      */
     private fun buildRequest(mac: String?): AssociationRequest {
         val filterBuilder = BluetoothLeDeviceFilter.Builder()
-        if (mac != null && BluetoothAdapter.checkBluetoothAddress(mac)) {
+        val hasMac = mac != null && BluetoothAdapter.checkBluetoothAddress(mac)
+        if (hasMac) {
             val scan = ScanFilter.Builder().setDeviceAddress(mac).build()
             filterBuilder.setScanFilter(scan)
+        } else {
+            // No MAC: scan for Fossil watches by advertised name so the chooser is watch-only.
+            filterBuilder.setNamePattern(java.util.regex.Pattern.compile(FOSSIL_NAME_PATTERN))
         }
         return AssociationRequest.Builder()
             .addDeviceFilter(filterBuilder.build())
-            .setSingleDevice(mac != null)
+            .setSingleDevice(hasMac)
             .build()
     }
 

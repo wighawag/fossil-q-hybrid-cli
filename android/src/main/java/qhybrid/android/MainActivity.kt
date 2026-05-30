@@ -85,7 +85,6 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val TAG = "FossilQ-WP3"
-        private const val DEFAULT_MAC = "D9:20:71:11:74:2A"
     }
 
     // Registered before STARTED (field init runs during onCreate before super) so it is
@@ -138,6 +137,24 @@ class MainActivity : ComponentActivity() {
         // gears overlay on top of whichever home tab is selected.
         var tab by remember { mutableStateOf(HomeTab.DASHBOARD) }
         val onHome = !showDebug && !showSetup && !showLogs
+
+        // Hoisted CDM association launcher so BOTH the Dashboard "Add watch" CTA and the Setup
+        // screen's "Associate watch" can start the OS device chooser. The chosen device's MAC is
+        // persisted + the watch registered; null/cancelled is ignored.
+        val associateLauncher = rememberLauncherForActivityResult(
+            ActivityResultContracts.StartIntentSenderForResult()
+        ) { result ->
+            val chosenMac = extractChosenMac(result.data)
+            if (chosenMac != null) {
+                Log.i(TAG, "Associated with $chosenMac")
+                onAssociated(chosenMac)
+            } else {
+                Log.w(TAG, "Association cancelled / no device (resultCode=${result.resultCode})")
+            }
+        }
+        // Add a watch by SCAN (no MAC) — the OS chooser lists only Fossil watches. The Dashboard
+        // empty-state and action button both call this; manual-MAC entry stays in Setup.
+        val addWatchByScan: () -> Unit = { startAssociate(null, associateLauncher::launch) }
         val title = when {
             showDebug -> "Debug Menu"
             showSetup -> "Setup"
@@ -227,7 +244,7 @@ class MainActivity : ComponentActivity() {
                     tab == HomeTab.CALIBRATION -> CalibrationScreen()
                     tab == HomeTab.SLEEP -> SleepActivityScreen()
                     tab == HomeTab.SETTINGS -> SettingsScreen(onOpenLogs = { showLogs = true })
-                    else -> DashboardScreen()
+                    else -> DashboardScreen(onAddWatch = addWatchByScan)
                 }
             }
         }
@@ -236,8 +253,10 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun HomeScreen() {
         val status by WatchState.status.collectAsStateWithLifecycle()
+        // Prefill with the already-associated watch's MAC if any; otherwise EMPTY (the user adds a
+        // watch by scanning for Fossil watches, or types a MAC to re-pair a known/bonded one).
         var mac by remember {
-            mutableStateOf(CompanionManager.getAssociatedMac(this) ?: DEFAULT_MAC)
+            mutableStateOf(CompanionManager.getAssociatedMac(this) ?: "")
         }
         var permMsg by remember {
             mutableStateOf(
@@ -288,24 +307,35 @@ class MainActivity : ComponentActivity() {
                 style = MaterialTheme.typography.bodySmall
             )
 
-            OutlinedTextField(
-                value = mac,
-                onValueChange = { mac = it },
-                label = { Text("Watch MAC") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-
             Button(
                 onClick = { permissionLauncher.launch(requiredPermissions()) },
                 modifier = Modifier.fillMaxWidth()
             ) { Text("Request Bluetooth permission") }
             Text(permMsg, style = MaterialTheme.typography.bodySmall)
 
+            // Primary add path: scan for Fossil watches (no MAC) — the OS chooser is name-filtered.
             Button(
-                onClick = { startAssociate(mac.trim(), associateLauncher::launch) },
+                onClick = { startAssociate(null, associateLauncher::launch) },
                 modifier = Modifier.fillMaxWidth()
-            ) { Text("Associate watch (CompanionDeviceManager)") }
+            ) { Text("Scan for Fossil watch") }
+
+            Text(
+                "Or enter a MAC to re-pair a known watch (an already-paired watch won't show in a " +
+                    "scan because it only advertises to its bonded device):",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            OutlinedTextField(
+                value = mac,
+                onValueChange = { mac = it },
+                label = { Text("Watch MAC (optional)") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedButton(
+                onClick = { startAssociate(mac.trim().ifEmpty { null }, associateLauncher::launch) },
+                enabled = mac.isNotBlank(),
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Associate by MAC") }
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -318,7 +348,7 @@ class MainActivity : ComponentActivity() {
                             permMsg = "Missing Bluetooth permission — tap 'Request' first."
                             return@Button
                         }
-                        WatchConnectionService.connectNow(this@MainActivity, mac.trim())
+                        WatchConnectionService.connectNow(this@MainActivity, mac.trim().ifEmpty { null })
                     }
                 ) { Text("Connect now") }
 
@@ -352,12 +382,18 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Begin CDM association; the chooser IntentSender is fired via [launch]. */
-    private fun startAssociate(mac: String, launch: (IntentSenderRequest) -> Unit) {
+    /**
+     * Begin CDM association; the chooser IntentSender is fired via [launch].
+     *
+     * [mac] null/blank → scan for Fossil watches by advertised name (the OS picker is filtered to
+     * Fossil watches). A valid MAC → a single-device request for that exact address (re-pair a
+     * known/bonded watch). An invalid MAC string falls back to the name scan.
+     */
+    private fun startAssociate(mac: String?, launch: (IntentSenderRequest) -> Unit) {
         if (!hasPermissions()) {
             Log.w(TAG, "associate: missing Bluetooth permission")
         }
-        val filterMac = mac.takeIf { android.bluetooth.BluetoothAdapter.checkBluetoothAddress(it) }
+        val filterMac = mac?.takeIf { android.bluetooth.BluetoothAdapter.checkBluetoothAddress(it) }
         CompanionManager.associate(
             context = this,
             mac = filterMac,
