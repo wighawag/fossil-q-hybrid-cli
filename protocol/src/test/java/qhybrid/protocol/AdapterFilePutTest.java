@@ -71,6 +71,67 @@ public class AdapterFilePutTest {
         assertFilterEntry(entry, "qhybrid.linux", (byte) 4, (short) 90, (short) 90);
     }
 
+    @Test
+    void putDoesNotComplete_onEofReachAlone() throws Exception {
+        // EOF_REACH(0x88) is a progress/finish REPORT carrying the watch CRC32 — NOT the final ack.
+        // The put must still be in-flight (no VERIFY 0x84 yet), so the serial queue does NOT advance.
+        FakeBleTransport t = new FakeBleTransport();
+        t.connect("AA:BB:CC:DD:EE:FF");
+        FossilQAdapter adapter = new FossilQAdapter(t);
+        forceFossilProtocol(adapter);
+
+        adapter.uploadNotificationFilterWithPattern((byte) 4, (short) 90, (short) 90);
+        t.injectNotification(FileTransferResponder.CONTROL,
+                FileTransferResponder.acceptFrame(NOTIFICATION_FILTER_HANDLE));
+        byte[] payload = reassemble(t.writesTo(FakeBleTransport.UUID_CHAR_DATA));
+
+        int controlWritesBefore = t.writesTo(FakeBleTransport.UUID_CHAR_CONTROL).size();
+        t.injectNotification(FileTransferResponder.CONTROL,
+                FileTransferResponder.eofReachFrame(NOTIFICATION_FILTER_HANDLE, payload));
+        // The adapter responded to EOF_REACH by sending VERIFY_FILE(4) (a control write), and is now
+        // WAITING for the 0x84 — it must NOT have completed/advanced. The VERIFY write is the only
+        // new control write; assert it is a [0x04][handle] frame.
+        var control = t.writesTo(FakeBleTransport.UUID_CHAR_CONTROL);
+        assertEquals(controlWritesBefore + 1, control.size(), "EOF_REACH must trigger exactly one VERIFY write");
+        byte[] verify = control.get(control.size() - 1).data;
+        assertEquals((byte) 0x04, verify[0], "VERIFY_FILE op = 0x04");
+        java.nio.ByteBuffer vb = java.nio.ByteBuffer.wrap(verify).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        assertEquals(NOTIFICATION_FILTER_HANDLE, vb.getShort(1), "VERIFY carries the put's handle");
+    }
+
+    @Test
+    void crcMismatch_doesNotFalselySucceed() throws Exception {
+        // A full-size EOF_REACH with the WRONG CRC must NOT verify/succeed. The adapter resumes
+        // PUT_FILE; with no progress it eventually fails honestly (never onFilePut(true)).
+        FakeBleTransport t = new FakeBleTransport();
+        t.connect("AA:BB:CC:DD:EE:FF");
+        FossilQAdapter adapter = new FossilQAdapter(t);
+        forceFossilProtocol(adapter);
+
+        java.util.concurrent.atomic.AtomicReference<Boolean> result = new java.util.concurrent.atomic.AtomicReference<>(null);
+        adapter.uploadNotificationFilterWithPattern((byte) 4, (short) 90, (short) 90);
+        t.injectNotification(FileTransferResponder.CONTROL,
+                FileTransferResponder.acceptFrame(NOTIFICATION_FILTER_HANDLE));
+        byte[] payload = reassemble(t.writesTo(FakeBleTransport.UUID_CHAR_DATA));
+
+        // Inject EOF_REACH frames with full sizeWritten but a deliberately WRONG crc, repeatedly.
+        int wrongCrc = FileTransferResponder.crc32(payload) ^ 0x5A5A5A5A;
+        for (int i = 0; i < 5; i++) {
+            t.injectNotification(FileTransferResponder.CONTROL,
+                    FileTransferResponder.eofReachFrame(
+                            NOTIFICATION_FILTER_HANDLE, payload.length, wrongCrc, (byte) 0x88));
+        }
+
+        // No VERIFY was ever sent (CRC never matched) so no 0x84-success is possible: the put must
+        // not have reported success. (It may have failed via the no-progress threshold; either way
+        // it MUST NOT be a false success.)
+        var control = t.writesTo(FakeBleTransport.UUID_CHAR_CONTROL);
+        for (var w : control) {
+            assertNotEquals((byte) 0x04, w.data[0],
+                    "a CRC-mismatched transfer must never send VERIFY_FILE(4)");
+        }
+    }
+
     /** Verify the 32-byte notification filter entry layout + null-terminated CRC. */
     private static void assertFilterEntry(byte[] e, String pkg, byte vibe, short hourDeg, short minDeg) {
         java.nio.ByteBuffer b = java.nio.ByteBuffer.wrap(e).order(java.nio.ByteOrder.LITTLE_ENDIAN);
