@@ -28,23 +28,34 @@ class CalendarRefresher(
     private val offsetMinutes: () -> Int = { 0 },
 ) {
 
-    /** The outcome of one [refresh]: did the calendar rows actually change, and how many. */
-    data class Result(val changed: Boolean, val rowCount: Int) {
+    /** The outcome of one [refresh]: did the calendar rows change, how many, and was the read OK. */
+    data class Result(val changed: Boolean, val rowCount: Int, val readOk: Boolean = true) {
         companion object {
             /** No active watch / nothing to do. */
             val NONE = Result(changed = false, rowCount = 0)
+            /** The calendar read FAILED — existing rows were left untouched (NOT wiped). */
+            val READ_FAILED = Result(changed = false, rowCount = 0, readOk = false)
         }
     }
 
     /**
      * Read → map → full-replace slots 16–31 for the active watch. Returns whether the rows changed.
      * No-ops (returns [Result.NONE]) when there is no active watch.
+     *
+     * **CRITICAL:** a FAILED calendar read ([CalendarSource.Read.ok] == false) leaves the existing
+     * slots 16–31 UNTOUCHED ([Result.READ_FAILED]). It must NEVER be treated as "the user has no
+     * events" — otherwise a transient provider error / not-yet-expanded Instances table would wipe
+     * all the calendar alarms (the regression this guards against). A SUCCESSFUL read with zero
+     * events still legitimately clears the slots (the user really did delete their events).
      */
     suspend fun refresh(): Result {
         val mac = repo.getActiveWatch()?.macAddress ?: return Result.NONE
         val nowMillis = now()
-        val events = source.upcomingEvents(nowMillis, windowDays)
-        val newRows = CalendarAlarmSync.mapEventsToRows(mac, events, nowMillis, zone(), offsetMinutes())
+        val read = source.readUpcoming(nowMillis, windowDays)
+        if (!read.ok) {
+            return Result.READ_FAILED
+        }
+        val newRows = CalendarAlarmSync.mapEventsToRows(mac, read.events, nowMillis, zone(), offsetMinutes())
 
         val existing = repo.getAlarms(mac).filter { it.slotId in 16..31 }
         val changed = !sameCalendarRows(existing, newRows)

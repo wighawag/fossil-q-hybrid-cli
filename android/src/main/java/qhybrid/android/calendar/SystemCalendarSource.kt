@@ -35,23 +35,53 @@ class SystemCalendarSource(context: Context) : CalendarSource {
 
     private val appContext = context.applicationContext
 
-    override fun upcomingEvents(nowEpochMillis: Long, windowDays: Int): List<CalendarEvent> {
+    override fun readUpcoming(nowEpochMillis: Long, windowDays: Int): CalendarSource.Read {
         val windowEnd = nowEpochMillis + windowDays.toLong() * MILLIS_PER_DAY
 
-        val out = ArrayList<CalendarEvent>()
         // Instances.query(...) FORCES the provider to expand the [begin, end) range on demand
         // (vs. a raw CONTENT_URI cursor which can read a stale, not-yet-expanded table). This is
         // what makes a just-added / just-synced event show up immediately instead of minutes later.
-        val cursor: Cursor? = runCatching {
+        // If it THROWS (some OEM providers do), fall back to the raw CONTENT_URI cursor rather than
+        // reporting a failed read.
+        var failed = false
+        var cursor: Cursor? = runCatching {
             CalendarContract.Instances.query(
                 appContext.contentResolver,
                 PROJECTION,
                 /* begin */ nowEpochMillis,
                 /* end */ windowEnd,
             )
-        }.onFailure { Log.w(TAG, "calendar query failed", it) }.getOrNull()
+        }.onFailure { Log.w(TAG, "Instances.query failed — falling back to CONTENT_URI", it) }
+            .getOrNull()
 
-        cursor?.use { c ->
+        if (cursor == null) {
+            cursor = runCatching {
+                val uri = CalendarContract.Instances.CONTENT_URI.buildUpon()
+                    .appendPath(nowEpochMillis.toString())
+                    .appendPath(windowEnd.toString())
+                    .build()
+                appContext.contentResolver.query(
+                    uri, PROJECTION, null, null,
+                    "${CalendarContract.Instances.BEGIN} ASC",
+                )
+            }.onFailure {
+                Log.w(TAG, "calendar query failed (both Instances.query and CONTENT_URI)", it)
+                failed = true
+            }.getOrNull()
+        }
+
+        // A null cursor with no thrown exception is ALSO a failed read (provider unavailable) — we
+        // must NOT report "0 events" for it, or the caller would wipe the existing calendar alarms.
+        if (cursor == null) {
+            return CalendarSource.Read.FAILED
+        }
+        if (failed) {
+            cursor.close()
+            return CalendarSource.Read.FAILED
+        }
+
+        val out = ArrayList<CalendarEvent>()
+        cursor.use { c ->
             val idxTitle = c.getColumnIndex(CalendarContract.Instances.TITLE)
             val idxBegin = c.getColumnIndex(CalendarContract.Instances.BEGIN)
             val idxAllDay = c.getColumnIndex(CalendarContract.Instances.ALL_DAY)
@@ -64,7 +94,7 @@ class SystemCalendarSource(context: Context) : CalendarSource {
             }
         }
         Log.i(TAG, "calendar read: ${out.size} timed event(s) in window")
-        return out
+        return CalendarSource.Read.success(out)
     }
 
     private companion object {

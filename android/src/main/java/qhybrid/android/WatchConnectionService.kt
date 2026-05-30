@@ -475,19 +475,22 @@ class WatchConnectionService : Service() {
 
     /**
      * WP13 — a USER-INITIATED "Resync calendar now" (or a permission (re-)grant). Runs the refresh
-     * immediately, then RE-RUNS it a few times spaced [CALENDAR_SETTLE_RETRY_MS] apart, because the
-     * provider's Instances table can still be mid-expansion right after a server/laptop sync — a
-     * single read can legitimately come back empty/stale even via Instances.query(...). Each re-run
-     * is a no-op (no push) once the rows stop changing, so the retries are cheap and self-cancelling
-     * in effect. Observer/connect-driven refreshes do NOT retry (the Events observer re-fires them
-     * naturally); only the explicit user ask pays for the settle window.
+     * immediately, then RE-RUNS it a few times spaced [CALENDAR_SETTLE_RETRY_MS] apart — but STOPS
+     * EARLY as soon as a read succeeds AND finds at least one event, because the provider's
+     * Instances table can be mid-expansion right after a server/laptop sync (a read can briefly come
+     * back empty even via Instances.query(...)). Stopping early once events appear avoids both BLE
+     * churn and the wipe-then-restore window. A FAILED read never wipes (CalendarRefresher guards
+     * it); a genuinely-empty calendar simply uses up the retries harmlessly. Observer/connect
+     * refreshes do NOT retry (the Events observer re-fires them naturally).
      */
     private fun scheduleCalendarRefreshWithRetries() {
         calendarScope.launch {
-            runCalendarRefresh()
+            val first = runCalendarRefresh()
+            if (first != null && first.readOk && first.rowCount > 0) return@launch
             repeat(CALENDAR_SETTLE_RETRIES) {
                 kotlinx.coroutines.delay(CALENDAR_SETTLE_RETRY_MS)
-                runCalendarRefresh()
+                val r = runCalendarRefresh()
+                if (r != null && r.readOk && r.rowCount > 0) return@launch
             }
         }
     }
@@ -495,11 +498,12 @@ class WatchConnectionService : Service() {
     /**
      * Read the calendar via [SystemCalendarSource], map via the pure WP9 path, full-replace slots
      * 16-31, and SILENTLY push the alarm file if the rows changed ([ServiceCalendarPush] — no
-     * SYNCING modal). No-op (cheap) when READ_CALENDAR isn't granted or there is no active watch.
+     * SYNCING modal). No-op (cheap, returns null) when READ_CALENDAR isn't granted. A FAILED
+     * provider read leaves the existing slots 16–31 UNTOUCHED (never wiped).
      */
-    private suspend fun runCalendarRefresh() {
-        if (!CalendarAccess.isGranted(this)) return
-        runCatching {
+    private suspend fun runCalendarRefresh(): CalendarRefresher.Result? {
+        if (!CalendarAccess.isGranted(this)) return null
+        return runCatching {
             val refresher = CalendarRefresher(
                 WatchRepository(applicationContext),
                 SystemCalendarSource(applicationContext),
@@ -510,8 +514,9 @@ class WatchConnectionService : Service() {
                 },
             )
             val result = refresher.refreshAndMaybePush(ServiceCalendarPush(applicationContext))
-            Log.i(TAG, "calendar refresh: changed=${result.changed} rows=${result.rowCount}")
-        }.onFailure { Log.w(TAG, "calendar refresh failed", it) }
+            Log.i(TAG, "calendar refresh: ok=${result.readOk} changed=${result.changed} rows=${result.rowCount}")
+            result
+        }.onFailure { Log.w(TAG, "calendar refresh failed", it) }.getOrNull()
     }
 
     // ---- work ----------------------------------------------------------------

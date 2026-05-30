@@ -111,6 +111,40 @@ class CalendarRefresherTest {
         assertEquals(CalendarRefresher.Result.NONE, result)
     }
 
+    @Test
+    fun refresh_failedRead_doesNotWipeExistingCalendarAlarms() = runTest {
+        // Seed two calendar alarms via a good read.
+        val events = listOf(
+            CalendarEvent("A", at(2025, 6, 2, 9, 0)),
+            CalendarEvent("B", at(2025, 6, 3, 10, 0)),
+        )
+        refresher(events).refresh()
+        assertEquals(listOf(16, 17), repo.getAlarms(mac).map { it.slotId })
+
+        // A FAILED read (provider error / not-yet-expanded) must NOT delete the existing rows.
+        val failing = CalendarRefresher(
+            repo, FakeCalendarSource(emptyList(), ok = false), zone = { zone }, now = { now },
+        )
+        val result = failing.refresh()
+        assertFalse(result.readOk)
+        assertFalse(result.changed)
+        assertEquals(listOf(16, 17), repo.getAlarms(mac).map { it.slotId }) // untouched
+    }
+
+    @Test
+    fun refreshAndMaybePush_failedRead_doesNotPush() = runTest {
+        // Seed a row first.
+        refresher(listOf(CalendarEvent("A", at(2025, 6, 2, 9, 0)))).refresh()
+        val push = RecordingPush()
+        val failing = CalendarRefresher(
+            repo, FakeCalendarSource(emptyList(), ok = false), zone = { zone }, now = { now },
+        )
+        val result = failing.refreshAndMaybePush(push)
+        assertFalse(result.readOk)
+        assertEquals(0, push.pushes) // no push on a failed read
+        assertEquals(listOf(16), repo.getAlarms(mac).map { it.slotId }) // still there
+    }
+
     /** Recording fake push so we can assert the silent-push fires exactly once on a CHANGED refresh. */
     private class RecordingPush : CalendarPush {
         var pushes = 0
