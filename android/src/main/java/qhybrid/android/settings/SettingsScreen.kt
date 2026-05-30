@@ -77,6 +77,7 @@ fun SettingsScreen(
         state = state,
         progress = progress,
         onSetVibration = vm::setVibrationStrength,
+        onVibrate = vm::vibrateWatch,
         onSetNudge = vm::setNudge,
         onSetTimezone = vm::setSecondTimezoneOffset,
         onSetMusicApp = vm::setPreferredMusicApp,
@@ -102,6 +103,9 @@ fun SettingsContent(
     onOpenLogs: () -> Unit,
     modifier: Modifier = Modifier,
     progress: SyncProgressUi = SyncProgressUi.IDLE,
+    // WP-BUZZTEST: manual "vibrate the watch now" test buttons (pattern byte). No-op default so
+    // existing previews/tests that don't exercise the buzz keep compiling.
+    onVibrate: (Int) -> Boolean = { false },
 ) {
     var note by remember { mutableStateOf<String?>(null) }
 
@@ -131,6 +135,7 @@ fun SettingsContent(
             }
 
             VibrationCard(state, onSetVibration) { note = it }
+            TestVibrationCard(state, progress, onVibrate) { note = it }
             NudgeCard(state, onSetNudge) { note = it }
             TimezoneCard(state, onSetTimezone) { note = it }
             MusicAppCard(state, onSetMusicApp)
@@ -174,6 +179,55 @@ private fun VibrationCard(
             },
             modifier = Modifier.fillMaxWidth(),
         )
+    }
+}
+
+// ---- manual "vibrate the watch now" test buttons (WP-BUZZTEST) ---------------
+
+/**
+ * WP-BUZZTEST — two manual "vibrate the watch now" buttons (an on-device test tool). Pressing one
+ * makes the watch buzz immediately (connecting first if the link is down; an honest error if
+ * unreachable, surfaced via the shared [SyncStatusRow] + the blocking [SyncSavingDialog]).
+ *
+ *   - "Vibrate (single)" → pattern 5 (ONE_SHORT_VIBE — strong single buzz)
+ *   - "Vibrate (triple)" → pattern 1 (CALL — triple buzz)
+ *
+ * The buttons are disabled while a buzz/sync is in flight and when there is no active watch
+ * (reusing [SyncProgressUi.saveEnabled], the same rule the Save-to-watch buttons use). No new wire
+ * bytes — reuses [qhybrid.protocol.FossilController.buzz]. UI rendering is on-device-pending.
+ */
+@Composable
+private fun TestVibrationCard(
+    state: SettingsUiState,
+    progress: SyncProgressUi,
+    onVibrate: (Int) -> Boolean,
+    onNote: (String) -> Unit,
+) {
+    SettingCard("Test vibration") {
+        Text(
+            "Make the watch buzz now to test it. Connects first if needed; reports an error if the " +
+                "watch is unreachable.",
+            style = MaterialTheme.typography.labelSmall,
+        )
+        val enabled = progress.saveEnabled(state.hasActiveWatch)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = {
+                    val wired = onVibrate(VibrationSync.PATTERN_SINGLE)
+                    onNote(buzzNote("single", wired))
+                },
+                enabled = enabled,
+                modifier = Modifier.weight(1f),
+            ) { Text("Vibrate (single)") }
+            Button(
+                onClick = {
+                    val wired = onVibrate(VibrationSync.PATTERN_TRIPLE)
+                    onNote(buzzNote("triple", wired))
+                },
+                enabled = enabled,
+                modifier = Modifier.weight(1f),
+            ) { Text("Vibrate (triple)") }
+        }
     }
 }
 
@@ -415,3 +469,7 @@ private fun SettingCard(title: String, content: @Composable () -> Unit) {
 private fun applyNote(name: String, wired: Boolean): String =
     if (wired) "$name applied to the watch."
     else "$name saved. Applying it to the watch is on-device-pending (WP14)."
+
+private fun buzzNote(kind: String, wired: Boolean): String =
+    if (wired) "Buzzing the watch ($kind)…"
+    else "No active watch to vibrate."
