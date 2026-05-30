@@ -137,6 +137,10 @@ fun DashboardContent(
             onSync = onSync,
             onFindWatch = onFindWatch,
             onAddWatch = onAddWatch,
+            onShowAllDevices = onShowAllDevices,
+            onEnterMacManually = onEnterMacManually,
+            bondedWatches = bondedWatches,
+            onAddBondedWatch = onAddBondedWatch,
         )
     }
 }
@@ -222,24 +226,7 @@ private fun NoWatchCard(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text("No watch yet", style = MaterialTheme.typography.titleMedium)
-
-            // Already-paired (OS-bonded) Fossil watches: one-tap add, no scan/forget needed.
-            if (bondedWatches.isNotEmpty()) {
-                Text(
-                    "Already paired with this phone — tap to add:",
-                    style = MaterialTheme.typography.labelLarge,
-                )
-                bondedWatches.forEach { (mac, label) ->
-                    Button(
-                        onClick = { onAddBondedWatch(mac) },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        // Show name + MAC so two same-named "Fossil" watches are distinguishable.
-                        Text(if (label.equals(mac, ignoreCase = true)) "Add $mac" else "Add $label ($mac)")
-                    }
-                }
-                Text("Or add a different watch:", style = MaterialTheme.typography.labelLarge)
-            } else {
+            if (bondedWatches.isEmpty()) {
                 Text(
                     "Add your Fossil Q hybrid watch to get started. Make sure it's nearby, " +
                         "Bluetooth is on, and the watch is NOT already paired to another phone or " +
@@ -247,21 +234,53 @@ private fun NoWatchCard(
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
-
-            Button(onClick = onAddWatch, modifier = Modifier.fillMaxWidth()) {
-                Text("Add a watch")
-            }
-            Text(
-                "Watch not showing up?",
-                style = MaterialTheme.typography.labelLarge,
+            AddWatchOptions(
+                onAddWatch = onAddWatch,
+                onShowAllDevices = onShowAllDevices,
+                onEnterMacManually = onEnterMacManually,
+                bondedWatches = bondedWatches,
+                onAddBondedWatch = onAddBondedWatch,
             )
-            OutlinedButton(onClick = onShowAllDevices, modifier = Modifier.fillMaxWidth()) {
-                Text("Show all Bluetooth devices")
-            }
-            OutlinedButton(onClick = onEnterMacManually, modifier = Modifier.fillMaxWidth()) {
-                Text("Enter MAC manually")
+        }
+    }
+}
+
+/**
+ * Shared add-a-watch option buttons (used by the empty-state card AND the "Add another watch"
+ * expander): the already-paired (OS-bonded) Fossil watches for one-tap add, the Fossil scan, and
+ * the "show all devices" / "enter MAC" fallbacks. Pure layout over the intent lambdas.
+ */
+@Composable
+private fun AddWatchOptions(
+    onAddWatch: () -> Unit,
+    onShowAllDevices: () -> Unit,
+    onEnterMacManually: () -> Unit,
+    bondedWatches: List<Pair<String, String>>,
+    onAddBondedWatch: (String) -> Unit,
+) {
+    // Already-paired (OS-bonded) Fossil watches: one-tap add, no scan/forget needed.
+    if (bondedWatches.isNotEmpty()) {
+        Text("Already paired with this phone — tap to add:", style = MaterialTheme.typography.labelLarge)
+        bondedWatches.forEach { (mac, label) ->
+            Button(
+                onClick = { onAddBondedWatch(mac) },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                // Show name + MAC so two same-named "Fossil" watches are distinguishable.
+                Text(if (label.equals(mac, ignoreCase = true)) "Add $mac" else "Add $label ($mac)")
             }
         }
+        Text("Or add a different watch:", style = MaterialTheme.typography.labelLarge)
+    }
+    Button(onClick = onAddWatch, modifier = Modifier.fillMaxWidth()) {
+        Text("Scan for Fossil watch")
+    }
+    Text("Watch not showing up?", style = MaterialTheme.typography.labelLarge)
+    OutlinedButton(onClick = onShowAllDevices, modifier = Modifier.fillMaxWidth()) {
+        Text("Show all Bluetooth devices")
+    }
+    OutlinedButton(onClick = onEnterMacManually, modifier = Modifier.fillMaxWidth()) {
+        Text("Enter MAC manually")
     }
 }
 
@@ -393,7 +412,12 @@ private fun ActionButtons(
     onSync: () -> Unit,
     onFindWatch: () -> Unit,
     onAddWatch: () -> Unit = {},
+    onShowAllDevices: () -> Unit = {},
+    onEnterMacManually: () -> Unit = {},
+    bondedWatches: List<Pair<String, String>> = emptyList(),
+    onAddBondedWatch: (String) -> Unit = {},
 ) {
+    var showAddOptions by remember { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -427,11 +451,29 @@ private fun ActionButtons(
                 onClick = onFindWatch,
             ) { Text("Find Watch") }
         }
-        // Add another watch (the app supports a multi-watch registry; single active at a time).
+        // Add another watch (multi-watch registry; single active at a time). Expands into the SAME
+        // options as the empty state — incl. one-tap add of already-paired (OS-bonded) watches — so
+        // a previously-paired watch can be added without scanning.
         OutlinedButton(
             modifier = Modifier.fillMaxWidth(),
-            onClick = onAddWatch,
-        ) { Text("Add another watch") }
+            onClick = { showAddOptions = !showAddOptions },
+        ) { Text(if (showAddOptions) "Cancel adding" else "Add another watch") }
+        if (showAddOptions) {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    AddWatchOptions(
+                        onAddWatch = onAddWatch,
+                        onShowAllDevices = onShowAllDevices,
+                        onEnterMacManually = onEnterMacManually,
+                        bondedWatches = bondedWatches,
+                        onAddBondedWatch = onAddBondedWatch,
+                    )
+                }
+            }
+        }
         // On-device-pending note: Find Watch choreography (phone→watch) is a WP16a stub.
         Text(
             "Find Watch is wired but the on-watch alert choreography is pending on-device work.",
