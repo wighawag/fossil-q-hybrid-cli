@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -84,6 +85,39 @@ fun SyncStatusRow(
         }
         Text(note, style = MaterialTheme.typography.labelSmall, color = noteColor(progress.tone))
     }
+}
+
+/**
+ * WP-SYNCFIX — a **blocking** "Saving to watch…" modal shown while a Save is in flight. Rendered
+ * by each config screen; it appears the instant the user taps Save (SyncState SYNCING, published
+ * synchronously by [ServiceSaveToWatch]) and stays until the service resolves the pass to
+ * SUCCESS/ERROR. Non-dismissible (no outside-tap / back) so the user waits for the watch write
+ * rather than racing further edits against an in-flight sync — the chosen UX for now.
+ *
+ * Renders nothing unless [SyncProgressUi.syncing]. Visual rendering is on-device-pending; the
+ * syncing flag it keys on is unit-tested ([SyncProgressUiTest]).
+ */
+@Composable
+fun SyncSavingDialog(progress: SyncProgressUi) {
+    if (!progress.syncing) return
+    AlertDialog(
+        onDismissRequest = { /* blocking: ignore outside-tap / back while saving */ },
+        confirmButton = {},
+        title = { Text("Saving to watch…") },
+        text = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                Text(
+                    "Sending your changes to the watch. This can take a few seconds while it " +
+                        "connects.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        },
+    )
 }
 
 @Composable

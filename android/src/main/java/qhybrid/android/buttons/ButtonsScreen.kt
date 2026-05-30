@@ -38,6 +38,7 @@ import qhybrid.android.db.ButtonMappingEntity
 import qhybrid.android.sync.ConnectionBanner
 import qhybrid.android.sync.SyncProgressUi
 import qhybrid.android.sync.SyncSaveButton
+import qhybrid.android.sync.SyncSavingDialog
 
 /**
  * WP16d — the Buttons screen. Every Fossil Q Hybrid watch has exactly **three physical buttons**
@@ -88,6 +89,9 @@ fun ButtonsContent(
 ) {
     // The slot currently being edited (buttonId), or null when no dialog is open.
     var editingSlot by remember { mutableStateOf<Int?>(null) }
+
+    // WP-SYNCFIX: blocking "Saving to watch…" modal while a save is in flight.
+    SyncSavingDialog(progress)
 
     Scaffold(modifier = modifier) { padding ->
         Column(

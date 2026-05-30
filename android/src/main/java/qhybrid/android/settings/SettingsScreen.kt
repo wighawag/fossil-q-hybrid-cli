@@ -37,6 +37,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import qhybrid.android.sync.ConnectionBanner
 import qhybrid.android.sync.SyncProgressUi
+import qhybrid.android.sync.SyncSavingDialog
 import qhybrid.android.sync.SyncStatusRow
 
 /**
@@ -103,6 +104,9 @@ fun SettingsContent(
     progress: SyncProgressUi = SyncProgressUi.IDLE,
 ) {
     var note by remember { mutableStateOf<String?>(null) }
+
+    // WP-SYNCFIX: blocking "Saving to watch…" modal while a settings apply is in flight.
+    SyncSavingDialog(progress)
 
     Scaffold(modifier = modifier) { padding ->
         Column(

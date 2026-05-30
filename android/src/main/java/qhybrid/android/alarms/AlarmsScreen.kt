@@ -51,6 +51,7 @@ import qhybrid.android.db.WatchAlarmEntity
 import qhybrid.android.sync.ConnectionBanner
 import qhybrid.android.sync.SyncProgressUi
 import qhybrid.android.sync.SyncSaveButton
+import qhybrid.android.sync.SyncSavingDialog
 
 /**
  * WP16b — the Alarms screen (user slots 0–15 only). State comes from [AlarmsViewModel]
@@ -101,6 +102,9 @@ fun AlarmsContent(
     // Editor dialog state: null = closed; a WatchAlarmEntity = editing (slot is fixed) or
     // a fresh template = adding (slotId == -1 marks "new").
     var editing by remember { mutableStateOf<WatchAlarmEntity?>(null) }
+
+    // WP-SYNCFIX: blocking "Saving to watch…" modal while a save is in flight.
+    SyncSavingDialog(progress)
     Scaffold(
         modifier = modifier,
         floatingActionButton = {

@@ -52,6 +52,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import qhybrid.android.sync.ConnectionBanner
 import qhybrid.android.sync.SyncProgressUi
 import qhybrid.android.sync.SyncSaveButton
+import qhybrid.android.sync.SyncSavingDialog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import qhybrid.android.db.NotificationRuleEntity
@@ -119,6 +120,9 @@ fun NotificationsContent(
     // an entity with a real packageName already present = editing.
     var editing by remember { mutableStateOf<NotificationRuleEntity?>(null) }
     var addingNew by remember { mutableStateOf(false) }
+
+    // WP-SYNCFIX: blocking "Saving to watch…" modal while a save is in flight.
+    SyncSavingDialog(progress)
 
     Scaffold(
         modifier = modifier,
