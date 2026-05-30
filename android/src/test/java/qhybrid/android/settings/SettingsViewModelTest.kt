@@ -113,6 +113,11 @@ class SettingsViewModelTest : DbTestBase() {
         override fun applyDefaultsToActiveWatch(): Boolean { count++; return wired }
     }
 
+    private class FakeClearAlarms(private val wired: Boolean = true) : ClearAlarmsSync {
+        var count = 0
+        override fun clearAlarmsOnActiveWatch(): Boolean { count++; return wired }
+    }
+
     private class FakeWatchAdmin(private val wired: Boolean = true) : WatchAdminSync {
         var count = 0
         val removed = mutableListOf<String>()
@@ -130,6 +135,7 @@ class SettingsViewModelTest : DbTestBase() {
         fullSync: FullSync = FakeFullSync(),
         watchAdmin: WatchAdminSync = FakeWatchAdmin(),
         applyDefaults: ApplyDefaultsSync = FakeApplyDefaults(),
+        clearAlarms: ClearAlarmsSync = FakeClearAlarms(),
     ) = SettingsViewModel(
         repo = repo,
         prefs = prefs,
@@ -139,6 +145,7 @@ class SettingsViewModelTest : DbTestBase() {
         fullSync = fullSync,
         watchAdmin = watchAdmin,
         applyDefaults = applyDefaults,
+        clearAlarms = clearAlarms,
         scope = vmScope,
         syncSource = syncSource,
     )
@@ -362,6 +369,28 @@ class SettingsViewModelTest : DbTestBase() {
         awaitState(model.uiState) { !it.hasActiveWatch }
         assertFalse(model.applyDefaultsToActiveWatch())
         assertEquals(0, apply.count)
+    }
+
+    // ---- clear all alarms (WP-CLEARALARMS) -----------------------------------
+
+    @Test
+    fun clearAlarmsHitsSeamWithActiveWatch() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }
+        val clear = FakeClearAlarms(wired = true)
+        val model = vm(clearAlarms = clear)
+        awaitState(model.uiState) { it.hasActiveWatch }
+        assertTrue(model.clearAlarmsOnActiveWatch())
+        assertEquals(1, clear.count)
+    }
+
+    @Test
+    fun clearAlarmsNoOpWithoutActiveWatch() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = false)) }
+        val clear = FakeClearAlarms()
+        val model = vm(clearAlarms = clear)
+        awaitState(model.uiState) { !it.hasActiveWatch }
+        assertFalse(model.clearAlarmsOnActiveWatch())
+        assertEquals(0, clear.count)
     }
 
     @Test

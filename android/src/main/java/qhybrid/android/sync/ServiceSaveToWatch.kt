@@ -33,9 +33,12 @@ object ServiceSaveToWatch {
         context: Context,
         sections: Set<SyncSection>,
         now: () -> Long = System::currentTimeMillis,
+        // WP-CLEARALARMS: run the pass in PROVISION mode so EMPTY sections are force-written
+        // (e.g. a "Clear all alarms" blanks the watch's 32-slot file instead of skip-empties).
+        forceProvision: Boolean = false,
     ): Boolean {
         SyncState.publish(SyncState.SyncPhase.SYNCING, nowMillis = now())
-        WatchConnectionService.syncNow(context.applicationContext, sections)
+        WatchConnectionService.syncNow(context.applicationContext, sections, forceProvision)
         return true
     }
 }

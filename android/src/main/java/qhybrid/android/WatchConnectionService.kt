@@ -74,6 +74,10 @@ class WatchConnectionService : Service() {
         // WP-SYNCFIX: which sync sections an explicit Save requested (section names). Absent =
         // full reconcile (connect / periodic). Present = targeted save (e.g. just BUTTONS).
         const val EXTRA_SECTIONS = "sections"
+        // WP-CLEARALARMS: run the targeted sync in PROVISION mode (force-write empties), so a
+        // "Clear all alarms" pushes the EMPTY 32-slot file to actively blank the watch instead of
+        // the RECONCILE skip-empties default (which would leave the watch's alarms intact).
+        const val EXTRA_FORCE_PROVISION = "force_provision"
 
         private const val INIT_TIMEOUT_MS = 60_000L
         // How long after a Remove-watch we suppress auto-reconnect, so the disconnect + CDM teardown
@@ -100,12 +104,17 @@ class WatchConnectionService : Service() {
          * WP-SYNCFIX: targeting avoids re-pushing unrelated sections the user never changed and
          * keeps a single file-put in flight per pass.
          */
-        fun syncNow(context: Context, sections: Set<SyncSection>? = null) {
+        fun syncNow(
+            context: Context,
+            sections: Set<SyncSection>? = null,
+            forceProvision: Boolean = false,
+        ) {
             val intent = Intent(context, WatchConnectionService::class.java).apply {
                 action = ACTION_SYNC_NOW
                 if (!sections.isNullOrEmpty()) {
                     putExtra(EXTRA_SECTIONS, sections.map { it.name }.toTypedArray())
                 }
+                if (forceProvision) putExtra(EXTRA_FORCE_PROVISION, true)
             }
             ContextCompatStartForeground(context, intent)
         }
@@ -206,6 +215,9 @@ class WatchConnectionService : Service() {
     // attempt resolves (success runs the targeted sync; failure publishes the error).
     private val pendingSyncOnConnect = AtomicBoolean(false)
     private val pendingSyncSections = AtomicReference<Set<SyncSection>?>(null)
+    // WP-CLEARALARMS: whether the pending (connect-then-sync) pass should run in PROVISION mode
+    // (force-write empties), e.g. a "Clear all alarms" that must blank the watch's 32-slot file.
+    private val pendingSyncProvision = AtomicBoolean(false)
 
     // WP-BUZZTEST: set when a manual "vibrate the watch now" was requested while the link was down,
     // so a connect-then-buzz runs and a CONNECT FAILURE is surfaced honestly as a SyncState ERROR
@@ -270,7 +282,10 @@ class WatchConnectionService : Service() {
                     }
                 }
             }
-            ACTION_SYNC_NOW -> submitSync(parseSections(intent))
+            ACTION_SYNC_NOW -> submitSync(
+                parseSections(intent),
+                forceProvision = intent?.getBooleanExtra(EXTRA_FORCE_PROVISION, false) == true,
+            )
             ACTION_REQUEST_ACTIVITY -> submitRequestActivity(intent.getBooleanExtra(EXTRA_KEEP, false))
             ACTION_BUZZ -> submitBuzz(
                 intent.getIntExtra(EXTRA_PATTERN, 5),
@@ -411,6 +426,7 @@ class WatchConnectionService : Service() {
                 //       yet) so a freshly-added watch gets its config; known watches sync never.
                 val requestedSections = pendingSyncSections.getAndSet(null)
                 val hadPendingSync = pendingSyncOnConnect.getAndSet(false)
+                val pendingProvision = pendingSyncProvision.getAndSet(false)
                 val newWatch = isNewWatch(mac)
                 when (val d = ConnectSyncDecider.decide(hadPendingSync, requestedSections, newWatch)) {
                     is ConnectSyncDecider.Decision.Sync -> {
@@ -451,8 +467,8 @@ class WatchConnectionService : Service() {
                             }
                         } else {
                             // A user-requested sync that was pending while the link was down.
-                            Log.i(TAG, "on-connect sync: ${d.reason} sections=${d.sections}")
-                            runOnConnectSync(controller, d.sections)
+                            Log.i(TAG, "on-connect sync: ${d.reason} sections=${d.sections} forceProvision=$pendingProvision")
+                            runOnConnectSync(controller, d.sections, forceProvision = pendingProvision)
                             // This is an already-known watch (the user asked to sync it); keep its row.
                             registerWatchRow(mac)
                             // Not a fresh provision — clear any optimistic "Adding…" modal.
@@ -545,6 +561,9 @@ class WatchConnectionService : Service() {
     private fun runOnConnectSync(
         controller: FossilController,
         sections: Set<SyncSection> = SyncSection.ALL,
+        // WP-CLEARALARMS: PROVISION force-writes empty sections (so a targeted clear blanks the
+        // watch); the default RECONCILE skip-empties for ordinary saves.
+        forceProvision: Boolean = false,
     ) {
         try {
             val input = runBlocking { loader().load() }
@@ -561,7 +580,10 @@ class WatchConnectionService : Service() {
             // BLE effect itself is on-device-pending; section-level failures are carried through
             // honestly via SyncResult.errors (see SyncState.SyncStatus.hadSectionErrors).
             val result = SyncStateReporter.reportAround(System::currentTimeMillis) {
-                SyncOrchestrator.sync(input, ServiceUploader(controller), sections)
+                SyncOrchestrator.sync(
+                    input, ServiceUploader(controller), sections,
+                    mode = if (forceProvision) SyncMode.PROVISION else SyncMode.RECONCILE,
+                )
             }
             if (result != null) {
                 Log.i(
@@ -802,13 +824,13 @@ class WatchConnectionService : Service() {
      * The app-side already published SYNCING (see [qhybrid.android.sync.ServiceSaveToWatch]) so the
      * Save button shows the spinner the instant the user taps it, even before the link is up.
      */
-    private fun submitSync(sections: Set<SyncSection>? = null) {
+    private fun submitSync(sections: Set<SyncSection>? = null, forceProvision: Boolean = false) {
         val target = sections ?: SyncSection.ALL
         worker.execute {
             val c = controllerRef.get()
-            Log.i(TAG, "syncNow: controller=${c != null} linkUp=${isLinkUp()} sections=$target")
+            Log.i(TAG, "syncNow: controller=${c != null} linkUp=${isLinkUp()} sections=$target forceProvision=$forceProvision")
             if (c != null && isLinkUp()) {
-                runCatching { runOnConnectSync(c, target) }
+                runCatching { runOnConnectSync(c, target, forceProvision = forceProvision) }
                     .onFailure {
                         Log.e(TAG, "sync failed", it)
                         SyncState.publish(
@@ -830,8 +852,9 @@ class WatchConnectionService : Service() {
                 )
                 return@execute
             }
-            Log.i(TAG, "syncNow: link down — connecting then syncing ($mac) sections=$target")
+            Log.i(TAG, "syncNow: link down — connecting then syncing ($mac) sections=$target forceProvision=$forceProvision")
             pendingSyncSections.set(target)
+            pendingSyncProvision.set(forceProvision)
             pendingSyncOnConnect.set(true)
             submitConnect(mac)
         }

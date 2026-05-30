@@ -84,6 +84,7 @@ fun SettingsScreen(
         onVibrateWithFilter = vm::vibrateWatchWithFilter,
         onSyncAll = vm::syncAll,
         onApplyDefaults = vm::applyDefaultsToActiveWatch,
+        onClearAlarms = vm::clearAlarmsOnActiveWatch,
         onSetNudge = vm::setNudge,
         onSetTimezone = vm::setSecondTimezoneOffset,
         onSetMusicApp = vm::setPreferredMusicApp,
@@ -121,6 +122,8 @@ fun SettingsContent(
     onSyncAll: () -> Boolean = { false },
     // WP-DEFAULTS: manual "Apply defaults to this watch" (overwrite buttons + filter). No-op default.
     onApplyDefaults: () -> Boolean = { false },
+    // WP-CLEARALARMS: manual "Clear all alarms" (delete + blank the watch). No-op default.
+    onClearAlarms: () -> Boolean = { false },
     // WP-WATCHADMIN: "remove / re-provision this watch". No-op default for previews/tests.
     onRemoveWatch: () -> Boolean = { false },
 ) {
@@ -162,6 +165,8 @@ fun SettingsContent(
             DefaultsEntryCard(onOpenDefaults)
             HorizontalDivider()
             ApplyDefaultsCard(state, progress, onApplyDefaults) { note = it }
+            HorizontalDivider()
+            ClearAlarmsCard(state, progress, onClearAlarms) { note = it }
             HorizontalDivider()
             TransferCard(state, onTransfer) { note = it }
             HorizontalDivider()
@@ -537,6 +542,65 @@ private fun ApplyDefaultsCard(
                         else "No active watch to apply defaults to.",
                     )
                 }) { Text("Apply defaults") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirming = false }) { Text("Cancel") }
+            },
+        )
+    }
+}
+
+// ---- clear all alarms (WP-CLEARALARMS) --------------------------------------
+
+/**
+ * WP-CLEARALARMS — "Clear all alarms": delete the active watch's standard alarms (slots 0–15) and
+ * push the BLANKED alarm file to the watch (force-write, so the watch is actively cleared — a normal
+ * save skip-empties an empty alarm set and would leave the watch's alarms in place). Calendar slots
+ * (16–31) are left untouched. Gated behind a confirm dialog (mirrors [RemoveWatchCard]) because it
+ * removes ALL the watch's alarms. Disabled while a sync/buzz is in flight and when there is no
+ * active watch.
+ */
+@Composable
+private fun ClearAlarmsCard(
+    state: SettingsUiState,
+    progress: SyncProgressUi,
+    onClearAlarms: () -> Boolean,
+    onNote: (String) -> Unit,
+) {
+    var confirming by remember { mutableStateOf(false) }
+    SettingCard("Clear all alarms") {
+        Text(
+            "Remove ALL alarms from this watch (the app's alarm list AND the watch itself). " +
+                "Calendar-synced alarms are not affected. Connects first if needed.",
+            style = MaterialTheme.typography.labelSmall,
+        )
+        OutlinedButton(
+            onClick = { confirming = true },
+            enabled = progress.saveEnabled(state.hasActiveWatch),
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("Clear all alarms") }
+    }
+
+    if (confirming) {
+        val mac = state.activeMac ?: ""
+        AlertDialog(
+            onDismissRequest = { confirming = false },
+            title = { Text("Clear all alarms?") },
+            text = {
+                Text(
+                    "This deletes every alarm for $mac — both in the app and on the watch. " +
+                        "Calendar-synced alarms are kept. This cannot be undone.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirming = false
+                    val ok = onClearAlarms()
+                    onNote(
+                        if (ok) "Clearing all alarms from the watch…"
+                        else "No active watch to clear alarms on.",
+                    )
+                }) { Text("Clear alarms") }
             },
             dismissButton = {
                 TextButton(onClick = { confirming = false }) { Text("Cancel") }

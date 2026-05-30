@@ -253,6 +253,40 @@ class SyncOrchestratorTest {
         assertTrue(up.alarmBytes != null)
     }
 
+    // ---- WP-CLEARALARMS: targeted PROVISION clear ---------------------------
+
+    @Test
+    fun alarmsOnly_provisionMode_forceWritesEmptyFile_toBlankTheWatch() {
+        // "Clear all alarms": a TARGETED ALARMS_ONLY pass in PROVISION mode must force-write the
+        // (empty) alarm file so the watch's 32 slots are actively cleared — and must NOT touch any
+        // other section.
+        val up = FakeUploader()
+        val result = SyncOrchestrator.sync(
+            SyncInput(watch = watch(), settings = SyncSettings(vibrationStrength = null)),
+            up, SyncSection.ALARMS_ONLY, mode = SyncMode.PROVISION,
+        )
+        assertEquals(listOf(SyncSection.ALARMS), up.order) // only alarms, force-written
+        assertTrue(SyncSection.ALARMS in result.performed)
+        assertTrue(up.alarmBytes != null)
+        // No filter / buttons / settings touched by a targeted alarms clear.
+        assertNull(up.filterEntries)
+        assertNull(up.buttonBytes)
+    }
+
+    @Test
+    fun alarmsOnly_reconcileMode_skipsEmpty_doesNotClearWatch() {
+        // The contrast: an ordinary (RECONCILE) ALARMS_ONLY save of an empty set skip-empties — which
+        // is exactly why "Clear all alarms" needs PROVISION mode (above) to actually blank the watch.
+        val up = FakeUploader()
+        val result = SyncOrchestrator.sync(
+            SyncInput(watch = watch(), settings = SyncSettings(vibrationStrength = null)),
+            up, SyncSection.ALARMS_ONLY, mode = SyncMode.RECONCILE,
+        )
+        assertFalse(SyncSection.ALARMS in up.order)
+        assertTrue(SyncSection.ALARMS in result.skipped)
+        assertNull(up.alarmBytes)
+    }
+
     // ---- order ----------------------------------------------------------------
 
     @Test

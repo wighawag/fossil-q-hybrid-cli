@@ -99,6 +99,8 @@ open class SettingsViewModel(
     private val watchAdmin: WatchAdminSync = NoopWatchAdminSync,
     // WP-DEFAULTS: the "apply defaults profile to this watch" seam (fake in tests).
     private val applyDefaults: ApplyDefaultsSync = NoopApplyDefaults,
+    // WP-CLEARALARMS: the "clear all alarms on this watch" seam (fake in tests).
+    private val clearAlarms: ClearAlarmsSync = NoopClearAlarms,
     // Tests inject a real/Unconfined scope; production passes null → uses [viewModelScope].
     scope: CoroutineScope? = null,
     // WP-PROGRESS (sub-part 3): the process-wide sync signal the Save/Apply controls observe.
@@ -225,6 +227,20 @@ open class SettingsViewModel(
         return applyDefaults.applyDefaultsToActiveWatch()
     }
 
+    // ---- clear all alarms (WP-CLEARALARMS) -----------------------------------
+
+    /**
+     * WP-CLEARALARMS — delete the active watch's standard alarms (slots 0–15) and push the blanked
+     * alarm file to the watch (force-write so the watch is actively cleared, unlike a normal
+     * skip-empties save). No-op (returns `false`) without an active watch. Otherwise forwards to the
+     * injectable [ClearAlarmsSync] seam (SyncState SYNCING → SUCCESS/ERROR). Gate behind a confirm
+     * dialog in the UI — it removes all the watch's alarms.
+     */
+    fun clearAlarmsOnActiveWatch(): Boolean {
+        if (uiState.value.activeWatch == null) return false
+        return clearAlarms.clearAlarmsOnActiveWatch()
+    }
+
     // ---- inactivity nudge (APP PREF + deferred live command) -----------------
 
     /**
@@ -323,6 +339,12 @@ open class SettingsViewModel(
                             },
                         ),
                         applyDefaults = ServiceApplyDefaults.create(appContext) { block ->
+                            kotlinx.coroutines.CoroutineScope(
+                                kotlinx.coroutines.Dispatchers.IO +
+                                    kotlinx.coroutines.SupervisorJob()
+                            ).launch { block() }
+                        },
+                        clearAlarms = ServiceClearAlarms.create(appContext) { block ->
                             kotlinx.coroutines.CoroutineScope(
                                 kotlinx.coroutines.Dispatchers.IO +
                                     kotlinx.coroutines.SupervisorJob()

@@ -23,6 +23,14 @@ interface WatchAlarmDao {
     @Query("DELETE FROM watch_alarms WHERE watchMac = :mac")
     suspend fun deleteForWatch(mac: String)
 
+    /**
+     * WP-CLEARALARMS — delete only the STANDARD user alarm slots (0..15) for [mac], leaving the
+     * calendar-sync slots (16..31, owned by WP9/WP13) intact. Used by the Settings "Clear all
+     * alarms" action.
+     */
+    @Query("DELETE FROM watch_alarms WHERE watchMac = :mac AND slotId BETWEEN 0 AND 15")
+    suspend fun deleteStandardForWatch(mac: String)
+
     @Query("DELETE FROM watch_alarms WHERE watchMac = :mac AND slotId = :slotId")
     suspend fun deleteSlot(mac: String, slotId: Int)
 

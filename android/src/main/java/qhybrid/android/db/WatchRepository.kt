@@ -98,6 +98,13 @@ class WatchRepository(
     suspend fun upsertAlarm(alarm: WatchAlarmEntity) = alarmDao.upsert(alarm)
     suspend fun deleteAlarmSlot(mac: String, slotId: Int) = alarmDao.deleteSlot(mac, slotId)
 
+    /**
+     * WP-CLEARALARMS — delete ALL of [mac]'s standard user alarms (slots 0..15), leaving calendar
+     * slots 16..31 untouched. The mac is normalized to upper-case to match the row PK. The caller
+     * then pushes the (now empty) alarm section to the watch in PROVISION mode to blank it.
+     */
+    suspend fun clearStandardAlarms(mac: String) = alarmDao.deleteStandardForWatch(mac.uppercase())
+
     suspend fun getRules(mac: String) = ruleDao.getForWatch(mac)
     fun observeRules(mac: String) = ruleDao.observeForWatch(mac)
     suspend fun upsertRule(rule: NotificationRuleEntity) = ruleDao.upsert(rule)
