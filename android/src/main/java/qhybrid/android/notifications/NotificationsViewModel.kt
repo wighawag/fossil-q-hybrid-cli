@@ -17,6 +17,7 @@ import qhybrid.android.db.NotificationRuleEntity
 import qhybrid.android.db.WatchEntity
 import qhybrid.android.db.WatchRepository
 import qhybrid.android.sync.GlobalSyncStateSource
+import qhybrid.android.sync.SectionSyncStatus
 import qhybrid.android.sync.SyncProgressUi
 import qhybrid.android.sync.SyncStateSource
 
@@ -35,6 +36,20 @@ data class NotificationsUiState(
 
     /** Package names already configured (for duplicate-rejection in the UI). */
     val packageNames: Set<String> get() = rules.mapTo(HashSet()) { it.packageName }
+
+    // ---- WP-SYNCSTATUS: "is this rule on the watch?" (pure derivation) -------------
+
+    /** When the watch's notification-filter section was last (re-)pushed. 0 = never synced. */
+    val filterSyncedAt: Long get() = activeWatch?.notificationFilterSyncedAt ?: 0
+
+    /** True iff [packageName]'s rule has been pushed to the watch since its last edit. */
+    fun isOnWatch(packageName: String): Boolean {
+        val rule = rules.firstOrNull { it.packageName == packageName } ?: return false
+        return SectionSyncStatus.isOnWatch(rule.updatedAt, filterSyncedAt)
+    }
+
+    /** How many rules are NOT yet on the watch (edited since the last push, or never pushed). */
+    val pendingCount: Int get() = SectionSyncStatus.pendingCount(rules.map { it.updatedAt }, filterSyncedAt)
 }
 
 /**

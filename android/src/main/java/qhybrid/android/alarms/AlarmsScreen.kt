@@ -49,7 +49,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import qhybrid.android.db.WatchAlarmEntity
 import qhybrid.android.sync.ConnectionBanner
+import qhybrid.android.sync.PendingSyncBanner
 import qhybrid.android.sync.SyncProgressUi
+import qhybrid.android.sync.SyncRowBadge
 import qhybrid.android.sync.SyncSaveButton
 import qhybrid.android.sync.SyncSavingDialog
 
@@ -140,6 +142,8 @@ fun AlarmsContent(
             Spacer(Modifier.width(0.dp))
             // WP-SYNCFIX: honest link state — alarms stay editable offline; banner says when synced.
             ConnectionBanner()
+            // WP-SYNCSTATUS: "N change(s) not on the watch" when any alarm is edited-since-push.
+            PendingSyncBanner(state.pendingCount)
             when {
                 !state.hasActiveWatch -> Text(
                     "No active watch — associate one to manage alarms.",
@@ -181,6 +185,7 @@ fun AlarmsContent(
                             items(state.alarms, key = { it.slotId }) { alarm ->
                                 AlarmRow(
                                     alarm = alarm,
+                                    onWatch = state.isOnWatch(alarm.slotId),
                                     onClick = { editing = alarm },
                                     onToggleEnabled = { onToggleEnabled(alarm.slotId) },
                                     onDelete = { onDelete(alarm.slotId) },
@@ -213,6 +218,7 @@ fun AlarmsContent(
 @Composable
 private fun AlarmRow(
     alarm: WatchAlarmEntity,
+    onWatch: Boolean,
     onClick: () -> Unit,
     onToggleEnabled: () -> Unit,
     onDelete: () -> Unit,
@@ -239,6 +245,8 @@ private fun AlarmRow(
                 alarm.label?.takeIf { it.isNotBlank() }?.let {
                     Text(it, style = MaterialTheme.typography.labelSmall)
                 }
+                // WP-SYNCSTATUS: ✓ on-watch vs ⏳ not-synced for THIS alarm.
+                SyncRowBadge(onWatch = onWatch)
             }
             Switch(checked = alarm.isEnabled, onCheckedChange = { onToggleEnabled() })
             IconButton(onClick = onDelete) {

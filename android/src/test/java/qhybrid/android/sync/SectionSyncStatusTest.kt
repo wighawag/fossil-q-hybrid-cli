@@ -67,4 +67,12 @@ class SectionSyncStatusTest {
     fun pendingCount_allOnWatch_isZero() {
         assertEquals(0, SectionSyncStatus.pendingCount(listOf(100, 150, 200), sectionSyncedAt = 200))
     }
+
+    // ---- banner text (pure, pluralised) --------------------------------------
+
+    @Test
+    fun pendingMessage_pluralises() {
+        assertEquals("1 change not on the watch — Save to watch.", pendingMessage(1))
+        assertEquals("3 changes not on the watch — Save to watch.", pendingMessage(3))
+    }
 }

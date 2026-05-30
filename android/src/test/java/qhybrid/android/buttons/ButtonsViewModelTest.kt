@@ -404,4 +404,45 @@ class ButtonsViewModelTest : DbTestBase() {
         // through the WP3 service's SyncOrchestrator) is wired.
         assertTrue(ServiceButtonSync.BUTTON_UPLOAD_WIRED)
     }
+
+    // ---- WP-SYNCSTATUS: per-button on-watch derivation -----------------------
+
+    private fun repoAt(clock: () -> Long) = qhybrid.android.db.WatchRepository(db, now = clock)
+
+    @Test
+    fun neverSynced_everyMappingIsPending() {
+        val mac = "AA:00:00:00:00:01"
+        runBlocking {
+            watchDao.upsert(watch(mac, active = true))
+            repoAt { 1_000L }.upsertButton(mapping(mac, 0x10))
+        }
+        val s = awaitState(vm().uiState) { it.mappings.size == 1 }
+        assertEquals(1, s.pendingCount)
+        assertFalse(s.isOnWatch(0x10))
+    }
+
+    @Test
+    fun mappingEditedBeforeSync_isOnWatch() {
+        val mac = "AA:00:00:00:00:01"
+        runBlocking {
+            watchDao.upsert(watch(mac, active = true).copy(buttonsSyncedAt = 2_000L))
+            repoAt { 1_000L }.upsertButton(mapping(mac, 0x10))
+        }
+        val s = awaitState(vm().uiState) { it.mappings.size == 1 && it.pendingCount == 0 }
+        assertTrue(s.isOnWatch(0x10))
+    }
+
+    @Test
+    fun mixedMappings_pendingCountReflectsOnlyEditedSincePush() {
+        val mac = "AA:00:00:00:00:01"
+        runBlocking {
+            watchDao.upsert(watch(mac, active = true).copy(buttonsSyncedAt = 1_500L))
+            repoAt { 1_000L }.upsertButton(mapping(mac, 0x10)) // before push → on-watch
+            repoAt { 2_000L }.upsertButton(mapping(mac, 0x20)) // after push  → pending
+        }
+        val s = awaitState(vm().uiState) { it.mappings.size == 2 }
+        assertTrue(s.isOnWatch(0x10))
+        assertFalse(s.isOnWatch(0x20))
+        assertEquals(1, s.pendingCount)
+    }
 }

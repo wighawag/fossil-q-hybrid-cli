@@ -17,6 +17,7 @@ import qhybrid.android.db.WatchAlarmEntity
 import qhybrid.android.db.WatchEntity
 import qhybrid.android.db.WatchRepository
 import qhybrid.android.sync.GlobalSyncStateSource
+import qhybrid.android.sync.SectionSyncStatus
 import qhybrid.android.sync.SyncProgressUi
 import qhybrid.android.sync.SyncStateSource
 
@@ -43,6 +44,20 @@ data class AlarmsUiState(
             val used = alarms.mapTo(HashSet()) { it.slotId }
             return (USER_SLOT_MIN..USER_SLOT_MAX).firstOrNull { it !in used }
         }
+
+    // ---- WP-SYNCSTATUS: "is this alarm on the watch?" (pure derivation) ------------
+
+    /** When the watch's alarms section was last (re-)pushed. 0 = never synced. */
+    val alarmsSyncedAt: Long get() = activeWatch?.alarmsSyncedAt ?: 0
+
+    /** True iff [slotId]'s alarm has been pushed to the watch since its last edit. */
+    fun isOnWatch(slotId: Int): Boolean {
+        val alarm = alarms.firstOrNull { it.slotId == slotId } ?: return false
+        return SectionSyncStatus.isOnWatch(alarm.updatedAt, alarmsSyncedAt)
+    }
+
+    /** How many alarms are NOT yet on the watch (edited since the last push, or never pushed). */
+    val pendingCount: Int get() = SectionSyncStatus.pendingCount(alarms.map { it.updatedAt }, alarmsSyncedAt)
 
     companion object {
         const val USER_SLOT_MIN = 0

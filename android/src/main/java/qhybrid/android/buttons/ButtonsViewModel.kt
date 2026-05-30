@@ -17,6 +17,7 @@ import qhybrid.android.db.ButtonMappingEntity
 import qhybrid.android.db.WatchEntity
 import qhybrid.android.db.WatchRepository
 import qhybrid.android.sync.GlobalSyncStateSource
+import qhybrid.android.sync.SectionSyncStatus
 import qhybrid.android.sync.SyncProgressUi
 import qhybrid.android.sync.SyncStateSource
 
@@ -50,6 +51,20 @@ data class ButtonsUiState(
      */
     val slots: List<Pair<Int, ButtonMappingEntity?>>
         get() = ButtonSlots.ALL.map { id -> id to mappingFor(id) }
+
+    // ---- WP-SYNCSTATUS: "is this button on the watch?" (pure derivation) -----------
+
+    /** When the watch's buttons section was last (re-)pushed. 0 = never synced. */
+    val buttonsSyncedAt: Long get() = activeWatch?.buttonsSyncedAt ?: 0
+
+    /** True iff [buttonId]'s mapping has been pushed to the watch since its last edit. */
+    fun isOnWatch(buttonId: Int): Boolean {
+        val mapping = mappingFor(buttonId) ?: return false
+        return SectionSyncStatus.isOnWatch(mapping.updatedAt, buttonsSyncedAt)
+    }
+
+    /** How many mappings are NOT yet on the watch (edited since the last push, or never pushed). */
+    val pendingCount: Int get() = SectionSyncStatus.pendingCount(mappings.map { it.updatedAt }, buttonsSyncedAt)
 }
 
 /**

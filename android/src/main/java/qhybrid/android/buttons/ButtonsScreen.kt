@@ -36,7 +36,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import qhybrid.android.db.ButtonMappingEntity
 import qhybrid.android.sync.ConnectionBanner
+import qhybrid.android.sync.PendingSyncBanner
 import qhybrid.android.sync.SyncProgressUi
+import qhybrid.android.sync.SyncRowBadge
 import qhybrid.android.sync.SyncSaveButton
 import qhybrid.android.sync.SyncSavingDialog
 
@@ -104,6 +106,8 @@ fun ButtonsContent(
             // WP-SYNCFIX: honest link state — editing is always allowed (Room is the source of
             // truth); the banner says when changes reach the watch.
             ConnectionBanner()
+            // WP-SYNCSTATUS: "N change(s) not on the watch" when any mapping is edited-since-push.
+            PendingSyncBanner(state.pendingCount)
             when {
                 !state.hasActiveWatch -> Text(
                     "No active watch — associate one to manage button mappings.",
@@ -133,6 +137,8 @@ fun ButtonsContent(
                         SlotCard(
                             buttonId = buttonId,
                             mapping = mapping,
+                            // Only a CONFIGURED slot has a sync state; an unset slot shows no badge.
+                            onWatch = mapping != null && state.isOnWatch(buttonId),
                             onClick = { editingSlot = buttonId },
                             onClear = { onClear(buttonId) },
                         )
@@ -161,6 +167,7 @@ fun ButtonsContent(
 private fun SlotCard(
     buttonId: Int,
     mapping: ButtonMappingEntity?,
+    onWatch: Boolean,
     onClick: () -> Unit,
     onClear: () -> Unit,
 ) {
@@ -191,6 +198,8 @@ private fun SlotCard(
                             ButtonActionsJson.summary(mapping.actionsJson),
                         style = MaterialTheme.typography.labelSmall,
                     )
+                    // WP-SYNCSTATUS: ✓ on-watch vs ⏳ not-synced for THIS button (configured only).
+                    SyncRowBadge(onWatch = onWatch)
                 }
             }
             TextButton(onClick = onClick) { Text(if (mapping == null) "Set" else "Edit") }

@@ -319,4 +319,45 @@ class AlarmsViewModelTest : DbTestBase() {
         // through the WP3 service's SyncOrchestrator) is wired.
         assertTrue(ServiceAlarmSync.ALARM_UPLOAD_WIRED)
     }
+
+    // ---- WP-SYNCSTATUS: per-alarm on-watch derivation ------------------------
+
+    private fun repoAt(clock: () -> Long) = qhybrid.android.db.WatchRepository(db, now = clock)
+
+    @Test
+    fun neverSynced_everyAlarmIsPending() {
+        val mac = "AA:00:00:00:00:01"
+        runBlocking {
+            watchDao.upsert(watch(mac, active = true))
+            repoAt { 1_000L }.upsertAlarm(userAlarm(mac, slot = 0))
+        }
+        val s = awaitState(vm().uiState) { it.alarms.size == 1 }
+        assertEquals(1, s.pendingCount)
+        assertFalse(s.isOnWatch(0))
+    }
+
+    @Test
+    fun alarmEditedBeforeSync_isOnWatch() {
+        val mac = "AA:00:00:00:00:01"
+        runBlocking {
+            watchDao.upsert(watch(mac, active = true).copy(alarmsSyncedAt = 2_000L))
+            repoAt { 1_000L }.upsertAlarm(userAlarm(mac, slot = 0))
+        }
+        val s = awaitState(vm().uiState) { it.alarms.size == 1 && it.pendingCount == 0 }
+        assertTrue(s.isOnWatch(0))
+    }
+
+    @Test
+    fun mixedAlarms_pendingCountReflectsOnlyEditedSincePush() {
+        val mac = "AA:00:00:00:00:01"
+        runBlocking {
+            watchDao.upsert(watch(mac, active = true).copy(alarmsSyncedAt = 1_500L))
+            repoAt { 1_000L }.upsertAlarm(userAlarm(mac, slot = 0)) // before push → on-watch
+            repoAt { 2_000L }.upsertAlarm(userAlarm(mac, slot = 1)) // after push  → pending
+        }
+        val s = awaitState(vm().uiState) { it.alarms.size == 2 }
+        assertTrue(s.isOnWatch(0))
+        assertFalse(s.isOnWatch(1))
+        assertEquals(1, s.pendingCount)
+    }
 }

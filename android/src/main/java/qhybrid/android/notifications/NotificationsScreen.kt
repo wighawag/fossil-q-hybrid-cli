@@ -51,7 +51,9 @@ import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import qhybrid.android.sync.ConnectionBanner
+import qhybrid.android.sync.PendingSyncBanner
 import qhybrid.android.sync.SyncProgressUi
+import qhybrid.android.sync.SyncRowBadge
 import qhybrid.android.sync.SyncSaveButton
 import qhybrid.android.sync.SyncSavingDialog
 import kotlinx.coroutines.Dispatchers
@@ -159,6 +161,8 @@ fun NotificationsContent(
             Spacer(Modifier.width(0.dp))
             // WP-SYNCFIX: honest link state — rules stay editable offline; banner says when synced.
             ConnectionBanner()
+            // WP-SYNCSTATUS: "N change(s) not on the watch" when any rule is edited-since-push.
+            PendingSyncBanner(state.pendingCount)
             when {
                 !state.hasActiveWatch -> Text(
                     "No active watch — associate one to manage notification rules.",
@@ -200,6 +204,7 @@ fun NotificationsContent(
                             items(state.rules, key = { it.packageName }) { r ->
                                 RuleRow(
                                     rule = r,
+                                    onWatch = state.isOnWatch(r.packageName),
                                     onClick = { addingNew = false; editing = r },
                                     onPlay = { onPlay(r.packageName) },
                                     onDelete = { onDelete(r.packageName) },
@@ -235,6 +240,7 @@ fun NotificationsContent(
 @Composable
 private fun RuleRow(
     rule: NotificationRuleEntity,
+    onWatch: Boolean,
     onClick: () -> Unit,
     onPlay: () -> Unit,
     onDelete: () -> Unit,
@@ -261,10 +267,14 @@ private fun RuleRow(
                     VibePatterns.handSummary(rule.hourHandDegrees, rule.minuteHandDegrees),
                     style = MaterialTheme.typography.labelSmall,
                 )
+                // WP-SYNCSTATUS: ✓ on-watch vs ⏳ not-synced for THIS rule.
+                SyncRowBadge(onWatch = onWatch)
             }
             // WP11: test the on-watch play for THIS app (buzz + hands per the saved rule, which is
             // already on the watch in its NOTIFICATION_FILTER). Connect-then-play if disconnected.
-            IconButton(onClick = onPlay) {
+            // WP-SYNCSTATUS: DISABLED until the rule is on the watch — the watch doesn't have this
+            // rule's vibe/hands yet, so a play would no-op (or buzz the wrong/stale config).
+            IconButton(onClick = onPlay, enabled = onWatch) {
                 Icon(Icons.Filled.PlayArrow, contentDescription = "Play on watch")
             }
             IconButton(onClick = onDelete) {

@@ -345,4 +345,62 @@ class NotificationsViewModelTest : DbTestBase() {
         // through the WP3 service's SyncOrchestrator) is wired.
         assertTrue(ServiceNotificationSync.FILTER_UPLOAD_WIRED)
     }
+
+    // ---- WP-SYNCSTATUS: per-rule on-watch derivation -------------------------
+
+    /** A repository over the same in-memory DB but with a controllable clock for `updatedAt`. */
+    private fun repoAt(clock: () -> Long) = qhybrid.android.db.WatchRepository(db, now = clock)
+
+    @Test
+    fun neverSynced_everyRuleIsPending_andPlayDisabled() {
+        val mac = "AA:00:00:00:00:01"
+        runBlocking {
+            // watch with notificationFilterSyncedAt = 0 (never synced) + a rule written at T=1000.
+            watchDao.upsert(watch(mac, active = true))
+            repoAt { 1_000L }.upsertRule(rule(mac, "com.whatsapp"))
+        }
+        val s = awaitState(vm().uiState) { it.rules.size == 1 }
+        assertEquals(1, s.pendingCount)
+        assertFalse(s.isOnWatch("com.whatsapp"))
+    }
+
+    @Test
+    fun ruleEditedBeforeSync_isOnWatch() {
+        val mac = "AA:00:00:00:00:01"
+        runBlocking {
+            // rule written at 1000, then the filter section pushed at 2000 → on-watch.
+            watchDao.upsert(watch(mac, active = true).copy(notificationFilterSyncedAt = 2_000L))
+            repoAt { 1_000L }.upsertRule(rule(mac, "com.whatsapp"))
+        }
+        val s = awaitState(vm().uiState) { it.rules.size == 1 && it.pendingCount == 0 }
+        assertTrue(s.isOnWatch("com.whatsapp"))
+        assertEquals(0, s.pendingCount)
+    }
+
+    @Test
+    fun ruleEditedAfterSync_isPending() {
+        val mac = "AA:00:00:00:00:01"
+        runBlocking {
+            // filter pushed at 1000, then the rule edited at 2000 → pending again.
+            watchDao.upsert(watch(mac, active = true).copy(notificationFilterSyncedAt = 1_000L))
+            repoAt { 2_000L }.upsertRule(rule(mac, "com.whatsapp"))
+        }
+        val s = awaitState(vm().uiState) { it.rules.size == 1 }
+        assertFalse(s.isOnWatch("com.whatsapp"))
+        assertEquals(1, s.pendingCount)
+    }
+
+    @Test
+    fun mixedRules_pendingCountReflectsOnlyEditedSincePush() {
+        val mac = "AA:00:00:00:00:01"
+        runBlocking {
+            watchDao.upsert(watch(mac, active = true).copy(notificationFilterSyncedAt = 1_500L))
+            repoAt { 1_000L }.upsertRule(rule(mac, "com.a")) // before push → on-watch
+            repoAt { 2_000L }.upsertRule(rule(mac, "com.b")) // after push  → pending
+        }
+        val s = awaitState(vm().uiState) { it.rules.size == 2 }
+        assertTrue(s.isOnWatch("com.a"))
+        assertFalse(s.isOnWatch("com.b"))
+        assertEquals(1, s.pendingCount)
+    }
 }
