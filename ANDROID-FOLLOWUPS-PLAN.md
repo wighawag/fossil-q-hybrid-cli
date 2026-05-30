@@ -294,6 +294,13 @@ across installs/devices. Same serialization shape as a per-watch export, minus t
 5. **`wp-defaults: status banner`** — document the profile scope (unreadable-only), the factory
    button defaults, storage, export/import, and the apply-at-provision contract. Commit.
 
+> **STATUS (shipped):** see [`WP-DEFAULTS-STATUS.md`](WP-DEFAULTS-STATUS.md). Built in 6 commits.
+> The stale `MUSIC_MULTIMODE`/`MUSIC_CONTROL` button spec was translated to `MULTI_FUNCTION`
+> (BOTTOM). The `SyncOrchestrator` now **force-writes buttons in PROVISION** (empty → blank).
+> A manual **"Apply defaults to this watch"** action full-overwrites buttons + filter on the active
+> watch on demand. Export/import is **self-contained** (FileProvider share + `ACTION_OPEN_DOCUMENT`)
+> — **not** deferred. No wire change; CLI untouched.
+
 **Acceptance:** the profile round-trips; the factory buttons are Top=Stopwatch / Middle=toggle
 (TIMEZONE_2,ALARM,DATE) / Bottom=Music; an empty alarm/rule section yields empty seed rows; a
 profile with N default alarms yields exactly N alarm rows re-keyed to the new mac; export→import is
