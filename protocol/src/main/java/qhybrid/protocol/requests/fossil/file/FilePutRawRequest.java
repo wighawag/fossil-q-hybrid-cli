@@ -169,23 +169,25 @@ public class FilePutRawRequest extends FossilRequest {
                     // can block/throw inside the transport, and if it ran first it prevented the
                     // completion below from ever executing (the put silently never finished, so the
                     // next put — the buzz's play file — never ran). Completion must NOT depend on it.
+                    // WP-BUZZTEST: SEND the type-4 close frame so the WATCH finalises this put and
+                    // promptly accepts the NEXT one. On-device we found that WITHOUT the close the
+                    // watch takes ~10s to accept the following put (the buzz's play file), by which
+                    // time it returns its own type-9 PUT-timeout — no vibration. The CLI/BlueZ path
+                    // always sent the close and got fast accepts; we must do the same.
+                    //
+                    // BUT we still COMPLETE this put on the type-8 CRC-confirm (we do NOT wait for
+                    // a type-4 close-ACK, which this firmware never delivers over Android). The
+                    // close is sent fire-and-forget AFTER marking UPLOADED + firing onFilePut, so
+                    // completion/queue-advance never depends on it, and a transport hiccup on the
+                    // close can't undo completion. A later/stale type-4 is ignored by the
+                    // handle-guard at the top of this method.
+                    // Send the close INLINE first (ordered correctly on the serial control channel,
+                    // ahead of the next put's open), then COMPLETE without waiting for a type-4 ack.
+                    sendCloseFrame();
                     this.state = UploadState.UPLOADED;
-                    PUTLOG.info("FilePut[0x{}] COMPLETE (CRC confirmed at type-8)",
+                    PUTLOG.info("FilePut[0x{}] COMPLETE (CRC confirmed at type-8; close sent)",
                             String.format("%04X", handle));
                     onFilePut(true);
-
-                    // NOTE: we deliberately do NOT send a type-4 "file close" frame here.
-                    //
-                    // The close write targets 3dda0003, an INDICATE characteristic = write-WITH-
-                    // response. This firmware sends no response to the close, so on Android that
-                    // write BLOCKS the BLE callback thread for the full op-timeout (~10s) — and
-                    // because the request queue only advances after this handler returns, the NEXT
-                    // put (the buzz's NOTIFICATION_PLAY file) was delayed by ~10s and effectively
-                    // never ran for a quick second tap (no vibration). The file is already committed
-                    // at the type-8 CRC-confirm (verified on BlueZ, where the close+ack DO happen
-                    // but add nothing), so the close is pure courtesy with no functional value and
-                    // real harm on Android. Dropping it lets the queue advance immediately to the
-                    // play file. (FINDINGS: firmware never emits a type-4 close-ack over Android.)
                     break;
                 }
                 case 4: {
@@ -253,6 +255,28 @@ public class FilePutRawRequest extends FossilRequest {
     @Override
     public boolean isFinished() {
         return this.state == UploadState.UPLOADED;
+    }
+
+    /**
+     * WP-BUZZTEST: send the type-4 "file close" frame so the watch finalises this transfer and
+     * accepts the next put promptly (without it, on-device the watch took ~10s to accept the next
+     * put and then returned its own type-9 timeout). Sent INLINE so it is correctly ordered on the
+     * single control channel, ahead of any following put's open. Best-effort: the put is already
+     * being completed by the caller regardless of this write's outcome.
+     */
+    private void sendCloseFrame() {
+        try {
+            ByteBuffer buffer2 = ByteBuffer.allocate(3);
+            buffer2.order(ByteOrder.LITTLE_ENDIAN);
+            buffer2.put((byte) 4);
+            buffer2.putShort(this.handle);
+            adapter.getDeviceSupport().createWriteBatch("file close")
+                    .write(UUID.fromString("3dda0003-957f-7d4a-34a6-74696673696d"), buffer2.array())
+                    .queue();
+        } catch (RuntimeException e) {
+            PUTLOG.warn("FilePut[0x{}] close frame failed (ignored — already complete): {}",
+                    String.format("%04X", this.handle), e.toString());
+        }
     }
 
     private void prepareFilePackets(byte[] file) {
