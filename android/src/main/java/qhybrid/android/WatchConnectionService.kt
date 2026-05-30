@@ -15,6 +15,7 @@ import android.util.Log
 import kotlinx.coroutines.runBlocking
 import qhybrid.android.db.WatchRepository
 import qhybrid.android.settings.SharedPreferencesSettingsPrefs
+import qhybrid.android.sync.ConnectSyncDecider
 import qhybrid.android.sync.SyncDataLoader
 import qhybrid.android.sync.SyncOrchestrator
 import qhybrid.android.sync.SyncSection
@@ -202,8 +203,7 @@ class WatchConnectionService : Service() {
             ACTION_CONNECT -> {
                 val mac = intent.getStringExtra(EXTRA_MAC) ?: CompanionManager.getAssociatedMac(this)
                 if (mac != null) {
-                    // WP14: ensure the periodic safety-sync job is armed (idempotent, KEEP policy).
-                    qhybrid.android.sync.SyncScheduler.schedule(applicationContext)
+                    // WP-PULLSYNC: no periodic safety-sync any more (sync is user-initiated).
                     submitConnect(mac)
                 } else {
                     Log.w(TAG, "ACTION_CONNECT with no mac and no associated mac")
@@ -332,13 +332,31 @@ class WatchConnectionService : Service() {
                 // the on-connect hook below; clear the pending flag so the failure paths don't
                 // also publish an error. Pick up the TARGETED sections it requested (null = full
                 // reconcile, the default for a plain on-connect).
-                pendingSyncOnConnect.set(false)
-                val onConnectSections = pendingSyncSections.getAndSet(null) ?: SyncSection.ALL
-                // WP3 sync-on-connect hook (WP5/6/9 fill in alarm/filter/calendar uploads).
-                runOnConnectSync(controller, onConnectSections)
+                // WP-PULLSYNC: connecting NO LONGER auto-pushes the full config. Sync is now an
+                // explicit user action (per-screen Save-to-watch, or the Settings "Sync all"
+                // button) — the watch keeps its config across disconnects, so re-pushing
+                // everything on every reconnect was redundant AND flooded the single BLE control
+                // channel (it broke the manual buzz). On connect we only:
+                //   (a) run a sync the user explicitly requested while the link was down
+                //       ([pendingSyncOnConnect] — a Save-to-watch or "Sync all"), OR
+                //   (b) do a ONE-TIME full provisioning sync for a BRAND-NEW watch (no Room row
+                //       yet) so a freshly-added watch gets its config; known watches sync never.
+                val requestedSections = pendingSyncSections.getAndSet(null)
+                val hadPendingSync = pendingSyncOnConnect.getAndSet(false)
+                when (val d = ConnectSyncDecider.decide(hadPendingSync, requestedSections, isNewWatch(mac))) {
+                    is ConnectSyncDecider.Decision.Sync -> {
+                        Log.i(TAG, "on-connect sync: ${d.reason} sections=${d.sections}")
+                        runOnConnectSync(controller, d.sections)
+                    }
+                    ConnectSyncDecider.Decision.None ->
+                        Log.i(TAG, "known watch $mac — no auto-sync on connect (sync is user-initiated)")
+                }
+                // WP-PULLSYNC: register the watch row AFTER deciding newness so the next connect
+                // is treated as "known" (no repeated provisioning). Idempotent + marks it active.
+                registerWatchRow(mac)
                 // WP-BUZZTEST: a manual buzz requested while the link was down connects here, then
-                // buzzes (we're already on the ble-worker). Runs AFTER the on-connect sync so it
-                // is sequenced behind any pending writes on the single control channel.
+                // buzzes (we're already on the ble-worker). Runs AFTER any pending sync so it is
+                // sequenced behind those writes on the single control channel.
                 pendingBuzzPattern.getAndSet(null)?.let { pattern -> runBuzz(controller, pattern) }
                 // WP-ACTIVITY: also pull the activity file on connect so the Sleep screen +
                 // Dashboard steps are populated hands-free. We are already on the ble-worker, so
@@ -446,6 +464,26 @@ class WatchConnectionService : Service() {
             WatchRepository(applicationContext),
             SharedPreferencesSettingsPrefs(applicationContext),
         )
+
+    /**
+     * WP-PULLSYNC — true when [mac] has no Room row yet (a brand-new association). A new watch
+     * gets a one-time full provisioning sync on its first successful connect; a known watch never
+     * auto-syncs (sync is user-initiated). Runs on the ble-worker; the suspending DB read is done
+     * with [runBlocking] safely (never the main thread).
+     */
+    private fun isNewWatch(mac: String): Boolean =
+        runCatching { runBlocking { WatchRepository(applicationContext).getWatch(mac) == null } }
+            .getOrDefault(false)
+
+    /**
+     * WP-PULLSYNC — mirror the association into the Room registry (create-if-missing + mark
+     * active), so the next connect is treated as a KNOWN watch (no repeated provisioning).
+     * Idempotent. Runs on the ble-worker.
+     */
+    private fun registerWatchRow(mac: String) {
+        runCatching { runBlocking { WatchRepository(applicationContext).registerWatch(mac, name = mac) } }
+            .onFailure { Log.w(TAG, "registerWatch failed", it) }
+    }
 
     /**
      * WP-SYNCFIX — "Save to watch". If the link is already up, run the sync immediately. If it is
@@ -667,8 +705,6 @@ class WatchConnectionService : Service() {
                 clearDeviceInfo = true,
             )
             if (stopAfter) {
-                // WP14: full stop — cancel the periodic safety-sync too.
-                qhybrid.android.sync.SyncScheduler.cancel(applicationContext)
                 stopForegroundCompat()
                 stopSelf()
             }
