@@ -14,14 +14,12 @@ import qhybrid.protocol.requests.fossil.alarm.CalendarAlarmMapper.CalendarEvent
  * concrete dated occurrences that fall inside a time range — exactly the `[now, now + windowDays)`
  * window the WP9 mapper wants. Querying raw `Events` would require expanding RRULEs by hand.
  *
- * **Why `Instances.query(...)` and NOT a raw `CONTENT_URI/<begin>/<end>` cursor:** the provider's
- * `Instances` table is expanded **lazily/asynchronously** — a freshly-added (or server-synced)
- * event lands in the `Events` table immediately but its expanded occurrences can lag the
- * `Instances` table by MINUTES. `CalendarContract.Instances.query(...)` is documented to **trigger
- * the instance expansion for the requested range**, so reading through it makes the new occurrences
- * materialize on-demand instead of returning a stale/empty range. This is the fix for "a just-added
- * Sunday event didn't get an alarm until ~5 min later" — the raw-URI cursor read the not-yet-
- * expanded table.
+ * **Read via the `Instances` range URI (`CONTENT_URI/<begin>/<end>`).** This is the original,
+ * field-proven query. (An earlier attempt to use `Instances.query(...)` as the primary path to
+ * force eager expansion regressed real devices — it could return a usable-looking cursor whose
+ * columns didn't resolve, yielding 0 events for a calendar that genuinely had events — so we keep
+ * the range-URI cursor as primary. The lazy-expansion delay is tolerated; the on-change observer +
+ * connect refresh re-read once the provider catches up.)
  *
  * **All-day events are skipped.** An all-day event's `BEGIN` is midnight UTC, which maps to an
  * arbitrary local hour — there is no meaningful wall-clock alarm time, and the watch alarm is a
@@ -37,47 +35,38 @@ class SystemCalendarSource(context: Context) : CalendarSource {
 
     override fun readUpcoming(nowEpochMillis: Long, windowDays: Int): CalendarSource.Read {
         val windowEnd = nowEpochMillis + windowDays.toLong() * MILLIS_PER_DAY
+        val uri = CalendarContract.Instances.CONTENT_URI.buildUpon()
+            .appendPath(nowEpochMillis.toString())
+            .appendPath(windowEnd.toString())
+            .build()
 
-        // Instances.query(...) FORCES the provider to expand the [begin, end) range on demand
-        // (vs. a raw CONTENT_URI cursor which can read a stale, not-yet-expanded table). This is
-        // what makes a just-added / just-synced event show up immediately instead of minutes later.
-        // If it THROWS (some OEM providers do), fall back to the raw CONTENT_URI cursor rather than
-        // reporting a failed read.
+        // The original, field-proven query: a range-bounded Instances cursor. runCatching captures
+        // a provider failure as a FAILED read (so the caller never wipes existing alarms for it).
         var failed = false
-        var cursor: Cursor? = runCatching {
-            CalendarContract.Instances.query(
-                appContext.contentResolver,
+        val cursor: Cursor? = runCatching {
+            appContext.contentResolver.query(
+                uri,
                 PROJECTION,
-                /* begin */ nowEpochMillis,
-                /* end */ windowEnd,
+                /* selection */ null,
+                /* selectionArgs */ null,
+                /* sortOrder */ "${CalendarContract.Instances.BEGIN} ASC",
             )
-        }.onFailure { Log.w(TAG, "Instances.query failed — falling back to CONTENT_URI", it) }
-            .getOrNull()
+        }.onFailure {
+            Log.w(TAG, "calendar query failed", it)
+            failed = true
+        }.getOrNull()
 
-        if (cursor == null) {
-            cursor = runCatching {
-                val uri = CalendarContract.Instances.CONTENT_URI.buildUpon()
-                    .appendPath(nowEpochMillis.toString())
-                    .appendPath(windowEnd.toString())
-                    .build()
-                appContext.contentResolver.query(
-                    uri, PROJECTION, null, null,
-                    "${CalendarContract.Instances.BEGIN} ASC",
-                )
-            }.onFailure {
-                Log.w(TAG, "calendar query failed (both Instances.query and CONTENT_URI)", it)
-                failed = true
-            }.getOrNull()
-        }
-
-        // A null cursor with no thrown exception is ALSO a failed read (provider unavailable) — we
-        // must NOT report "0 events" for it, or the caller would wipe the existing calendar alarms.
-        if (cursor == null) {
-            return CalendarSource.Read.FAILED
-        }
+        // A query EXCEPTION is a failed read — do NOT report "0 events" (the caller would wipe the
+        // existing calendar alarms). But a NON-NULL cursor (even empty) is a genuine success, and
+        // a NULL cursor with no exception is treated as a successful empty read (matches the
+        // original working behaviour — most providers return a real cursor, never null here).
         if (failed) {
-            cursor.close()
+            cursor?.close()
             return CalendarSource.Read.FAILED
+        }
+        if (cursor == null) {
+            Log.i(TAG, "calendar read: null cursor (no provider) — treating as empty")
+            return CalendarSource.Read.success(emptyList())
         }
 
         val out = ArrayList<CalendarEvent>()
