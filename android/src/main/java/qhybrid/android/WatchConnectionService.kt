@@ -647,10 +647,12 @@ class WatchConnectionService : Service() {
                 "provision $mac: read-back seed vibration=${seededSettings.vibrationStrength} " +
                     "stepGoal=${seededSettings.stepGoal} (configEntries=${entries.size})",
             )
-            // TODO(WP-ONBOARD): seed nudge / 2nd-timezone app prefs (SettingsPrefs) from
-            // seededSettings.nudge* / .secondTimezoneOffsetMinutes. Deferred per the WP brief — those
-            // are user-level (not per-watch) prefs; the must-fix symptom is the per-watch vibration
-            // strength (+ step goal) on the WatchEntity, handled here.
+            // WP-ONBOARD: seed the app-level (global) nudge / 2nd-timezone prefs from the read-back
+            // — but ONLY when the watch actually HAS them set (read wins). A watch reporting nudge
+            // OFF / 2nd-tz UNSET must NOT clobber an existing global pref (PrefSeedDecision policy).
+            // Best-effort: a failure here never blocks adding the watch.
+            runCatching { seedAppPrefsFromWatch(seededSettings) }
+                .onFailure { Log.w(TAG, "provision $mac: seeding app prefs failed (non-fatal)", it) }
 
             // Persist the per-watch READABLE fields read from the watch (vibration + step goal),
             // plus the live device info. Absent on the watch → constants (handled by ConfigToSeed).
@@ -662,6 +664,28 @@ class WatchConnectionService : Service() {
             Log.e(TAG, "provisionNewWatch($mac) failed", e)
             null
         }
+    }
+
+    /**
+     * WP-ONBOARD — seed the app-level (global) nudge / 2nd-timezone prefs from a new watch's
+     * read-back, applying the conservative [qhybrid.android.onboard.PrefSeedDecision] policy: write
+     * ONLY values the watch actually has set (nudge enabled / a concrete tz offset); a watch's
+     * "off"/"unset" never clobbers an existing global pref. Idempotent + best-effort.
+     */
+    private fun seedAppPrefsFromWatch(seeded: qhybrid.android.onboard.ConfigToSeed.SeededSettings) {
+        val prefs = SharedPreferencesSettingsPrefs(applicationContext)
+        val decision = qhybrid.android.onboard.PrefSeedDecision.decide(seeded, prefs.get())
+        if (!decision.writesAnything) {
+            Log.i(TAG, "provision: no app-pref seeding (watch has nudge off / 2nd-tz unset)")
+            return
+        }
+        decision.nudge?.let { prefs.setNudge(it.enabled, it.minutes) }
+        decision.secondTimezoneOffsetMinutes?.let { prefs.setSecondTimezoneOffset(it) }
+        Log.i(
+            TAG,
+            "provision: seeded app prefs from watch — nudge=${decision.nudge} " +
+                "secondTz=${decision.secondTimezoneOffsetMinutes}",
+        )
     }
 
     /**
