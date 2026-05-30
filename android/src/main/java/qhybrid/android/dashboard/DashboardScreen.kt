@@ -28,6 +28,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -150,35 +151,68 @@ fun DashboardContent(
  * connect ("Adding your watch…"), then a brief Added / Failed outcome the user can dismiss. While
  * [ProvisioningState.Phase.PROVISIONING] the dialog cannot be dismissed (the work is in flight);
  * the terminal phases offer an OK button. IDLE renders nothing.
+ *
+ * **Stuck-modal escape (WP-ONBOARD follow-up).** If a provisioning pass HANGS (the watch goes out
+ * of range mid-setup, a BLE op stalls, or the process is reused across an Activity relaunch with a
+ * stale in-flight attempt) there used to be NO way out — the modal had no button and ignored
+ * dismiss, so the user had to force-stop the app. Now, after [PROVISION_TIMEOUT_MS] with no update,
+ * the modal surfaces a **Cancel setup** escape that fully tears the attempt down via
+ * [qhybrid.android.WatchConnectionService.cancelProvisioning] (disconnect + clear association +
+ * IDLE), leaving a clean slate to re-add the watch.
  */
 @Composable
 private fun ProvisioningDialog(status: qhybrid.android.onboard.ProvisioningState.Status) {
+    val context = LocalContext.current
     val phase = status.phase
     if (phase == qhybrid.android.onboard.ProvisioningState.Phase.IDLE) return
     val provisioning = phase == qhybrid.android.onboard.ProvisioningState.Phase.PROVISIONING
-    // Acknowledging a terminal outcome CLEARS the process-wide state (back to IDLE) so it never
+
+    // Drive a timeout while PROVISIONING: tick once a second so `timedOut` flips ~PROVISION_TIMEOUT_MS
+    // after the last state update. Reset whenever the status object changes (new phase / new update).
+    var timedOut by remember(status) { mutableStateOf(false) }
+    LaunchedEffect(status) {
+        if (!provisioning) return@LaunchedEffect
+        val deadline = status.lastUpdatedMillis + PROVISION_TIMEOUT_MS
+        while (System.currentTimeMillis() < deadline) {
+            kotlinx.coroutines.delay(500)
+        }
+        timedOut = true
+    }
+
+    // Acknowledging a TERMINAL outcome CLEARS the process-wide state (back to IDLE) so it never
     // re-appears when navigating back to the Dashboard — the stale-modal bug.
     val ack = { qhybrid.android.onboard.ProvisioningState.acknowledge() }
+    // Cancel a hung PROVISIONING: fully tear the attempt down (forget + clear assoc + IDLE).
+    val cancelSetup = { qhybrid.android.WatchConnectionService.cancelProvisioning(context, status.mac) }
+    // While PROVISIONING the modal is non-dismissable UNTIL it has timed out (then Cancel is offered).
     AlertDialog(
-        onDismissRequest = { if (!provisioning) ack() },
+        onDismissRequest = {
+            when {
+                !provisioning -> ack()
+                timedOut -> cancelSetup()
+                // else: still genuinely in flight — ignore taps outside.
+            }
+        },
         confirmButton = {
-            if (!provisioning) {
-                TextButton(onClick = ack) { Text("OK") }
+            when {
+                !provisioning -> TextButton(onClick = ack) { Text("OK") }
+                timedOut -> TextButton(onClick = cancelSetup) { Text("Cancel setup") }
             }
         },
         title = {
             Text(
-                when (phase) {
-                    qhybrid.android.onboard.ProvisioningState.Phase.PROVISIONING -> "Adding your watch…"
-                    qhybrid.android.onboard.ProvisioningState.Phase.ADDED -> "Watch added"
-                    qhybrid.android.onboard.ProvisioningState.Phase.FAILED -> "Couldn't add the watch"
+                when {
+                    provisioning && timedOut -> "Still adding your watch…"
+                    provisioning -> "Adding your watch…"
+                    phase == qhybrid.android.onboard.ProvisioningState.Phase.ADDED -> "Watch added"
+                    phase == qhybrid.android.onboard.ProvisioningState.Phase.FAILED -> "Couldn't add the watch"
                     else -> ""
                 }
             )
         },
         text = {
-            when (phase) {
-                qhybrid.android.onboard.ProvisioningState.Phase.PROVISIONING -> Row(
+            when {
+                provisioning -> Row(
                     verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
@@ -186,16 +220,20 @@ private fun ProvisioningDialog(status: qhybrid.android.onboard.ProvisioningState
                         modifier = Modifier.size(20.dp), strokeWidth = 2.dp,
                     )
                     Text(
-                        "Setting up your watch. This takes a few seconds while it connects and " +
-                            "saves the initial settings.",
+                        if (timedOut)
+                            "This is taking longer than expected. Keep the watch close to your " +
+                                "phone — or cancel setup and try adding it again."
+                        else
+                            "Setting up your watch. This takes a few seconds while it connects and " +
+                                "saves the initial settings.",
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
-                qhybrid.android.onboard.ProvisioningState.Phase.ADDED -> Text(
+                phase == qhybrid.android.onboard.ProvisioningState.Phase.ADDED -> Text(
                     "Your watch is ready to use.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
-                qhybrid.android.onboard.ProvisioningState.Phase.FAILED -> Text(
+                phase == qhybrid.android.onboard.ProvisioningState.Phase.FAILED -> Text(
                     status.errorMessage ?: "Setup didn't finish. Keep the watch close and try again.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
@@ -204,6 +242,9 @@ private fun ProvisioningDialog(status: qhybrid.android.onboard.ProvisioningState
         },
     )
 }
+
+/** How long "Adding your watch…" may sit with no update before the Cancel-setup escape appears. */
+private const val PROVISION_TIMEOUT_MS = 30_000L
 
 /**
  * Empty-state card shown when no watch is registered: explains the app needs a watch and offers a

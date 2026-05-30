@@ -148,6 +148,33 @@ class WatchConnectionService : Service() {
         /** Remove watch: disconnect WITHOUT re-arming auto-reconnect (the caller cleared the assoc). */
         fun forget(context: Context) = start(context, ACTION_FORGET)
 
+        /**
+         * WP-ONBOARD — user-initiated **cancel** of a brand-new watch's provisioning that hung
+         * ("Adding your watch…" stuck with no terminal outcome). This is the escape hatch the
+         * timed-out modal calls: it tears the in-flight attempt down so the user is never trapped
+         * and the half-added watch does NOT silently re-provision behind a dismissed modal.
+         *
+         * Mirrors [qhybrid.android.settings.ServiceWatchAdminSync] minus the DB delete (a watch
+         * mid-provision has no Room row yet): suppress auto-reconnect + disconnect ([forget]), clear
+         * the CDM association / presence / reconnect pointer for [mac], and force the
+         * [qhybrid.android.onboard.ProvisioningState] back to IDLE so the modal closes. All steps are
+         * best-effort/tolerant. The user can re-add the watch afterwards (a clean slate).
+         */
+        fun cancelProvisioning(context: Context, mac: String?) {
+            val appContext = context.applicationContext
+            Log.i(TAG, "cancelProvisioning(${mac ?: "<none>"}): tearing down the stuck provisioning attempt")
+            // 1. Drop the link + suppress auto-reconnect so it doesn't immediately re-provision.
+            runCatching { forget(appContext) }
+            // 2. Clear the optimistic association/presence/pointer set in MainActivity.onAssociated.
+            if (mac != null) {
+                runCatching { CompanionManager.stopObserving(appContext, mac) }
+                runCatching { CompanionManager.disassociate(appContext, mac) }
+            }
+            runCatching { CompanionManager.setAssociatedMac(appContext, null) }
+            // 3. Close the modal (works even while PROVISIONING).
+            qhybrid.android.onboard.ProvisioningState.forceIdle()
+        }
+
         /** Event-driven reconnect trigger (from CDM presence / fallback). */
         fun onDeviceAppeared(context: Context, mac: String) =
             start(context, ACTION_DEVICE_APPEARED, mac)

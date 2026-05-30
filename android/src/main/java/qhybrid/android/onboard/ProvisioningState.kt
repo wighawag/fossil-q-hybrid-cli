@@ -77,6 +77,18 @@ object ProvisioningState {
         }
     }
 
+    /**
+     * Force the state back to IDLE from ANY phase — the escape hatch for a PROVISIONING pass that
+     * hung (the watch went out of range mid-setup, the BLE op stalled, or the process was reused
+     * across an Activity relaunch with a stale in-flight attempt). Unlike [acknowledge] this DOES
+     * dismiss a PROVISIONING modal, so it must only be called from the user-initiated
+     * "Cancel setup" action (which also tears the attempt down via
+     * [qhybrid.android.WatchConnectionService.cancelProvisioning]).
+     */
+    fun forceIdle() {
+        _status.value = Status()
+    }
+
     /** Test-only reset to the pristine state. */
     internal fun reset() {
         _status.value = Status()

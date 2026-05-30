@@ -86,4 +86,17 @@ class ProvisioningStateTest {
         ProvisioningState.acknowledge()
         assertEquals(ProvisioningState.Phase.PROVISIONING, ProvisioningState.status.value.phase)
     }
+
+    @Test
+    fun forceIdleEscapesAStuckProvisioning() {
+        // The stuck-modal escape: forceIdle() DOES clear an in-flight PROVISIONING (unlike
+        // acknowledge), so a hung "Adding your watch…" can always be cancelled by the user.
+        ProvisioningState.publish(ProvisioningState.Phase.PROVISIONING, mac = "AA", nowMillis = 1)
+        assertTrue(ProvisioningState.status.value.isProvisioning)
+        ProvisioningState.forceIdle()
+        val s = ProvisioningState.status.value
+        assertEquals(ProvisioningState.Phase.IDLE, s.phase)
+        assertNull(s.mac)
+        assertNull(s.errorMessage)
+    }
 }
