@@ -109,6 +109,43 @@ class WatchRepository(
     suspend fun getButton(mac: String, buttonId: Int) = buttonDao.getButton(mac, buttonId)
     suspend fun deleteButton(mac: String, buttonId: Int) = buttonDao.deleteButton(mac, buttonId)
 
+    // ---- WP-DEFAULTS: full-replace the unreadable sections ------------------
+
+    /**
+     * WP-DEFAULTS — full-REPLACE a watch's UNREADABLE child sections (alarms 0–15 / notification
+     * rules / button mappings) with the supplied rows, in one transaction. Unlike
+     * [transferSettings] (a bulk REPLACE that LEAVES non-colliding rows in place), this DELETES the
+     * existing rows for [mac] in each replaced section first, so the watch ends up with EXACTLY the
+     * supplied rows — the same full-overwrite contract the PROVISION sync applies on the wire.
+     *
+     * Pass `replaceAlarms = false` to leave the standard alarm slots untouched (the apply-defaults
+     * action overwrites buttons + rules but the alarms section is optional). Calendar alarms (slots
+     * 16–31) are never touched here — [WatchAlarmDao.deleteForWatch] removes only the rows that
+     * exist, and the seed never carries calendar slots.
+     *
+     * Each row's `watchMac` is re-keyed to the normalized (upper-case) [mac] so a lower-case caller
+     * can never write a row that mismatches the [WatchEntity] PK.
+     */
+    suspend fun replaceDefaultsSections(
+        mac: String,
+        alarms: List<WatchAlarmEntity>,
+        rules: List<NotificationRuleEntity>,
+        buttons: List<ButtonMappingEntity>,
+        replaceAlarms: Boolean = true,
+    ) {
+        val normalized = mac.uppercase()
+        db.withTransaction {
+            if (replaceAlarms) {
+                alarmDao.deleteForWatch(normalized)
+                alarmDao.upsertAll(alarms.map { it.copy(watchMac = normalized) })
+            }
+            ruleDao.deleteForWatch(normalized)
+            ruleDao.upsertAll(rules.map { it.copy(watchMac = normalized) })
+            buttonDao.deleteForWatch(normalized)
+            buttonDao.upsertAll(buttons.map { it.copy(watchMac = normalized) })
+        }
+    }
+
     // ---- clone / transfer ----------------------------------------------------
 
     /**

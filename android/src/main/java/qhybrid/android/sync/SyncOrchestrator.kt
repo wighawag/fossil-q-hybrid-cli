@@ -101,11 +101,23 @@ object SyncOrchestrator {
 
         // 3. Buttons -----------------------------------------------------------
         runSection(SyncSection.BUTTONS, sections, performed, skipped, errors) {
-            // RECONCILE: nothing to push with no button mappings. PROVISION: a non-compilable/empty
-            // set still has nothing to write (the button file needs at least one entry), so it is
-            // skipped either way — Phase 1 does not yet seed factory button defaults (WP-DEFAULTS).
-            if (input.buttons.isEmpty()) return@runSection false
-            val bytes = compileButtons(input.buttons) ?: return@runSection false
+            // RECONCILE: nothing to push with no button mappings (skip-empties).
+            // PROVISION (WP-DEFAULTS): force-write the button file EVEN WHEN EMPTY so a freshly
+            // added watch is BLANKED to exactly the seed — mirroring how the alarms section already
+            // force-writes in PROVISION. When the profile seeds the factory/default buttons the
+            // compiled file is written; when the user cleared the button defaults we write an empty
+            // file to actively clear any pre-existing buttons on the watch.
+            if (input.buttons.isEmpty()) {
+                if (!provision) return@runSection false
+                return@runSection uploader.uploadButtons(ButtonConfigBuilder.build(emptyArray(), emptyArray(), emptyArray()))
+            }
+            val bytes = compileButtons(input.buttons)
+            if (bytes == null) {
+                // No button produced any entry (e.g. only unknown actions). RECONCILE skips;
+                // PROVISION still force-writes an empty file to blank the watch.
+                if (!provision) return@runSection false
+                return@runSection uploader.uploadButtons(ButtonConfigBuilder.build(emptyArray(), emptyArray(), emptyArray()))
+            }
             uploader.uploadButtons(bytes)
         }
 

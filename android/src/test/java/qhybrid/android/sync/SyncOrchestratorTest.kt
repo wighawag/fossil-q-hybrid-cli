@@ -163,8 +163,65 @@ class SyncOrchestratorTest {
         assertTrue(SyncSection.NOTIFICATION_FILTER in up.order) // filter (reserved entries) uploaded
         assertTrue(SyncSection.ALARMS in result.performed)
         assertTrue(SyncSection.NOTIFICATION_FILTER in result.performed)
-        // No buttons seeded in Phase 1 (WP-DEFAULTS deferred) → buttons still skipped.
-        assertFalse(SyncSection.BUTTONS in up.order)
+        // WP-DEFAULTS: PROVISION now force-writes the (empty) BUTTON file too, to actively BLANK
+        // any pre-existing buttons on the watch (mirrors the alarm force-write).
+        assertTrue(SyncSection.BUTTONS in up.order)
+        assertTrue(SyncSection.BUTTONS in result.performed)
+        assertTrue(up.buttonBytes != null) // an empty button file was written (blank-to-seed)
+    }
+
+    // ---- WP-DEFAULTS: PROVISION force-writes buttons ------------------------
+
+    @Test
+    fun provisionMode_emptyButtons_forceWritesBlankFile_butReconcileSkips() {
+        // PROVISION: empty buttons still write an (empty) button file to clear the watch.
+        val upP = FakeUploader()
+        val rP = SyncOrchestrator.sync(
+            SyncInput(watch = watch(), settings = SyncSettings(vibrationStrength = null)),
+            upP, mode = SyncMode.PROVISION,
+        )
+        assertTrue(SyncSection.BUTTONS in rP.performed)
+        assertTrue(upP.buttonBytes != null)
+
+        // RECONCILE: empty buttons are skipped (no write).
+        val upR = FakeUploader()
+        val rR = SyncOrchestrator.sync(
+            SyncInput(watch = watch(), settings = SyncSettings(vibrationStrength = null)),
+            upR, mode = SyncMode.RECONCILE,
+        )
+        assertFalse(SyncSection.BUTTONS in upR.order)
+        assertTrue(SyncSection.BUTTONS in rR.skipped)
+        assertNull(upR.buttonBytes)
+    }
+
+    @Test
+    fun provisionMode_factoryButtons_forceWritesCompiledFile() {
+        // PROVISION with the three factory buttons → the compiled (non-empty) button file is written.
+        val up = FakeUploader()
+        val r = SyncOrchestrator.sync(
+            SyncInput(
+                watch = watch(),
+                buttons = listOf(
+                    button(ButtonSlots.TOP, ButtonModes.SINGLE_ACTION, listOf(ButtonActions.STOPWATCH)),
+                    button(ButtonSlots.MIDDLE, ButtonModes.CUSTOM_TOGGLE,
+                        listOf(ButtonDialModes.TIMEZONE_2, ButtonDialModes.ALARM, ButtonDialModes.DATE)),
+                    button(ButtonSlots.BOTTOM, ButtonModes.SINGLE_ACTION, listOf(ButtonActions.MULTI_FUNCTION)),
+                ),
+                settings = SyncSettings(vibrationStrength = null),
+            ),
+            up, mode = SyncMode.PROVISION,
+        )
+        assertTrue(SyncSection.BUTTONS in r.performed)
+        val expected = ButtonConfigBuilder.build(
+            arrayOf(ButtonConfigBuilder.entryFrom(ConfigPayload.STOPWATCH)),
+            arrayOf(
+                ButtonConfigBuilder.entryFrom(ConfigPayload.SECOND_TIMEZONE),
+                ButtonConfigBuilder.ALARM_SEQUENCED_ENTRY,
+                ButtonConfigBuilder.DATE_TOGGLE_ENTRY,
+            ),
+            arrayOf(ButtonConfigBuilder.entryFrom(ConfigPayload.FORWARD_TO_PHONE_MULTI)),
+        )
+        assertArrayEquals(expected, up.buttonBytes)
     }
 
     @Test

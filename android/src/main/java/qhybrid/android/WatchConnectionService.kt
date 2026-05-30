@@ -405,6 +405,8 @@ class WatchConnectionService : Service() {
                                 // (real vibration/step goal) instead of registerWatch's constant
                                 // defaults. Falls back to constants inside provisionNewWatch if the
                                 // read-back failed/was empty (best-effort — never blocks adding).
+                                // WP-DEFAULTS: also persist the re-keyed unreadable child rows that
+                                // were pushed (alarms / rules / buttons), atomically with the parent.
                                 registerSeededWatchRow(seeded)
                                 qhybrid.android.onboard.ProvisioningState.publish(
                                     qhybrid.android.onboard.ProvisioningState.Phase.ADDED,
@@ -601,7 +603,17 @@ class WatchConnectionService : Service() {
      *   succeeded — the unchanged WP-ONBOARD success gate), or `null` if provisioning failed (no row
      *   is written; the next connect re-provisions).
      */
-    private fun provisionNewWatch(controller: FossilController, mac: String): qhybrid.android.db.WatchEntity? {
+    /**
+     * WP-DEFAULTS — the seeded watch row PLUS the re-keyed unreadable child rows that were pushed,
+     * so the caller can persist the parent + children atomically (the parent must exist before the
+     * FK-bound children).
+     */
+    private data class ProvisionResult(
+        val entity: qhybrid.android.db.WatchEntity,
+        val seed: qhybrid.android.defaults.DefaultsToSeed.Seed,
+    )
+
+    private fun provisionNewWatch(controller: FossilController, mac: String): ProvisionResult? {
         return try {
             val model = controller.modelNumber
             val firmware = controller.firmwareVersion
@@ -616,7 +628,24 @@ class WatchConnectionService : Service() {
                 firmwareVersion = firmware,
                 batteryLevel = battery,
             )
-            val input = SyncInput(watch = seed, settings = SyncSettings(vibrationStrength = null))
+            // WP-DEFAULTS: seed the UNREADABLE sections (alarms 0–15 / rules / buttons) from the
+            // app-level defaults profile, re-keyed to this mac. Empty sections → empty seed (blanked
+            // on the watch); the factory profile ships the three default buttons. This is the only
+            // change to what provisioning pushes — the readable read-back is unchanged below.
+            val profile = qhybrid.android.defaults.SharedPreferencesDefaultsProfileStore(applicationContext).get()
+            val defaultsSeed = qhybrid.android.defaults.DefaultsToSeed.seed(profile, mac.uppercase())
+            Log.i(
+                TAG,
+                "provision $mac: defaults seed — alarms=${defaultsSeed.alarms.size} " +
+                    "rules=${defaultsSeed.rules.size} buttons=${defaultsSeed.buttons.size}",
+            )
+            val input = SyncInput(
+                watch = seed,
+                alarms = defaultsSeed.alarms,
+                rules = defaultsSeed.rules,
+                buttons = defaultsSeed.buttons,
+                settings = SyncSettings(vibrationStrength = null),
+            )
             val result = SyncStateReporter.reportAround(System::currentTimeMillis) {
                 SyncOrchestrator.sync(
                     input,
@@ -656,9 +685,12 @@ class WatchConnectionService : Service() {
 
             // Persist the per-watch READABLE fields read from the watch (vibration + step goal),
             // plus the live device info. Absent on the watch → constants (handled by ConfigToSeed).
-            seed.copy(
-                vibrationStrength = seededSettings.vibrationStrength,
-                stepGoal = seededSettings.stepGoal,
+            ProvisionResult(
+                entity = seed.copy(
+                    vibrationStrength = seededSettings.vibrationStrength,
+                    stepGoal = seededSettings.stepGoal,
+                ),
+                seed = defaultsSeed,
             )
         } catch (e: Exception) {
             Log.e(TAG, "provisionNewWatch($mac) failed", e)
@@ -714,9 +746,21 @@ class WatchConnectionService : Service() {
      * success path; a failure to persist is logged but does not crash provisioning (the watch is
      * already provisioned on-device). Runs on the ble-worker.
      */
-    private fun registerSeededWatchRow(seeded: qhybrid.android.db.WatchEntity) {
-        runCatching { runBlocking { WatchRepository(applicationContext).registerSeededWatch(seeded) } }
-            .onFailure { Log.w(TAG, "registerSeededWatch failed", it) }
+    private fun registerSeededWatchRow(seeded: ProvisionResult) {
+        runCatching {
+            runBlocking {
+                val repo = WatchRepository(applicationContext)
+                // Upsert the parent watch row + mark active FIRST, then full-replace the FK-bound
+                // unreadable child rows so the app DB reflects exactly what PROVISION pushed.
+                repo.registerSeededWatch(seeded.entity)
+                repo.replaceDefaultsSections(
+                    seeded.entity.macAddress,
+                    alarms = seeded.seed.alarms,
+                    rules = seeded.seed.rules,
+                    buttons = seeded.seed.buttons,
+                )
+            }
+        }.onFailure { Log.w(TAG, "registerSeededWatch failed", it) }
     }
 
     /**
