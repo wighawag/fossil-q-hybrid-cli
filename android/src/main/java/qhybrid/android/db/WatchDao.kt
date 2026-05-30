@@ -2,18 +2,27 @@ package qhybrid.android.db
 
 import androidx.room.Dao
 import androidx.room.Delete
-import androidx.room.Insert
-import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
 import androidx.room.Update
+import androidx.room.Upsert
 import kotlinx.coroutines.flow.Flow
 
 /** WP4 — DAO for the [WatchEntity] registry (multi-watch + active selection). */
 @Dao
 interface WatchDao {
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    /**
+     * Insert a new watch, or UPDATE the existing row in place on a [macAddress] conflict.
+     *
+     * **MUST be [Upsert], NOT `@Insert(onConflict = REPLACE)`.** `INSERT OR REPLACE` deletes the
+     * conflicting row and re-inserts it, which fires the child tables' `ON DELETE CASCADE` and
+     * **silently wipes the watch's alarms / notification rules / button mappings**. That caused
+     * alarms to vanish from the app the moment any watch-row field was updated (e.g. setting
+     * vibration strength), while the watch itself still held them. [Upsert] performs an in-place
+     * UPDATE on conflict, so the row identity — and its CASCADE children — survive.
+     */
+    @Upsert
     suspend fun upsert(watch: WatchEntity)
 
     @Update

@@ -116,8 +116,11 @@ fun AlarmsContent(
                             slotId = -1, // marker: new alarm; VM assigns the lowest free slot
                             hour = 7, minute = 0,
                             isEnabled = true,
-                            daysMask = AlarmDays.WEEKDAY,
-                            isRepeating = true,
+                            // Default a NEW alarm to a one-off ("Once"): no days selected, not
+                            // repeating. The user picks days (which flips it to repeating) or a
+                            // shortcut if they want a recurring alarm.
+                            daysMask = 0,
+                            isRepeating = false,
                             label = null,
                         )
                     },
