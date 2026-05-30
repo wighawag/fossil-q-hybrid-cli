@@ -11,6 +11,7 @@ import android.content.pm.ServiceInfo
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
+import android.os.SystemClock
 import android.util.Log
 import kotlinx.coroutines.runBlocking
 import qhybrid.android.db.WatchRepository
@@ -61,6 +62,9 @@ class WatchConnectionService : Service() {
         const val ACTION_SYNC_NOW = "qhybrid.android.action.SYNC_NOW"
         const val ACTION_REQUEST_ACTIVITY = "qhybrid.android.action.REQUEST_ACTIVITY"
         const val ACTION_BUZZ = "qhybrid.android.action.BUZZ"
+        // WP11: a posted phone notification matched a per-app rule — play it on the watch (play-only
+        // by package; the watch already holds the per-app vibe+hands in its NOTIFICATION_FILTER).
+        const val ACTION_PLAY_NOTIFICATION = "qhybrid.android.action.PLAY_NOTIFICATION"
         const val ACTION_DEVICE_APPEARED = "qhybrid.android.action.DEVICE_APPEARED"
         const val ACTION_STOP = "qhybrid.android.action.STOP"
         const val EXTRA_MAC = "mac"
@@ -71,6 +75,13 @@ class WatchConnectionService : Service() {
         // the single play-only put — a diagnostic path that works even if the reserved filter is
         // missing from the watch ("put filter + send buzz").
         const val EXTRA_FORCE_FILTER = "force_filter"
+        // WP11: the package name of the matched notification to play on the watch.
+        const val EXTRA_PACKAGE = "package"
+        // WP11: SystemClock.elapsedRealtime() deadline after which a pending connect-then-play is
+        // dropped as stale (so a notification queued during a long disconnect doesn't buzz late).
+        const val EXTRA_PLAY_DEADLINE = "play_deadline"
+        // WP11: how long (ms) a connect-then-play stays valid before it is dropped as stale.
+        const val PLAY_STALE_AFTER_MS = 30_000L
         // WP-SYNCFIX: which sync sections an explicit Save requested (section names). Absent =
         // full reconcile (connect / periodic). Present = targeted save (e.g. just BUTTONS).
         const val EXTRA_SECTIONS = "sections"
@@ -152,6 +163,28 @@ class WatchConnectionService : Service() {
             ContextCompatStartForeground(context, intent)
         }
 
+        /**
+         * WP11 — a posted phone notification matched a per-app rule; play it on the watch. A
+         * **play-only-by-package** put: the watch already holds the per-app vibration pattern + hand
+         * degrees in its NOTIFICATION_FILTER (written at init/provisioning and on WP14 rule edits),
+         * so the runtime play only names the package and the watch applies the configured behavior.
+         *
+         * Like [buzzNow] this is a **connect-then-play** when the link is down — EXCEPT a passive
+         * notification must not buzz late: a pending play is dropped once it is older than
+         * [PLAY_STALE_AFTER_MS] (the deadline is captured here, off the elapsedRealtime clock).
+         * Unlike [buzzNow] it publishes NO [SyncState] (no modal — it is a silent background effect)
+         * and never surfaces a user-facing error. Reuses [FossilController.playNotification] —
+         * invents NO new wire bytes.
+         */
+        fun playNotificationNow(context: Context, packageName: String) {
+            val intent = Intent(context, WatchConnectionService::class.java).apply {
+                action = ACTION_PLAY_NOTIFICATION
+                putExtra(EXTRA_PACKAGE, packageName)
+                putExtra(EXTRA_PLAY_DEADLINE, SystemClock.elapsedRealtime() + PLAY_STALE_AFTER_MS)
+            }
+            ContextCompatStartForeground(context, intent)
+        }
+
         fun disconnect(context: Context) = start(context, ACTION_DISCONNECT)
 
         /** Remove watch: disconnect WITHOUT re-arming auto-reconnect (the caller cleared the assoc). */
@@ -227,6 +260,14 @@ class WatchConnectionService : Service() {
     private val pendingBuzzPattern = AtomicReference<Int?>(null)
     // Whether the pending connect-then-buzz should force the self-contained filter+play path.
     private val pendingBuzzForceFilter = AtomicBoolean(false)
+    // WP11: set when a matched notification arrived while the link was down, so a connect-then-play
+    // runs on the next connect. The held value is the package to play (null = none pending). Unlike
+    // the buzz, a CONNECT FAILURE is NOT surfaced (a passive notification is best-effort). Cleared
+    // once the connect resolves, and dropped if older than [pendingPlayDeadline].
+    private val pendingPlayPackage = AtomicReference<String?>(null)
+    // WP11: elapsedRealtime() after which the pending play is stale and must be dropped (so a
+    // notification queued during a long disconnect doesn't buzz minutes late).
+    private val pendingPlayDeadline = AtomicReference<Long>(0L)
     // WP-ONBOARD: set while a Remove-watch is tearing down, to suppress the disconnect callback's
     // auto-reconnect re-arm and ignore a stray DEVICE_APPEARED for the watch being removed.
     private val forgetting = AtomicBoolean(false)
@@ -291,6 +332,17 @@ class WatchConnectionService : Service() {
                 intent.getIntExtra(EXTRA_PATTERN, 5),
                 intent.getBooleanExtra(EXTRA_FORCE_FILTER, false),
             )
+            ACTION_PLAY_NOTIFICATION -> {
+                val pkg = intent.getStringExtra(EXTRA_PACKAGE)
+                if (pkg.isNullOrBlank()) {
+                    Log.w(TAG, "ACTION_PLAY_NOTIFICATION with no package")
+                } else {
+                    submitPlayNotification(
+                        pkg,
+                        intent.getLongExtra(EXTRA_PLAY_DEADLINE, SystemClock.elapsedRealtime() + PLAY_STALE_AFTER_MS),
+                    )
+                }
+            }
             ACTION_DISCONNECT -> submitDisconnect(stopAfter = false)
             ACTION_FORGET -> {
                 // Remove watch: suppress auto-reconnect, then disconnect. The flag is cleared after
@@ -487,6 +539,16 @@ class WatchConnectionService : Service() {
                 // sequenced behind those writes on the single control channel.
                 pendingBuzzPattern.getAndSet(null)?.let { pattern ->
                     runBuzz(controller, pattern, forceFilterPlay = pendingBuzzForceFilter.getAndSet(false))
+                }
+                // WP11: a notification that matched a rule while the link was down plays here, once
+                // connected — UNLESS it has gone stale (older than PLAY_STALE_AFTER_MS), in which case
+                // it is silently dropped so we never buzz minutes late for a dismissed notification.
+                pendingPlayPackage.getAndSet(null)?.let { pkg ->
+                    if (SystemClock.elapsedRealtime() <= pendingPlayDeadline.getAndSet(0L)) {
+                        runPlayNotification(controller, pkg)
+                    } else {
+                        Log.i(TAG, "on-connect play: dropping stale notification play for $pkg")
+                    }
                 }
                 // WP-ACTIVITY: also pull the activity file on connect so the Sleep screen +
                 // Dashboard steps are populated hands-free. We are already on the ble-worker, so
@@ -914,6 +976,48 @@ class WatchConnectionService : Service() {
             pendingBuzzForceFilter.set(forceFilterPlay)
             submitConnect(mac)
         }
+    }
+
+    /**
+     * WP11 — play a matched notification on the watch. If the link is up, play immediately on the
+     * ble-worker; if it is DOWN, do a **connect-then-play** (mirroring [submitBuzz]) by holding the
+     * package and kicking a connect, EXCEPT the held play is dropped if it goes stale (past
+     * [deadline]) so a passive notification never buzzes minutes late. With no associated watch the
+     * play is dropped (no error surfaced — a notification play is best-effort and silent).
+     */
+    private fun submitPlayNotification(packageName: String, deadline: Long) {
+        worker.execute {
+            val c = controllerRef.get()
+            Log.i(TAG, "playNotification: controller=${c != null} linkUp=${isLinkUp()} package=$packageName")
+            if (c != null && isLinkUp()) {
+                runPlayNotification(c, packageName)
+                return@execute
+            }
+            val mac = CompanionManager.getAssociatedMac(this)
+            if (mac == null) {
+                Log.w(TAG, "playNotification: no associated watch — dropping play for $packageName")
+                return@execute
+            }
+            Log.i(TAG, "playNotification: link down — connecting then playing ($mac) package=$packageName")
+            pendingPlayPackage.set(packageName)
+            pendingPlayDeadline.set(deadline)
+            submitConnect(mac)
+        }
+    }
+
+    /**
+     * WP11 — perform the actual notification play on the ble-worker via a SINGLE play-only put
+     * ([FossilController.playNotification]): the watch already holds this package's per-app vibe +
+     * hand degrees in its NOTIFICATION_FILTER (written at init/provisioning and on WP14 rule edits),
+     * so it matches the play file's package CRC to that entry and applies the configured behavior.
+     * Invents NO new wire bytes. Publishes NO [SyncState] (a silent background effect); failures are
+     * non-fatal (logged). Always called on the ble-worker (from [submitPlayNotification] or the
+     * on-connect hook).
+     */
+    private fun runPlayNotification(controller: FossilController, packageName: String) {
+        Log.i(TAG, "play notification (play-only): package=$packageName")
+        runCatching { controller.playNotification(packageName) }
+            .onFailure { e -> Log.e(TAG, "play notification failed for $packageName", e) }
     }
 
     /**
