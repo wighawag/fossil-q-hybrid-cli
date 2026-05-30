@@ -94,12 +94,21 @@ class SettingsViewModelTest : DbTestBase() {
         override fun installedApps(): List<InstalledApp> = apps
     }
 
+    private class FakeVibration(private val wired: Boolean = true) : VibrationSync {
+        var count = 0
+        val patterns = mutableListOf<Int>()
+        override fun buzz(pattern: Int): Boolean {
+            count++; patterns.add(pattern); return wired
+        }
+    }
+
     private fun vm(
         prefs: SettingsPrefs = FakePrefs(),
         sync: SettingsSync = FakeSync(),
         apps: InstalledAppsProvider = FakeAppsProvider(emptyList()),
         syncSource: FakeSyncStateSource = FakeSyncStateSource(),
-    ) = SettingsViewModel(repo, prefs, sync, apps, vmScope, syncSource)
+        vibration: VibrationSync = FakeVibration(),
+    ) = SettingsViewModel(repo, prefs, sync, apps, vibration, vmScope, syncSource)
 
     private fun awaitState(
         flow: StateFlow<SettingsUiState>,
@@ -177,6 +186,48 @@ class SettingsViewModelTest : DbTestBase() {
         awaitState(model.uiState) { !it.hasActiveWatch }
         assertFalse(model.setVibrationStrength(60))
         assertEquals(0, sync.vibeCount)
+    }
+
+    // ---- manual "vibrate the watch now" test buttons (WP-BUZZTEST) -----------
+
+    @Test
+    fun vibrateWatchHitsSeamWithSinglePattern() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }
+        val vibe = FakeVibration(wired = true)
+        val model = vm(vibration = vibe)
+        awaitState(model.uiState) { it.hasActiveWatch }
+
+        val wired = model.vibrateWatch(VibrationSync.PATTERN_SINGLE)
+        assertTrue(wired)
+        assertEquals(1, vibe.count)
+        assertEquals(5, vibe.patterns.last())
+    }
+
+    @Test
+    fun vibrateWatchHitsSeamWithTriplePattern() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }
+        val vibe = FakeVibration(wired = true)
+        val model = vm(vibration = vibe)
+        awaitState(model.uiState) { it.hasActiveWatch }
+
+        model.vibrateWatch(VibrationSync.PATTERN_TRIPLE)
+        assertEquals(1, vibe.count)
+        assertEquals(1, vibe.patterns.last())
+    }
+
+    @Test
+    fun vibrateWatchNoOpWithoutActiveWatch() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = false)) }
+        val vibe = FakeVibration()
+        val model = vm(vibration = vibe)
+        awaitState(model.uiState) { !it.hasActiveWatch }
+        assertFalse(model.vibrateWatch(VibrationSync.PATTERN_SINGLE))
+        assertEquals(0, vibe.count)
+    }
+
+    @Test
+    fun productionVibrationIsWired() {
+        assertTrue(ServiceVibrationSync.VIBRATION_WIRED)
     }
 
     // ---- nudge: app pref + deferred live command -----------------------------

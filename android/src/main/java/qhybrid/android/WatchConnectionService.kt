@@ -53,10 +53,13 @@ class WatchConnectionService : Service() {
         const val ACTION_DISCONNECT = "qhybrid.android.action.DISCONNECT"
         const val ACTION_SYNC_NOW = "qhybrid.android.action.SYNC_NOW"
         const val ACTION_REQUEST_ACTIVITY = "qhybrid.android.action.REQUEST_ACTIVITY"
+        const val ACTION_BUZZ = "qhybrid.android.action.BUZZ"
         const val ACTION_DEVICE_APPEARED = "qhybrid.android.action.DEVICE_APPEARED"
         const val ACTION_STOP = "qhybrid.android.action.STOP"
         const val EXTRA_MAC = "mac"
         const val EXTRA_KEEP = "keep"
+        // WP-BUZZTEST: which vibration pattern byte a manual "vibrate the watch now" should play.
+        const val EXTRA_PATTERN = "pattern"
         // WP-SYNCFIX: which sync sections an explicit Save requested (section names). Absent =
         // full reconcile (connect / periodic). Present = targeted save (e.g. just BUTTONS).
         const val EXTRA_SECTIONS = "sections"
@@ -109,6 +112,22 @@ class WatchConnectionService : Service() {
             ContextCompatStartForeground(context, intent)
         }
 
+        /**
+         * WP-BUZZTEST — make the watch vibrate NOW with the given vibration [pattern] byte (a
+         * manual on-device test buzz; e.g. 5 = ONE_SHORT_VIBE strong single, 1 = CALL triple).
+         * Like [syncNow] this is a **connect-then-do**: if the link is down it connects first, then
+         * buzzes; an unreachable watch surfaces an honest [SyncState] ERROR rather than silently
+         * dropping the request. Reuses the golden NOTIFICATION_FILTER + NOTIFICATION_PLAY path via
+         * [FossilController.buzz] — invents NO new wire bytes.
+         */
+        fun buzzNow(context: Context, pattern: Int) {
+            val intent = Intent(context, WatchConnectionService::class.java).apply {
+                action = ACTION_BUZZ
+                putExtra(EXTRA_PATTERN, pattern)
+            }
+            ContextCompatStartForeground(context, intent)
+        }
+
         fun disconnect(context: Context) = start(context, ACTION_DISCONNECT)
 
         /** Event-driven reconnect trigger (from CDM presence / fallback). */
@@ -142,6 +161,13 @@ class WatchConnectionService : Service() {
     // attempt resolves (success runs the targeted sync; failure publishes the error).
     private val pendingSyncOnConnect = AtomicBoolean(false)
     private val pendingSyncSections = AtomicReference<Set<SyncSection>?>(null)
+
+    // WP-BUZZTEST: set when a manual "vibrate the watch now" was requested while the link was down,
+    // so a connect-then-buzz runs and a CONNECT FAILURE is surfaced honestly as a SyncState ERROR
+    // ("watch not reachable") rather than silently dropping the buzz. The held value is the
+    // vibration pattern byte to play on connect (null = no buzz pending). Cleared once the connect
+    // attempt resolves (success runs the buzz; failure publishes the error).
+    private val pendingBuzzPattern = AtomicReference<Int?>(null)
 
     /** WP-SYNCFIX: decode the requested sync sections from a SYNC_NOW intent (null = reconcile). */
     private fun parseSections(intent: Intent?): Set<SyncSection>? {
@@ -195,6 +221,7 @@ class WatchConnectionService : Service() {
             }
             ACTION_SYNC_NOW -> submitSync(parseSections(intent))
             ACTION_REQUEST_ACTIVITY -> submitRequestActivity(intent.getBooleanExtra(EXTRA_KEEP, false))
+            ACTION_BUZZ -> submitBuzz(intent.getIntExtra(EXTRA_PATTERN, 5))
             ACTION_DISCONNECT -> submitDisconnect(stopAfter = false)
             ACTION_STOP -> submitDisconnect(stopAfter = true)
             else -> Log.d(TAG, "unhandled action $action")
@@ -309,6 +336,10 @@ class WatchConnectionService : Service() {
                 val onConnectSections = pendingSyncSections.getAndSet(null) ?: SyncSection.ALL
                 // WP3 sync-on-connect hook (WP5/6/9 fill in alarm/filter/calendar uploads).
                 runOnConnectSync(controller, onConnectSections)
+                // WP-BUZZTEST: a manual buzz requested while the link was down connects here, then
+                // buzzes (we're already on the ble-worker). Runs AFTER the on-connect sync so it
+                // is sequenced behind any pending writes on the single control channel.
+                pendingBuzzPattern.getAndSet(null)?.let { pattern -> runBuzz(controller, pattern) }
                 // WP-ACTIVITY: also pull the activity file on connect so the Sleep screen +
                 // Dashboard steps are populated hands-free. We are already on the ble-worker, so
                 // drive the existing fetch path directly; the result is published by
@@ -348,7 +379,9 @@ class WatchConnectionService : Service() {
      * sync was pending. Clears the pending flag.
      */
     private fun failPendingSync(message: String) {
-        if (pendingSyncOnConnect.getAndSet(false)) {
+        // WP-BUZZTEST: a manual buzz pending on this failed connect must also report honestly.
+        val hadPending = pendingSyncOnConnect.getAndSet(false) or (pendingBuzzPattern.getAndSet(null) != null)
+        if (hadPending) {
             SyncState.publish(
                 SyncState.SyncPhase.ERROR,
                 errorMessage = message,
@@ -479,6 +512,66 @@ class WatchConnectionService : Service() {
                 Log.i(TAG, "requesting activity file (keep=$keep)")
                 c.requestActivity(keep)
             }.onFailure { Log.e(TAG, "requestActivity failed", it) }
+        }
+    }
+
+    /**
+     * WP-BUZZTEST — make the watch vibrate NOW (a manual on-device test buzz). If the link is up,
+     * buzz immediately; if it is DOWN, do a **connect-then-buzz** (mirroring [submitSync]): hold the
+     * requested [pattern], kick a connect for the associated mac, and let the on-connect hook run
+     * the buzz. A FAILED connect surfaces an honest [SyncState] ERROR via [failPendingSync] (the
+     * buzz button shows the failure instead of pretending the watch vibrated). With no associated
+     * watch we publish an immediate error. The app-side already published SYNCING (see
+     * [qhybrid.android.sync.ServiceBuzz]) so the blocking "Buzzing…" modal appears on tap.
+     */
+    private fun submitBuzz(pattern: Int) {
+        worker.execute {
+            val c = controllerRef.get()
+            Log.i(TAG, "buzzNow: controller=${c != null} linkUp=${isLinkUp()} pattern=$pattern")
+            if (c != null && isLinkUp()) {
+                runBuzz(c, pattern)
+                return@execute
+            }
+            // Link is down — connect first, then buzz on connect.
+            val mac = CompanionManager.getAssociatedMac(this)
+            if (mac == null) {
+                Log.w(TAG, "buzzNow: no associated watch")
+                SyncState.publish(
+                    SyncState.SyncPhase.ERROR,
+                    errorMessage = "No watch associated.",
+                    nowMillis = System.currentTimeMillis(),
+                )
+                return@execute
+            }
+            Log.i(TAG, "buzzNow: link down — connecting then buzzing ($mac) pattern=$pattern")
+            pendingBuzzPattern.set(pattern)
+            submitConnect(mac)
+        }
+    }
+
+    /**
+     * WP-BUZZTEST — perform the actual buzz on the ble-worker via the golden-tested
+     * [FossilController.buzz] passthrough (NOTIFICATION_FILTER + NOTIFICATION_PLAY; no new wire
+     * bytes). Publishes [SyncState] SYNCING → SUCCESS/ERROR so the UI shows the blocking modal and
+     * an honest result. Always called on the ble-worker (from [submitBuzz] or the on-connect hook).
+     * The live vibration is on-device-pending; the connect-then-do + result mapping are unit-tested
+     * via the seam/VM.
+     */
+    private fun runBuzz(controller: FossilController, pattern: Int) {
+        val now = System.currentTimeMillis()
+        SyncState.publish(SyncState.SyncPhase.SYNCING, nowMillis = now)
+        runCatching {
+            Log.i(TAG, "buzz: pattern=$pattern")
+            controller.buzz(pattern)
+        }.onSuccess {
+            SyncState.publish(SyncState.SyncPhase.SUCCESS, nowMillis = System.currentTimeMillis())
+        }.onFailure { e ->
+            Log.e(TAG, "buzz failed", e)
+            SyncState.publish(
+                SyncState.SyncPhase.ERROR,
+                errorMessage = e.message ?: e.javaClass.simpleName,
+                nowMillis = System.currentTimeMillis(),
+            )
         }
     }
 

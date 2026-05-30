@@ -91,6 +91,8 @@ open class SettingsViewModel(
     private val prefs: SettingsPrefs,
     private val sync: SettingsSync,
     private val appsProvider: InstalledAppsProvider,
+    // WP-BUZZTEST: the manual "vibrate the watch now" test seam (fake in tests).
+    private val vibration: VibrationSync = NoopVibrationSync,
     // Tests inject a real/Unconfined scope; production passes null → uses [viewModelScope].
     scope: CoroutineScope? = null,
     // WP-PROGRESS (sub-part 3): the process-wide sync signal the Save/Apply controls observe.
@@ -143,6 +145,20 @@ open class SettingsViewModel(
             repo.upsertWatch(watch.copy(vibrationStrength = normalized))
         }
         return sync.applyVibrationStrength(normalized)
+    }
+
+    // ---- manual "vibrate the watch now" test buttons (WP-BUZZTEST) ------------
+
+    /**
+     * WP-BUZZTEST — make the watch vibrate NOW with the given vibration [pattern] byte (a manual
+     * on-device test buzz; 5 = strong single, 1 = triple). No-op (returns false) without an active
+     * watch. Otherwise forwards to the injectable [VibrationSync] seam, which connects-then-buzzes
+     * via the WP3 service and reports SyncState SYNCING → SUCCESS/ERROR. Returns whether the buzz
+     * pipeline is wired (`true`).
+     */
+    fun vibrateWatch(pattern: Int): Boolean {
+        if (uiState.value.activeWatch == null) return false
+        return vibration.buzz(pattern)
     }
 
     // ---- inactivity nudge (APP PREF + deferred live command) -----------------
@@ -230,6 +246,7 @@ open class SettingsViewModel(
                         sync = ServiceSettingsSync(appContext),
                         appsProvider =
                             qhybrid.android.notifications.SystemInstalledAppsProvider(appContext),
+                        vibration = ServiceVibrationSync(appContext),
                     ) as T
             }
         }
