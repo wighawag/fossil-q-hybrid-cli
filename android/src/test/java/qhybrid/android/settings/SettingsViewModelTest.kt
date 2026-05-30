@@ -102,13 +102,19 @@ class SettingsViewModelTest : DbTestBase() {
         }
     }
 
+    private class FakeFullSync(private val wired: Boolean = true) : FullSync {
+        var count = 0
+        override fun syncAll(): Boolean { count++; return wired }
+    }
+
     private fun vm(
         prefs: SettingsPrefs = FakePrefs(),
         sync: SettingsSync = FakeSync(),
         apps: InstalledAppsProvider = FakeAppsProvider(emptyList()),
         syncSource: FakeSyncStateSource = FakeSyncStateSource(),
         vibration: VibrationSync = FakeVibration(),
-    ) = SettingsViewModel(repo, prefs, sync, apps, vibration, vmScope, syncSource)
+        fullSync: FullSync = FakeFullSync(),
+    ) = SettingsViewModel(repo, prefs, sync, apps, vibration, fullSync, vmScope, syncSource)
 
     private fun awaitState(
         flow: StateFlow<SettingsUiState>,
@@ -228,6 +234,28 @@ class SettingsViewModelTest : DbTestBase() {
     @Test
     fun productionVibrationIsWired() {
         assertTrue(ServiceVibrationSync.VIBRATION_WIRED)
+    }
+
+    // ---- manual "Sync all" (WP-PULLSYNC) -------------------------------------
+
+    @Test
+    fun syncAllHitsSeamWithActiveWatch() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }
+        val full = FakeFullSync(wired = true)
+        val model = vm(fullSync = full)
+        awaitState(model.uiState) { it.hasActiveWatch }
+        assertTrue(model.syncAll())
+        assertEquals(1, full.count)
+    }
+
+    @Test
+    fun syncAllNoOpWithoutActiveWatch() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = false)) }
+        val full = FakeFullSync()
+        val model = vm(fullSync = full)
+        awaitState(model.uiState) { !it.hasActiveWatch }
+        assertFalse(model.syncAll())
+        assertEquals(0, full.count)
     }
 
     // ---- nudge: app pref + deferred live command -----------------------------

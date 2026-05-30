@@ -78,6 +78,7 @@ fun SettingsScreen(
         progress = progress,
         onSetVibration = vm::setVibrationStrength,
         onVibrate = vm::vibrateWatch,
+        onSyncAll = vm::syncAll,
         onSetNudge = vm::setNudge,
         onSetTimezone = vm::setSecondTimezoneOffset,
         onSetMusicApp = vm::setPreferredMusicApp,
@@ -106,6 +107,8 @@ fun SettingsContent(
     // WP-BUZZTEST: manual "vibrate the watch now" test buttons (pattern byte). No-op default so
     // existing previews/tests that don't exercise the buzz keep compiling.
     onVibrate: (Int) -> Boolean = { false },
+    // WP-PULLSYNC: manual "Sync all" (full reconcile). No-op default for previews/tests.
+    onSyncAll: () -> Boolean = { false },
 ) {
     var note by remember { mutableStateOf<String?>(null) }
 
@@ -139,6 +142,8 @@ fun SettingsContent(
             NudgeCard(state, onSetNudge) { note = it }
             TimezoneCard(state, onSetTimezone) { note = it }
             MusicAppCard(state, onSetMusicApp)
+            HorizontalDivider()
+            SyncAllCard(state, progress, onSyncAll) { note = it }
             HorizontalDivider()
             TransferCard(state, onTransfer) { note = it }
             HorizontalDivider()
@@ -390,6 +395,41 @@ private fun MusicAppCard(
                 }
             }
         }
+    }
+}
+
+// ---- manual "Sync all" (WP-PULLSYNC) ----------------------------------------
+
+/**
+ * WP-PULLSYNC — a manual "Sync all" button. Connecting no longer auto-pushes the full config
+ * (the watch keeps its settings across disconnects, and each screen's Save-to-watch already pushes
+ * what you change — with a blocking modal so you know it happened). This button is the explicit
+ * escape hatch to re-push the ENTIRE saved config (alarms / notification rules / buttons /
+ * settings) to the active watch in one pass. Disabled while a sync/buzz is in flight and when
+ * there is no active watch (reuses [SyncProgressUi.saveEnabled]). No new wire bytes.
+ */
+@Composable
+private fun SyncAllCard(
+    state: SettingsUiState,
+    progress: SyncProgressUi,
+    onSyncAll: () -> Boolean,
+    onNote: (String) -> Unit,
+) {
+    SettingCard("Sync all") {
+        Text(
+            "Push the entire saved config (alarms, notification rules, buttons, settings) to the " +
+                "watch. Normally you don't need this — each screen's Save already syncs what you " +
+                "change. Connects first if needed; reports an error if the watch is unreachable.",
+            style = MaterialTheme.typography.labelSmall,
+        )
+        Button(
+            onClick = {
+                val ok = onSyncAll()
+                onNote(if (ok) "Syncing the full config to the watch…" else "No active watch to sync.")
+            },
+            enabled = progress.saveEnabled(state.hasActiveWatch),
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("Sync all") }
     }
 }
 

@@ -93,6 +93,8 @@ open class SettingsViewModel(
     private val appsProvider: InstalledAppsProvider,
     // WP-BUZZTEST: the manual "vibrate the watch now" test seam (fake in tests).
     private val vibration: VibrationSync = NoopVibrationSync,
+    // WP-PULLSYNC: the manual "Sync all" seam (fake in tests).
+    private val fullSync: FullSync = NoopFullSync,
     // Tests inject a real/Unconfined scope; production passes null → uses [viewModelScope].
     scope: CoroutineScope? = null,
     // WP-PROGRESS (sub-part 3): the process-wide sync signal the Save/Apply controls observe.
@@ -159,6 +161,19 @@ open class SettingsViewModel(
     fun vibrateWatch(pattern: Int): Boolean {
         if (uiState.value.activeWatch == null) return false
         return vibration.buzz(pattern)
+    }
+
+    // ---- manual "Sync all" (WP-PULLSYNC) -------------------------------------
+
+    /**
+     * WP-PULLSYNC — push the ENTIRE saved config to the active watch (full reconcile). Sync is
+     * user-initiated now (connect no longer auto-pushes), so this is the explicit escape hatch.
+     * No-op (returns false) without an active watch. Otherwise forwards to the injectable
+     * [FullSync] seam (connect-then-sync via the WP3 service; SyncState SYNCING → SUCCESS/ERROR).
+     */
+    fun syncAll(): Boolean {
+        if (uiState.value.activeWatch == null) return false
+        return fullSync.syncAll()
     }
 
     // ---- inactivity nudge (APP PREF + deferred live command) -----------------
@@ -247,6 +262,7 @@ open class SettingsViewModel(
                         appsProvider =
                             qhybrid.android.notifications.SystemInstalledAppsProvider(appContext),
                         vibration = ServiceVibrationSync(appContext),
+                        fullSync = ServiceFullSync(appContext),
                     ) as T
             }
         }
