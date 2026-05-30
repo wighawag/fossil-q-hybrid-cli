@@ -147,8 +147,9 @@ public class FossilController {
      * WP-BUZZ-PLAYONLY: make the watch vibrate NOW with the given pattern using a SINGLE play-file
      * put — NO filter upload. This relies on the reserved buzz filter entries
      * ({@link qhybrid.protocol.requests.fossil.notification.BuzzPatterns}) already being on the watch
-     * (uploaded once at connect via {@link #uploadReservedBuzzFilter()} or folded into the
-     * notification-sync filter). A buzz is then a single {@code NOTIFICATION_PLAY} put for the
+     * (written by new-watch provisioning or folded into the notification-sync filter via
+     * {@link qhybrid.protocol.requests.fossil.notification.BuzzPatterns#reservedEntries()}). A buzz is
+     * then a single {@code NOTIFICATION_PLAY} put for the
      * reserved {@code qhybrid.linux.buzzN} package, which the watch matches by CRC to pick the
      * pattern. Halves the per-buzz BLE work vs {@link #buzz(int)} (which does filter+play).
      *
@@ -160,18 +161,6 @@ public class FossilController {
         adapter.playNotificationByPackageName(
                 qhybrid.protocol.requests.fossil.notification.BuzzPatterns
                         .packageNameForPattern(vibePattern));
-    }
-
-    /**
-     * Upload the reserved buzz filter ({@link qhybrid.protocol.requests.fossil.notification.BuzzPatterns#reservedEntries()})
-     * to the watch as a single NOTIFICATION_FILTER put. Call ONCE at connect so {@link #buzzPlayOnly}
-     * can match the reserved package CRCs. NOTE: the filter is whole-file — a later notification sync
-     * that uploads its own filter will REPLACE this; fold {@code BuzzPatterns.reservedEntries()} into
-     * that sync's entries to keep the reserved entries present.
-     */
-    public void uploadReservedBuzzFilter() {
-        adapter.uploadNotificationFilterEntries(
-                qhybrid.protocol.requests.fossil.notification.BuzzPatterns.reservedEntries());
     }
 
     /** Upload a prebuilt button-config file (SETTINGS_BUTTONS, 0x0600). */

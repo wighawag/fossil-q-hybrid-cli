@@ -170,12 +170,6 @@ class WatchConnectionService : Service() {
     // attempt resolves (success runs the buzz; failure publishes the error).
     private val pendingBuzzPattern = AtomicReference<Int?>(null)
 
-    // WP-BUZZ-PLAYONLY: the reserved buzz filter (one entry per useful vibration pattern, matched by
-    // package CRC) is uploaded ONCE per connection so a buzz can be a SINGLE play-file put. Reset on
-    // disconnect so the next connection re-uploads it (the watch keeps files across a clean
-    // disconnect, but we re-assert it cheaply to be safe).
-    private val reservedBuzzFilterUploaded = AtomicBoolean(false)
-
     /** WP-SYNCFIX: decode the requested sync sections from a SYNC_NOW intent (null = reconcile). */
     private fun parseSections(intent: Intent?): Set<SyncSection>? {
         val names = intent?.getStringArrayExtra(EXTRA_SECTIONS) ?: return null
@@ -277,7 +271,6 @@ class WatchConnectionService : Service() {
             if (!up) {
                 // Unexpected drop OR intentional disconnect. Reflect Disconnected and
                 // re-arm presence so we auto-reconnect when the watch reappears.
-                reservedBuzzFilterUploaded.set(false) // re-upload reserved buzz filter next connect
                 publish(
                     WatchState.LinkState.DISCONNECTED,
                     message = "Disconnected",
@@ -361,10 +354,6 @@ class WatchConnectionService : Service() {
                 // WP-PULLSYNC: register the watch row AFTER deciding newness so the next connect
                 // is treated as "known" (no repeated provisioning). Idempotent + marks it active.
                 registerWatchRow(mac)
-                // WP-BUZZ-PLAYONLY: upload the reserved buzz filter ONCE per connection so a manual
-                // buzz is a SINGLE play-file put (no per-buzz filter upload). Runs AFTER any pending
-                // sync so the reserved entries aren't clobbered by the sync's whole-file filter.
-                ensureReservedBuzzFilter(controller)
                 // WP-BUZZTEST: a manual buzz requested while the link was down connects here, then
                 // buzzes (we're already on the ble-worker). Runs AFTER any pending sync so it is
                 // sequenced behind those writes on the single control channel.
@@ -600,10 +589,10 @@ class WatchConnectionService : Service() {
 
     /**
      * WP-BUZZ-PLAYONLY — perform the actual buzz on the ble-worker via a SINGLE play-file put
-     * ([FossilController.buzzPlayOnly]): the reserved buzz filter is already on the watch (uploaded
-     * once at connect by [ensureReservedBuzzFilter]), so the watch matches the play file's package
-     * CRC to the reserved entry and picks the pattern — no per-buzz NOTIFICATION_FILTER put. This
-     * halves the per-buzz BLE work and removes the two-put sequencing. Falls back to the two-put
+     * ([FossilController.buzzPlayOnly]): the reserved buzz filter is already on the watch (written by
+     * new-watch provisioning and folded into every notification sync), so the watch matches the play
+     * file's package CRC to the reserved entry and picks the pattern — no per-buzz NOTIFICATION_FILTER
+     * put. This halves the per-buzz BLE work and removes the two-put sequencing. Falls back to the two-put
      * [FossilController.buzz] for a non-reserved pattern. Publishes [SyncState] SYNCING →
      * SUCCESS/ERROR. Always called on the ble-worker (from [submitBuzz] or the on-connect hook).
      */
@@ -611,8 +600,6 @@ class WatchConnectionService : Service() {
         val now = System.currentTimeMillis()
         SyncState.publish(SyncState.SyncPhase.SYNCING, nowMillis = now)
         runCatching {
-            // Make sure the reserved filter is present (e.g. if a buzz races the on-connect upload).
-            ensureReservedBuzzFilter(controller)
             if (qhybrid.protocol.requests.fossil.notification.BuzzPatterns.isReservedPattern(pattern)) {
                 Log.i(TAG, "buzz (play-only): pattern=$pattern")
                 controller.buzzPlayOnly(pattern)
@@ -629,24 +616,6 @@ class WatchConnectionService : Service() {
                 errorMessage = e.message ?: e.javaClass.simpleName,
                 nowMillis = System.currentTimeMillis(),
             )
-        }
-    }
-
-    /**
-     * WP-BUZZ-PLAYONLY — upload the reserved buzz filter ([FossilController.uploadReservedBuzzFilter])
-     * ONCE per connection so [runBuzz] can do a single play-file put. Idempotent: guarded by
-     * [reservedBuzzFilterUploaded] (reset on disconnect). A single NOTIFICATION_FILTER put on the
-     * ble-worker; failures are non-fatal (logged) — a buzz would then fall back to filter+play.
-     */
-    private fun ensureReservedBuzzFilter(controller: FossilController) {
-        if (!controller.isFossilProtocol()) return
-        if (!reservedBuzzFilterUploaded.compareAndSet(false, true)) return
-        runCatching {
-            Log.i(TAG, "uploading reserved buzz filter (once per connection)")
-            controller.uploadReservedBuzzFilter()
-        }.onFailure {
-            Log.w(TAG, "reserved buzz filter upload failed (buzz will fall back to filter+play)", it)
-            reservedBuzzFilterUploaded.set(false)
         }
     }
 
@@ -692,7 +661,8 @@ class WatchConnectionService : Service() {
             // WP-BUZZ-PLAYONLY: the notification filter is a WHOLE FILE — uploading the user's rules
             // would otherwise wipe the reserved buzz entries. Fold the reserved entries in so a
             // single play-file buzz still matches after a notification sync. (De-dupe by package so
-            // a user rule for a reserved name wins.) Mark the reserved filter present.
+            // a user rule for a reserved name wins.) This fold-in plus new-watch provisioning are the
+            // ONLY ways the reserved entries reach the watch — no per-connect/per-buzz standalone put.
             val reserved = qhybrid.protocol.requests.fossil.notification.BuzzPatterns.reservedEntries()
             val userPackages = entries.map { it.packageName }.toSet()
             val merged = entries + reserved.filter { it.packageName !in userPackages }
