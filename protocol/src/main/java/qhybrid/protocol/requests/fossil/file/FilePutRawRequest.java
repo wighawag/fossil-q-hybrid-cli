@@ -91,6 +91,21 @@ public class FilePutRawRequest extends FossilRequest {
             // WP-BUZZTEST (C): trace every control-channel frame the put sees, with handle + state.
             PUTLOG.info("FilePut[0x{}] state={} <- control type={} ({} bytes)",
                     String.format("%04X", handle), state, responseType, value.length);
+            // WP-BUZZTEST: ignore any framed control response addressed to a DIFFERENT file handle.
+            // Since we now COMPLETE a put on its type-8 CRC-confirm and advance the serial queue,
+            // a previous put's DELAYED type-4 close-ack (which DOES arrive on BlueZ) can land while
+            // the NEXT put is current. That stale ack carries the previous handle; without this
+            // guard the next put mis-reads it as its own close with the wrong handle and aborts
+            // ("wrong file closing handle") — killing e.g. the buzz's play file. Frames 3/4/8 carry
+            // the handle at offset 1; ignore them when they aren't for THIS put.
+            if ((responseType == 3 || responseType == 4 || responseType == 8) && value.length >= 3) {
+                short frameHandle = ByteBuffer.wrap(value).order(ByteOrder.LITTLE_ENDIAN).getShort(1);
+                if (frameHandle != this.handle) {
+                    PUTLOG.info("FilePut[0x{}] ignoring stale control type={} for other handle 0x{}",
+                            String.format("%04X", handle), responseType, String.format("%04X", frameHandle));
+                    return;
+                }
+            }
             switch (responseType) {
                 case 3: {
                     if (value.length != 5 || (value[0] & 0x0F) != 3) {

@@ -90,11 +90,20 @@ public class ControllerBuzzTest {
         t.injectNotification(FileTransferResponder.CONTROL,
                 FileTransferResponder.crcConfirmFrame(NOTIFICATION_FILTER_HANDLE, filterPayload));
 
-        // 3. The play file (NOTIFICATION_PLAY 0x0900) is now the current put. Accept it + confirm.
+        // 3. The play file (NOTIFICATION_PLAY 0x0900) is now the current put. BUT first simulate the
+        //    real BlueZ behaviour that broke on-device: the FILTER's DELAYED type-4 close-ack
+        //    (handle 0x0C00) arrives NOW, while the play put is current. It must be IGNORED as a
+        //    stale ack for the previous handle — NOT mis-read as the play put's close (which aborted
+        //    it with "wrong file closing handle" and killed the buzz).
+        t.injectNotification(FileTransferResponder.CONTROL,
+                FileTransferResponder.closeFrame(NOTIFICATION_FILTER_HANDLE));
+
+        // The play put must still be alive: accept it + confirm.
         t.injectNotification(FileTransferResponder.CONTROL,
                 FileTransferResponder.acceptFrame(NOTIFICATION_PLAY_HANDLE));
         assertTrue(awaitChunks(t, playBaseline),
-                "expected a NOTIFICATION_PLAY file-put (the buzz trigger) after the filter completed");
+                "expected a NOTIFICATION_PLAY file-put (the buzz trigger) after the filter completed "
+                        + "— a stale filter close-ack must NOT abort the play put");
         byte[] playPayload = reassembleFrom(t, playBaseline);
 
         t.injectNotification(FileTransferResponder.CONTROL,
