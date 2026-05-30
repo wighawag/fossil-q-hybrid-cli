@@ -82,6 +82,32 @@ public class AdapterButtonPutTest {
     }
 
     @Test
+    void buttonUpload_completesOnType8_withoutType4CloseAck() throws Exception {
+        // WP-BUZZTEST regression lock: this firmware (over Android's GATT stack) NEVER sends the
+        // type-4 file-close ack — the type-8 CRC-confirm IS completion. The put MUST resolve its
+        // future on type-8 alone (NO closeFrame injected), or a strictly-serial queue stalls and a
+        // follow-up put (e.g. the buzz's play file) never runs.
+        FakeBleTransport t = new FakeBleTransport();
+        t.connect("AA:BB:CC:DD:EE:FF");
+        FossilQAdapter adapter = new FossilQAdapter(t);
+        forceFossilProtocol(adapter);
+
+        byte[] file = sampleButtonFile();
+        CompletableFuture<Boolean> done = new CompletableFuture<>();
+        adapter.setButtonsRaw(file, done);
+
+        t.injectNotification(FileTransferResponder.CONTROL,
+                FileTransferResponder.acceptFrame(SETTINGS_BUTTONS_HANDLE));
+        byte[] payload = reassemble(t.writesTo(FakeBleTransport.UUID_CHAR_DATA));
+        t.injectNotification(FileTransferResponder.CONTROL,
+                FileTransferResponder.crcConfirmFrame(SETTINGS_BUTTONS_HANDLE, payload));
+        // Deliberately DO NOT inject a closeFrame (type-4) — the firmware never sends one.
+
+        assertTrue(done.get(2, TimeUnit.SECONDS),
+                "file-put future must complete on the type-8 CRC-confirm without a type-4 close-ack");
+    }
+
+    @Test
     void buttonUpload_noFuture_stillWorks() {
         // The fire-and-forget overload must still be callable (back-compat); just no completion.
         FakeBleTransport t = new FakeBleTransport();

@@ -148,12 +148,30 @@ public class FilePutRawRequest extends FossilRequest {
                             )
                             .queue();
 
-                    this.state = UploadState.CLOSING;
-                    PUTLOG.info("FilePut[0x{}] CRC confirmed — sent close (type 4), awaiting close-ack",
+                    // WP-BUZZTEST: the type-8 CRC-confirm IS the watch's "file received + verified"
+                    // signal — the bytes are committed on the watch at this point. We still send the
+                    // close frame above (a courtesy / protocol nicety), but we COMPLETE the put here
+                    // rather than waiting for a type-4 close-ack.
+                    //
+                    // WHY: on this firmware over Android's GATT stack the type-4 close-ack is NEVER
+                    // delivered (confirmed on-device: every file-PUT gets accept → data → type-8,
+                    // then silence). Waiting for it stalled the strictly-serial request queue, so a
+                    // follow-up put (e.g. the buzz's NOTIFICATION_PLAY file after its filter) never
+                    // ran — no vibration. The CLI/BlueZ path does receive the final ack, but the file
+                    // is equally committed at type-8 there (verified: CLI buzz works), so completing
+                    // on type-8 yields the SAME effective outcome on both transports. A later type-4
+                    // (other firmware) is handled as a harmless no-op (the put is already UPLOADED).
+                    this.state = UploadState.UPLOADED;
+                    PUTLOG.info("FilePut[0x{}] COMPLETE (CRC confirmed at type-8; close sent)",
                             String.format("%04X", handle));
+                    onFilePut(true);
                     break;
                 }
                 case 4: {
+                    // Already completed at type-8 (this firmware doesn't send type-4 anyway). If a
+                    // type-4 close-ack DOES arrive (other firmware/transport), treat it as a no-op
+                    // — the put is already UPLOADED and the queue has advanced.
+                    if (state == UploadState.UPLOADED) return;
                     if (value.length == 9) return;
                     if (value.length != 4 || (value[0] & 0x0F) != 4) {
                         throw new RuntimeException("wrong file closing header");

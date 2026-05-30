@@ -31,13 +31,23 @@ public class ControllerBuzzTest {
     private static final short NOTIFICATION_FILTER_HANDLE = 0x0C00;
     private static final short NOTIFICATION_PLAY_HANDLE = 0x0900;
 
-    /** Reconstruct the uploaded file payload from the recorded 3dda0004 chunks. */
-    private static byte[] reassemble(List<FakeBleTransport.Write> chunks) {
+    /** Reassemble the uploaded payload from the 3dda0004 data chunks recorded since [fromIndex]. */
+    private static byte[] reassembleFrom(FakeBleTransport t, int fromIndex) {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
-        for (FakeBleTransport.Write w : chunks) {
-            out.write(w.data, 1, w.data.length - 1);
+        List<FakeBleTransport.Write> all = t.writesTo(FakeBleTransport.UUID_CHAR_DATA);
+        for (int i = fromIndex; i < all.size(); i++) {
+            byte[] d = all.get(i).data;
+            out.write(d, 1, d.length - 1);
         }
         return out.toByteArray();
+    }
+
+    private static boolean awaitChunks(FakeBleTransport t, int baseline) throws InterruptedException {
+        for (int i = 0; i < 200; i++) {
+            if (t.writesTo(FakeBleTransport.UUID_CHAR_DATA).size() > baseline) return true;
+            Thread.sleep(10);
+        }
+        return false;
     }
 
     @Test
@@ -60,34 +70,35 @@ public class ControllerBuzzTest {
         // 1. buzz() kicks the filter file-put first (NOTIFICATION_FILTER 0x0C00).
         controller.buzz(pattern);
 
-        // Accept the filter put, reassemble the uploaded filter bytes + CRC-confirm + close.
+        // Accept the filter put, reassemble the uploaded filter bytes.
+        int filterBaseline = t.writesTo(FakeBleTransport.UUID_CHAR_DATA).size();
         t.injectNotification(FileTransferResponder.CONTROL,
                 FileTransferResponder.acceptFrame(NOTIFICATION_FILTER_HANDLE));
-        byte[] filterPayload = reassemble(t.writesTo(FakeBleTransport.UUID_CHAR_DATA));
-        assertTrue(filterPayload.length > 0, "expected filter data chunks on 3dda0004");
+        assertTrue(awaitChunks(t, filterBaseline), "expected filter data chunks on 3dda0004");
+        byte[] filterPayload = reassembleFrom(t, filterBaseline);
 
         // The 32-byte filter entry's last byte is the vibration pattern (see AdapterFilePutTest).
         int fileLen = filterPayload.length - 12 - 4; // [12-byte header][file][crc32 = 4]
         assertEquals(32, fileLen, "one filter entry = 32 bytes");
         assertEquals(pattern, filterPayload[12 + 31], "filter carries the requested vibe pattern");
 
+        // 2. The CRC-confirm COMPLETES the filter put (WP-BUZZTEST: no type-4 close-ack on this
+        //    firmware) and the strictly-serial queue advances to the NOTIFICATION_PLAY put. Capture
+        //    the play chunks AFTER this cascade (do NOT inject a closeFrame — it would land on the
+        //    play put with the wrong handle).
+        int playBaseline = t.writesTo(FakeBleTransport.UUID_CHAR_DATA).size();
         t.injectNotification(FileTransferResponder.CONTROL,
                 FileTransferResponder.crcConfirmFrame(NOTIFICATION_FILTER_HANDLE, filterPayload));
-        t.injectNotification(FileTransferResponder.CONTROL,
-                FileTransferResponder.closeFrame(NOTIFICATION_FILTER_HANDLE));
 
-        // 2. The play file (NOTIFICATION_PLAY 0x0900) is now queued. Clear the filter chunks so we
-        //    can isolate the play payload, then drive its put to completion.
-        t.clearWrites();
+        // 3. The play file (NOTIFICATION_PLAY 0x0900) is now the current put. Accept it + confirm.
         t.injectNotification(FileTransferResponder.CONTROL,
                 FileTransferResponder.acceptFrame(NOTIFICATION_PLAY_HANDLE));
-        byte[] playPayload = reassemble(t.writesTo(FakeBleTransport.UUID_CHAR_DATA));
-        assertTrue(playPayload.length > 0, "expected a NOTIFICATION_PLAY file-put (the buzz trigger)");
+        assertTrue(awaitChunks(t, playBaseline),
+                "expected a NOTIFICATION_PLAY file-put (the buzz trigger) after the filter completed");
+        byte[] playPayload = reassembleFrom(t, playBaseline);
 
         t.injectNotification(FileTransferResponder.CONTROL,
                 FileTransferResponder.crcConfirmFrame(NOTIFICATION_PLAY_HANDLE, playPayload));
-        t.injectNotification(FileTransferResponder.CONTROL,
-                FileTransferResponder.closeFrame(NOTIFICATION_PLAY_HANDLE));
     }
 
     /** Flip the adapter into Fossil protocol mode without a live handshake. */

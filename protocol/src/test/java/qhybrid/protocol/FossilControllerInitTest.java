@@ -53,7 +53,13 @@ public class FossilControllerInitTest {
         return out.toByteArray();
     }
 
-    /** Respond to a single put: accept -> (chunks arrive) -> crc confirm -> close. */
+    /**
+     * Respond to a single put: accept -> (chunks arrive) -> crc confirm. The put COMPLETES on the
+     * type-8 CRC-confirm (WP-BUZZTEST: this firmware never sends a type-4 close-ack), which
+     * advances the queue to the next put. We deliberately do NOT inject a type-4 closeFrame: it
+     * would now land on the NEXT put (already current after the cascade) and be mis-read as that
+     * put's close with the wrong handle.
+     */
     private static byte[] completePut(FakeBleTransport t, short handle, int dataChunkBaseline) throws InterruptedException {
         t.injectNotification(FileTransferResponder.CONTROL, FileTransferResponder.acceptFrame(handle));
         // wait for chunks to be written
@@ -61,7 +67,6 @@ public class FossilControllerInitTest {
                 "expected data chunks for handle 0x" + Integer.toHexString(handle & 0xFFFF));
         byte[] payload = reassembleFrom(t, dataChunkBaseline);
         t.injectNotification(FileTransferResponder.CONTROL, FileTransferResponder.crcConfirmFrame(handle, payload));
-        t.injectNotification(FileTransferResponder.CONTROL, FileTransferResponder.closeFrame(handle));
         return payload;
     }
 
