@@ -12,8 +12,13 @@ Apply the visibility + leave-prompt across **all three editable per-watch sectio
 Alarms, Buttons.
 
 This was designed in a prior session. **Follow the design below exactly** — it was reviewed and
-approved by the user. Do the work in the **4 committed steps** below (full gates pass + commit after
-EACH step; adjust seams if you find something better, but keep the model).
+approved by the user. Do the work in the committed steps below (1, 2, 2b, 3, 4, 5 — full gates pass +
+commit after EACH step; adjust seams if you find something better, but keep the model).
+
+Three user refinements folded in: (a) the Notifications **Play button is DISABLED for rules not yet
+on the watch** (Step 2); (b) **Settings** gets a **vibration-pattern dropdown + single Buzz button**
+replacing the two fixed buzz buttons, so the user can feel each of the 10 patterns (Step 2b); (c) the
+alarm **auto-save shows the blocking spinner modal** like a manual save (Step 4).
 
 ## Background / why (already decided — do not re-litigate)
 
@@ -118,10 +123,25 @@ EACH step; adjust seams if you find something better, but keep the model).
   derivation).
 - Each row shows a small badge: ✓ "on watch" (synced) vs ⏳ "not synced" (pending). A header/banner
   shows "N change(s) not on the watch — Save to watch" when `pendingCount > 0` (hidden when 0).
-- Notifications Play button: if the tapped rule is **pending**, surface a brief note/snackbar
-  ("Save to watch first — the watch doesn't have this rule yet") instead of (or in addition to)
-  poking the play; keep `playRule` honest (it already no-ops for an unsaved package — extend so the
-  UI can tell the user WHY). Unit-test the VM-level pending logic.
+- **Notifications Play button: DISABLE it for any rule that is NOT yet on the watch** (pending).
+  (User decision: simpler than a warning note — a disabled ▶ makes it obvious the watch doesn't have
+  this rule's vibe/hands yet. Enable it once the row is ✓ on-watch.) The per-row `isOnWatch` from the
+  Step-1 helper drives the `enabled` flag. Keep `playRule` honest (it already no-ops for an unsaved
+  package). Unit-test the VM-level `isOnWatch` per-row + the enable rule.
+- Gate → commit.
+
+### Step 2b — Settings: replace the 2 buzz buttons with a vibration-pattern dropdown + one Buzz button
+- In `SettingsScreen.kt` `TestVibrationCard`, the current **two** fixed buttons ("Vibrate (single)" =
+  pattern 5, "Vibrate (triple)" = pattern 1) PLUS the diagnostic "Put filter + send buzz" exist.
+  Replace the two fixed buzz buttons with **a vibration-pattern dropdown (all 10 patterns 0–9 via
+  `VibePatterns.ALL` + `VibePatterns.label(p)`) + a single "Buzz" button** that buzzes the selected
+  pattern — so the user can feel each pattern. Reuses `vm.vibrateWatch(pattern)` → `VibrationSync.buzz`
+  (already forces NOTIFICATION_FILTER + NOTIFICATION_PLAY, so it works for ANY pattern, not just the
+  two reserved ones — verify). **Keep** the diagnostic "Put filter + send buzz" fallback button.
+  Disable the Buzz button with the same `progress.saveEnabled(hasActiveWatch)` rule. `VibrationSync
+  .PATTERN_SINGLE/PATTERN_TRIPLE` constants can stay (used elsewhere / as the dropdown default — pick
+  5 as the default selection). No new wire bytes. Update `SettingsViewModelTest` if it asserts the
+  old two-button behavior; add a test that the dropdown selection drives `vibrateWatch(selected)`.
 - Gate → commit.
 
 ### Step 3 — Leave-with-pending prompt (all 3 screens)
@@ -143,6 +163,14 @@ EACH step; adjust seams if you find something better, but keep the model).
   within ~750 ms or save after the write settles) so a burst of toggles doesn't spam BLE — make the
   debounce injectable/pure-testable. The synced-marker (Steps 1–2) then flips each alarm row to ✓
   shortly after.
+- **Show the blocking spinner modal on an auto-save** (user decision): the auto-save must publish
+  `SyncState` SYNCING just like the manual save so the existing `SyncSavingDialog` ("Saving to
+  watch…") appears while the alarm push is in flight, then SUCCESS/ERROR. `ServiceSaveToWatch
+  .trigger` already publishes SYNCING synchronously — confirm the Alarms screen still renders
+  `SyncSavingDialog(progress)` so the modal shows on the auto-triggered save (it does for the manual
+  save today; keep it). If the debounce defers the trigger, publish SYNCING when the trigger
+  actually fires (not on every keystroke) so the modal doesn't flicker on each edit — i.e. the modal
+  appears once per coalesced save, not per edit.
 - Remove the explicit "Save to watch" button from the Alarms screen (or keep it as a manual
   "re-sync now" that's now redundant — prefer REMOVING it for a clean UX, since every edit
   auto-saves). The leave-prompt (Step 3) becomes effectively a no-op for Alarms once edits
