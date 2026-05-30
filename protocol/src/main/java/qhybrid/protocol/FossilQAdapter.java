@@ -832,14 +832,26 @@ public class FossilQAdapter {
      * ButtonConfigBuilder; this just performs the file put.
      */
     public void setButtonsRaw(byte[] buttonConfigFile) {
+        setButtonsRaw(buttonConfigFile, null);
+    }
+
+    /**
+     * Upload a prebuilt button-config file (SETTINGS_BUTTONS, 0x0600), completing [result] when the
+     * watch acknowledges the file-put (true) or it fails (false). Lets a caller (e.g. the Android
+     * sync service) WAIT for the write so the BLE connection is held open until the put completes,
+     * instead of fire-and-forget. Same wire path/bytes as the no-future overload — nothing invented.
+     */
+    public void setButtonsRaw(byte[] buttonConfigFile, CompletableFuture<Boolean> result) {
         if (!useFossilProtocol) {
             LOG.warn("Button config not supported on Misfit protocol firmware");
+            if (result != null && !result.isDone()) result.complete(false);
             return;
         }
         queueWrite(new FilePutRequest(FileHandle.SETTINGS_BUTTONS, buttonConfigFile, fossilAdapter) {
             @Override
             public void onFilePut(boolean success) {
                 LOG.info("Button config: {}", success ? "success" : "FAILED");
+                if (result != null && !result.isDone()) result.complete(success);
             }
         }, false);
     }

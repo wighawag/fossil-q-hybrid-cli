@@ -492,9 +492,18 @@ class WatchConnectionService : Service() {
         }
 
         override fun uploadButtons(buttonConfigFile: ByteArray): Boolean {
-            Log.i(TAG, "uploadButtons: ${buttonConfigFile.size} bytes — queueing SETTINGS_BUTTONS write")
-            controller.setButtons(buttonConfigFile)
-            return true
+            Log.i(TAG, "uploadButtons: ${buttonConfigFile.size} bytes — writing SETTINGS_BUTTONS")
+            // WP-SYNCFIX: WAIT on the file-put (bounded) like alarms, so the BLE link is held open
+            // until the watch acknowledges the write instead of fire-and-forget (which raced the
+            // sync pass ending / the connection dropping, so the button file never actually
+            // committed on-device even though the bytes were correct).
+            val future = CompletableFuture<Boolean>()
+            controller.setButtons(buttonConfigFile, future)
+            return runCatching { future.get(UPLOAD_TIMEOUT_MS, TimeUnit.MILLISECONDS) }
+                .getOrElse {
+                    Log.w(TAG, "button upload timed out / failed", it)
+                    false
+                }
         }
 
         override fun applyVibrationStrength(strength: Int): Boolean {

@@ -118,6 +118,15 @@ public class FossilController {
     }
 
     /**
+     * Upload a prebuilt button-config file (SETTINGS_BUTTONS, 0x0600), completing [result] when the
+     * watch acknowledges the file-put. Lets the caller WAIT for the write (holding the BLE link
+     * open until it completes) instead of fire-and-forget. Same bytes/path as the no-future form.
+     */
+    public void setButtons(byte[] buttonConfigFile, java.util.concurrent.CompletableFuture<Boolean> result) {
+        adapter.setButtonsRaw(buttonConfigFile, result);
+    }
+
+    /**
      * Build a multi-entry button-config file (mode-toggle capable) without uploading
      * (pure, deterministic). Each button takes an array of
      * {@link ButtonConfigBuilder.ButtonEntry}; payloads are NOT deduplicated and a CRC32
