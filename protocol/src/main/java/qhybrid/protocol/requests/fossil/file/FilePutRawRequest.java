@@ -151,22 +151,9 @@ public class FilePutRawRequest extends FossilRequest {
                     }
 
 
-                    ByteBuffer buffer2 = ByteBuffer.allocate(3);
-                    buffer2.order(ByteOrder.LITTLE_ENDIAN);
-                    buffer2.put((byte) 4);
-                    buffer2.putShort(this.handle);
-
-                    adapter.getDeviceSupport().createWriteBatch("file close")
-                            .write(
-                                    UUID.fromString("3dda0003-957f-7d4a-34a6-74696673696d"),
-                                    buffer2.array()
-                            )
-                            .queue();
-
                     // WP-BUZZTEST: the type-8 CRC-confirm IS the watch's "file received + verified"
-                    // signal — the bytes are committed on the watch at this point. We still send the
-                    // close frame above (a courtesy / protocol nicety), but we COMPLETE the put here
-                    // rather than waiting for a type-4 close-ack.
+                    // signal — the bytes are committed on the watch at this point. COMPLETE the put
+                    // HERE rather than waiting for a type-4 close-ack.
                     //
                     // WHY: on this firmware over Android's GATT stack the type-4 close-ack is NEVER
                     // delivered (confirmed on-device: every file-PUT gets accept → data → type-8,
@@ -176,10 +163,29 @@ public class FilePutRawRequest extends FossilRequest {
                     // is equally committed at type-8 there (verified: CLI buzz works), so completing
                     // on type-8 yields the SAME effective outcome on both transports. A later type-4
                     // (other firmware) is handled as a harmless no-op (the put is already UPLOADED).
+                    //
+                    // ORDER MATTERS: mark UPLOADED + fire onFilePut(true) BEFORE sending the close
+                    // frame. The close is a best-effort courtesy only; on Android the close WRITE
+                    // can block/throw inside the transport, and if it ran first it prevented the
+                    // completion below from ever executing (the put silently never finished, so the
+                    // next put — the buzz's play file — never ran). Completion must NOT depend on it.
                     this.state = UploadState.UPLOADED;
-                    PUTLOG.info("FilePut[0x{}] COMPLETE (CRC confirmed at type-8; close sent)",
+                    PUTLOG.info("FilePut[0x{}] COMPLETE (CRC confirmed at type-8)",
                             String.format("%04X", handle));
                     onFilePut(true);
+
+                    // NOTE: we deliberately do NOT send a type-4 "file close" frame here.
+                    //
+                    // The close write targets 3dda0003, an INDICATE characteristic = write-WITH-
+                    // response. This firmware sends no response to the close, so on Android that
+                    // write BLOCKS the BLE callback thread for the full op-timeout (~10s) — and
+                    // because the request queue only advances after this handler returns, the NEXT
+                    // put (the buzz's NOTIFICATION_PLAY file) was delayed by ~10s and effectively
+                    // never ran for a quick second tap (no vibration). The file is already committed
+                    // at the type-8 CRC-confirm (verified on BlueZ, where the close+ack DO happen
+                    // but add nothing), so the close is pure courtesy with no functional value and
+                    // real harm on Android. Dropping it lets the queue advance immediately to the
+                    // play file. (FINDINGS: firmware never emits a type-4 close-ack over Android.)
                     break;
                 }
                 case 4: {
