@@ -57,6 +57,18 @@ class WatchRepository(
         watchDao.setActive(normalized)
     }
 
+    /**
+     * WP-ONBOARD — register a brand-new watch whose READABLE settings were READ BACK from the watch
+     * (vibration strength / step goal + live model/firmware/battery), instead of [registerWatch]'s
+     * constant defaults. Upserts the seeded row (overwriting any stale row) and makes it the single
+     * active watch. The MAC is normalized to upper-case to match [registerWatch].
+     */
+    suspend fun registerSeededWatch(watch: WatchEntity) {
+        val normalized = watch.macAddress.uppercase()
+        watchDao.upsert(watch.copy(macAddress = normalized))
+        watchDao.setActive(normalized)
+    }
+
     // ---- per-watch child settings -------------------------------------------
 
     suspend fun getAlarms(mac: String) = alarmDao.getForWatch(mac)

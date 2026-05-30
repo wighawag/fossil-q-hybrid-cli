@@ -399,8 +399,13 @@ class WatchConnectionService : Service() {
                                 mac = mac,
                                 nowMillis = System.currentTimeMillis(),
                             )
-                            if (provisionNewWatch(controller, mac)) {
-                                registerWatchRow(mac)
+                            val seeded = provisionNewWatch(controller, mac)
+                            if (seeded != null) {
+                                // WP-ONBOARD: persist the row SEEDED FROM THE WATCH'S read-back
+                                // (real vibration/step goal) instead of registerWatch's constant
+                                // defaults. Falls back to constants inside provisionNewWatch if the
+                                // read-back failed/was empty (best-effort — never blocks adding).
+                                registerSeededWatchRow(seeded)
                                 qhybrid.android.onboard.ProvisioningState.publish(
                                     qhybrid.android.onboard.ProvisioningState.Phase.ADDED,
                                     mac = mac,
@@ -583,16 +588,33 @@ class WatchConnectionService : Service() {
         }
     }
 
-    private fun provisionNewWatch(controller: FossilController, mac: String): Boolean {
+    /**
+     * Provision a brand-new watch (one-time, on first connect). Force-writes the UNREADABLE sections
+     * (blank-to-seed) and uploads the reserved buzz notification filter via a PROVISION sync.
+     *
+     * WP-ONBOARD read-back: the READABLE settings (vibration strength, step goal, …) are READ FROM
+     * THE WATCH via [FossilController.readConfig] and mapped by [ConfigToSeed], so re-adding a watch
+     * shows its ACTUAL values — NOT the constant 50 / 10000. The read-back is BEST-EFFORT: a
+     * failed/empty read falls back to the hardcoded constants and never blocks onboarding.
+     *
+     * @return the seeded [WatchEntity] to persist on success (the notification-filter upload
+     *   succeeded — the unchanged WP-ONBOARD success gate), or `null` if provisioning failed (no row
+     *   is written; the next connect re-provisions).
+     */
+    private fun provisionNewWatch(controller: FossilController, mac: String): qhybrid.android.db.WatchEntity? {
         return try {
-            // Phase 1: empty seed (WP-DEFAULTS profile deferred). A minimal watch row so the
-            // orchestrator has a target; readable settings use safe constants (read-back deferred).
+            val model = controller.modelNumber
+            val firmware = controller.firmwareVersion
+            val battery = controller.batteryLevel
+
+            // Phase 1: a minimal seed so the orchestrator has a target. The orchestrator runs the
+            // PROVISION force-write (blanks the unreadable sections + lands the reserved buzz filter).
             val seed = qhybrid.android.db.WatchEntity(
                 macAddress = mac.uppercase(),
                 name = mac.uppercase(),
-                model = controller.modelNumber,
-                firmwareVersion = controller.firmwareVersion,
-                batteryLevel = controller.batteryLevel,
+                model = model,
+                firmwareVersion = firmware,
+                batteryLevel = battery,
             )
             val input = SyncInput(watch = seed, settings = SyncSettings(vibrationStrength = null))
             val result = SyncStateReporter.reportAround(System::currentTimeMillis) {
@@ -605,10 +627,40 @@ class WatchConnectionService : Service() {
             }
             val filterOk = result != null && SyncSection.NOTIFICATION_FILTER in result.performed
             Log.i(TAG, "provision $mac: performed=${result?.performed} filterOk=$filterOk")
-            filterOk
+            if (!filterOk) return null
+
+            // WP-ONBOARD read-back: READ the watch's actual readable settings (best-effort). On
+            // failure/empty, ConfigToSeed falls back to the hardcoded constants — never blocks.
+            val entries = runCatching { controller.readConfig() }
+                .onFailure { Log.w(TAG, "provision $mac: readConfig failed (using constants)", it) }
+                .getOrDefault(emptyList())
+            val seededSettings = qhybrid.android.onboard.ConfigToSeed.seed(
+                entries,
+                qhybrid.android.onboard.ConfigToSeed.DeviceInfo(
+                    model = model,
+                    firmwareVersion = firmware,
+                    batteryLevel = battery,
+                ),
+            )
+            Log.i(
+                TAG,
+                "provision $mac: read-back seed vibration=${seededSettings.vibrationStrength} " +
+                    "stepGoal=${seededSettings.stepGoal} (configEntries=${entries.size})",
+            )
+            // TODO(WP-ONBOARD): seed nudge / 2nd-timezone app prefs (SettingsPrefs) from
+            // seededSettings.nudge* / .secondTimezoneOffsetMinutes. Deferred per the WP brief — those
+            // are user-level (not per-watch) prefs; the must-fix symptom is the per-watch vibration
+            // strength (+ step goal) on the WatchEntity, handled here.
+
+            // Persist the per-watch READABLE fields read from the watch (vibration + step goal),
+            // plus the live device info. Absent on the watch → constants (handled by ConfigToSeed).
+            seed.copy(
+                vibrationStrength = seededSettings.vibrationStrength,
+                stepGoal = seededSettings.stepGoal,
+            )
         } catch (e: Exception) {
             Log.e(TAG, "provisionNewWatch($mac) failed", e)
-            false
+            null
         }
     }
 
@@ -630,6 +682,17 @@ class WatchConnectionService : Service() {
     private fun registerWatchRow(mac: String) {
         runCatching { runBlocking { WatchRepository(applicationContext).registerWatch(mac, name = mac) } }
             .onFailure { Log.w(TAG, "registerWatch failed", it) }
+    }
+
+    /**
+     * WP-ONBOARD — persist the new-watch row SEEDED FROM THE WATCH'S read-back (real vibration /
+     * step goal + live device info), and mark it active. Used only on the new-watch provisioning
+     * success path; a failure to persist is logged but does not crash provisioning (the watch is
+     * already provisioned on-device). Runs on the ble-worker.
+     */
+    private fun registerSeededWatchRow(seeded: qhybrid.android.db.WatchEntity) {
+        runCatching { runBlocking { WatchRepository(applicationContext).registerSeededWatch(seeded) } }
+            .onFailure { Log.w(TAG, "registerSeededWatch failed", it) }
     }
 
     /**
