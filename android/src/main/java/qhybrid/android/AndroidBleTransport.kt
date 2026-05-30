@@ -72,13 +72,18 @@ class AndroidBleTransport(private val context: Context) : BleTransport {
         private const val NO_RESPONSE_MAX_RETRIES = 20
         // WP-FILEPUT-RELIABLE: bounded wait for a write-WITH-response (control char 3dda0003) ATT
         // ack. The file-PUT protocol's real completion signal is the watch's INDICATION (e.g. the
-        // 0x83 PUT accept), NOT the ATT write ack — and that indication arrives on the GATT
-        // callback thread, where the protocol must SYNCHRONOUSLY write the data chunks on 3dda0004.
-        // If we held [opLock] for the full 10s OP_TIMEOUT_MS waiting on the control write's ack, the
-        // accept-driven data write would block on opLock for ~10s and the watch would time the PUT
-        // out and ABORT (0x89) before any data arrived — the exact on-device failure. A short ack
-        // wait frees opLock promptly so the indication handler can transmit in time.
-        private const val CONTROL_WRITE_ACK_MS = 1_500L
+        // 0x83 PUT accept, the 0x84 VERIFY success), NOT the ATT write ack — and that indication
+        // arrives on the GATT callback thread, where the protocol must SYNCHRONOUSLY issue the next
+        // write (data chunks on 3dda0004, or VERIFY on 3dda0003). [opLock] is held for the whole of
+        // this wait, so the watch's response indication cannot be PROCESSED until it elapses.
+        //
+        // The ATT ack normally arrives in well under this window; we only wait at all to satisfy
+        // Android's one-outstanding-GATT-op rule (so the next op isn't rejected as busy). Keep it
+        // SHORT: a long wait (e.g. 1.5s) was held after EVERY control write, adding ~1.5s of latency
+        // per PUT step (open + verify) before the watch's already-sent 0x83/0x84 was handled — a
+        // visible multi-second buzz delay. If onCharacteristicWrite fires, the latch releases even
+        // sooner.
+        private const val CONTROL_WRITE_ACK_MS = 400L
         private const val DISCOVER_MAX_ATTEMPTS = 3
         private const val BOND_TIMEOUT_MS = 30_000L
         private const val TARGET_MTU = 512
