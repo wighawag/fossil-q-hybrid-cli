@@ -420,6 +420,34 @@ class MainActivity : ComponentActivity() {
                 else "Battery optimization: NOT exempt — Doze may kill the link",
                 style = MaterialTheme.typography.bodySmall
             )
+
+            // WP10/WP11 — Notification Access (the special "notification listener" permission). Not
+            // a runtime permission: the user toggles it in system Settings. We detect the grant
+            // state and deep-link to that screen. Tap the button, toggle it on, come back — the
+            // status refreshes on return (the launcher's result callback re-reads the grant).
+            var notifAccess by remember {
+                mutableStateOf(qhybrid.android.notifications.NotificationAccess.isGranted(this@MainActivity))
+            }
+            val notifAccessLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.StartActivityForResult()
+            ) {
+                // The Settings screen returns no result; just re-read the grant state on return.
+                notifAccess = qhybrid.android.notifications.NotificationAccess.isGranted(this@MainActivity)
+            }
+            OutlinedButton(
+                onClick = {
+                    notifAccessLauncher.launch(
+                        qhybrid.android.notifications.NotificationAccess.settingsIntent()
+                    )
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Grant notification access") }
+            Text(
+                if (notifAccess)
+                    "Notification access: granted ✅ — app notifications can buzz the watch"
+                else "Notification access: NOT granted — per-app notification rules won't fire",
+                style = MaterialTheme.typography.bodySmall
+            )
         }
     }
 
