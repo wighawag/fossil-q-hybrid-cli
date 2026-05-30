@@ -3,6 +3,7 @@ package qhybrid.android.sync
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -174,6 +175,66 @@ class SyncOrchestratorTest {
             ),
             up.order,
         )
+    }
+
+    // ---- WP-SYNCFIX: targeted sync (only the requested section) --------------
+
+    private fun fullInput() = SyncInput(
+        watch = watch(vibe = 70),
+        alarms = listOf(alarm(0)),
+        rules = listOf(rule("com.whatsapp")),
+        buttons = listOf(button(ButtonSlots.TOP, ButtonModes.SINGLE_ACTION,
+            listOf(ButtonActions.RING_PHONE))),
+        settings = SyncSettings(
+            vibrationStrength = 70,
+            nudgeEnabled = true, nudgeMinutes = 30,
+            secondTimezoneOffsetMinutes = -480,
+        ),
+    )
+
+    @Test
+    fun buttonsOnly_uploadsOnlyButtons_notAlarmsOrSettings() {
+        // The reported bug: a Buttons-screen save must NOT also push alarms / vibration / etc.
+        val up = FakeUploader()
+        val result = SyncOrchestrator.sync(fullInput(), up, SyncSection.BUTTONS_ONLY)
+        assertEquals(listOf(SyncSection.BUTTONS), up.order)
+        assertEquals(listOf(SyncSection.BUTTONS), result.performed)
+        // Untouched sections are neither performed nor skipped — they're not part of this pass.
+        assertFalse(SyncSection.ALARMS in result.skipped)
+        assertFalse(SyncSection.VIBRATION in result.performed)
+        assertNull(up.alarmBytes)
+        assertNull(up.vibration)
+    }
+
+    @Test
+    fun alarmsOnly_uploadsOnlyAlarms() {
+        val up = FakeUploader()
+        SyncOrchestrator.sync(fullInput(), up, SyncSection.ALARMS_ONLY)
+        assertEquals(listOf(SyncSection.ALARMS), up.order)
+        assertNull(up.buttonBytes)
+        assertNull(up.vibration)
+    }
+
+    @Test
+    fun settingsOnly_uploadsOnlyTheThreeSettings_noFiles() {
+        val up = FakeUploader()
+        SyncOrchestrator.sync(fullInput(), up, SyncSection.SETTINGS_ONLY)
+        assertEquals(
+            listOf(SyncSection.VIBRATION, SyncSection.NUDGE, SyncSection.SECOND_TIMEZONE),
+            up.order,
+        )
+        assertNull(up.alarmBytes)
+        assertNull(up.buttonBytes)
+    }
+
+    @Test
+    fun defaultSync_isFullReconcile() {
+        // No sections arg → ALL (back-compat with connect / periodic reconcile).
+        val up = FakeUploader()
+        SyncOrchestrator.sync(fullInput(), up)
+        assertEquals(6, up.order.size)
+        assertTrue(SyncSection.BUTTONS in up.order)
+        assertTrue(SyncSection.ALARMS in up.order)
     }
 
     // ---- payloads match the golden compilers ---------------------------------

@@ -42,11 +42,25 @@ import qhybrid.protocol.requests.fossil.alarm.AlarmSlot
 object SyncOrchestrator {
 
     /**
-     * Run a full sync pass for [input] against [uploader]. Each section is independent: a failure
-     * (e.g. too many alarms) is recorded and the remaining sections still run. Returns a
-     * [SyncResult] describing what was attempted/performed/skipped (for logging).
+     * Run a sync pass for [input] against [uploader], limited to [sections].
+     *
+     * **WP-SYNCFIX targeting:** by default [sections] = [SyncSection.ALL] (a full reconcile, used
+     * on connect / periodic safety sync). An explicit "Save to watch" from one screen passes ONLY
+     * the section the user changed (e.g. just [SyncSection.BUTTONS]) so we don't re-push unrelated
+     * sections the user never touched — both because that surprised the user and because pushing
+     * several file-put sections in one pass let them collide on the single BLE control channel.
+     * Sections NOT in [sections] are neither performed nor skipped (they're simply not part of this
+     * pass) — they do not appear in the [SyncResult].
+     *
+     * Each included section is independent: a failure (e.g. too many alarms) is recorded and the
+     * remaining included sections still run. Returns a [SyncResult] describing what was
+     * attempted/performed/skipped (for logging).
      */
-    fun sync(input: SyncInput, uploader: Uploader): SyncResult {
+    fun sync(
+        input: SyncInput,
+        uploader: Uploader,
+        sections: Set<SyncSection> = SyncSection.ALL,
+    ): SyncResult {
         if (!input.hasWatch) {
             return SyncResult(mac = null, performed = emptyList(), skipped = emptyList(), errors = emptyList())
         }
@@ -55,7 +69,7 @@ object SyncOrchestrator {
         val errors = mutableListOf<SyncError>()
 
         // 1. Alarms ------------------------------------------------------------
-        runSection(SyncSection.ALARMS, performed, skipped, errors) {
+        runSection(SyncSection.ALARMS, sections, performed, skipped, errors) {
             val standard = input.alarms.map { it.toAlarmSlot() }
             val calendar = input.calendarAlarms.map { it.toAlarmSlot() }
             if (standard.isEmpty() && calendar.isEmpty()) return@runSection false
@@ -67,14 +81,14 @@ object SyncOrchestrator {
         }
 
         // 2. Notification filter ----------------------------------------------
-        runSection(SyncSection.NOTIFICATION_FILTER, performed, skipped, errors) {
+        runSection(SyncSection.NOTIFICATION_FILTER, sections, performed, skipped, errors) {
             if (input.rules.isEmpty()) return@runSection false
             val entries = input.rules.map { it.toFilterEntry() }
             uploader.uploadNotificationFilter(entries)
         }
 
         // 3. Buttons -----------------------------------------------------------
-        runSection(SyncSection.BUTTONS, performed, skipped, errors) {
+        runSection(SyncSection.BUTTONS, sections, performed, skipped, errors) {
             if (input.buttons.isEmpty()) return@runSection false
             val bytes = compileButtons(input.buttons) ?: return@runSection false
             uploader.uploadButtons(bytes)
@@ -83,12 +97,12 @@ object SyncOrchestrator {
         // 4. Live settings -----------------------------------------------------
         val s = input.settings
         s.vibrationStrength?.let {
-            runSection(SyncSection.VIBRATION, performed, skipped, errors) {
+            runSection(SyncSection.VIBRATION, sections, performed, skipped, errors) {
                 uploader.applyVibrationStrength(it)
             }
         }
         if (s.nudgeMinutes != null) {
-            runSection(SyncSection.NUDGE, performed, skipped, errors) {
+            runSection(SyncSection.NUDGE, sections, performed, skipped, errors) {
                 uploader.applyInactivityNudge(
                     s.nudgeFromHour, s.nudgeFromMinute, s.nudgeToHour, s.nudgeToMinute,
                     s.nudgeMinutes, s.nudgeEnabled,
@@ -96,7 +110,7 @@ object SyncOrchestrator {
             }
         }
         s.secondTimezoneOffsetMinutes?.let {
-            runSection(SyncSection.SECOND_TIMEZONE, performed, skipped, errors) {
+            runSection(SyncSection.SECOND_TIMEZONE, sections, performed, skipped, errors) {
                 uploader.applySecondTimezone(it)
             }
         }
@@ -105,17 +119,20 @@ object SyncOrchestrator {
     }
 
     /**
-     * Run one section's [block]; classify the outcome. [block] returns whether the upload was
-     * performed (true), skipped (false), and may throw — which is captured as a [SyncError] so
-     * the rest of the pass continues.
+     * Run one section's [block] IF [section] is in [sections]; classify the outcome. [block]
+     * returns whether the upload was performed (true), skipped (false), and may throw — which is
+     * captured as a [SyncError] so the rest of the pass continues. A section NOT in [sections] is a
+     * pure no-op (not run, not recorded) so a targeted save doesn't touch unrelated sections.
      */
     private inline fun runSection(
         section: SyncSection,
+        sections: Set<SyncSection>,
         performed: MutableList<SyncSection>,
         skipped: MutableList<SyncSection>,
         errors: MutableList<SyncError>,
         block: () -> Boolean,
     ) {
+        if (section !in sections) return
         try {
             if (block()) performed.add(section) else skipped.add(section)
         } catch (e: Exception) {
@@ -219,6 +236,24 @@ enum class SyncSection {
     VIBRATION,
     NUDGE,
     SECOND_TIMEZONE,
+    ;
+
+    companion object {
+        /** Every section — a full reconcile (the default for connect / periodic safety sync). */
+        val ALL: Set<SyncSection> = values().toSet()
+
+        /** WP-SYNCFIX: just the buttons section (a targeted Buttons-screen save). */
+        val BUTTONS_ONLY: Set<SyncSection> = setOf(BUTTONS)
+
+        /** WP-SYNCFIX: just the alarms section (a targeted Alarms-screen save). */
+        val ALARMS_ONLY: Set<SyncSection> = setOf(ALARMS)
+
+        /** WP-SYNCFIX: just the notification filter (a targeted Notifications-screen save). */
+        val NOTIFICATIONS_ONLY: Set<SyncSection> = setOf(NOTIFICATION_FILTER)
+
+        /** WP-SYNCFIX: the live settings the Settings screen applies (vibration / nudge / 2nd-tz). */
+        val SETTINGS_ONLY: Set<SyncSection> = setOf(VIBRATION, NUDGE, SECOND_TIMEZONE)
+    }
 }
 
 /** WP14 — a per-section failure captured during a sync pass (so the rest can continue). */
