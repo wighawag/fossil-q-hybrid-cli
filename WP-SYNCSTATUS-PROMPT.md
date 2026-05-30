@@ -17,7 +17,9 @@ commit after EACH step; adjust seams if you find something better, but keep the 
 
 Three user refinements folded in: (a) the Notifications **Play button is DISABLED for rules not yet
 on the watch** (Step 2); (b) **Settings** gets a **vibration-pattern dropdown + single Buzz button**
-replacing the two fixed buzz buttons, so the user can feel each of the 10 patterns (Step 2b); (c) the
+replacing the fixed buzz buttons (dropdown lists ONLY the reserved patterns {1,2,3,5,6,7,8} — silent
+0/9 + the 4≡3 dup skipped — and Buzz uses the play-only path; the diagnostic filter+play button is
+removed), so the user can feel each useful pattern (Step 2b); (c) the
 alarm **auto-save shows the blocking spinner modal** like a manual save (Step 4).
 
 ## Background / why (already decided — do not re-litigate)
@@ -130,18 +132,29 @@ alarm **auto-save shows the blocking spinner modal** like a manual save (Step 4)
   package). Unit-test the VM-level `isOnWatch` per-row + the enable rule.
 - Gate → commit.
 
-### Step 2b — Settings: replace the 2 buzz buttons with a vibration-pattern dropdown + one Buzz button
-- In `SettingsScreen.kt` `TestVibrationCard`, the current **two** fixed buttons ("Vibrate (single)" =
-  pattern 5, "Vibrate (triple)" = pattern 1) PLUS the diagnostic "Put filter + send buzz" exist.
-  Replace the two fixed buzz buttons with **a vibration-pattern dropdown (all 10 patterns 0–9 via
-  `VibePatterns.ALL` + `VibePatterns.label(p)`) + a single "Buzz" button** that buzzes the selected
-  pattern — so the user can feel each pattern. Reuses `vm.vibrateWatch(pattern)` → `VibrationSync.buzz`
-  (already forces NOTIFICATION_FILTER + NOTIFICATION_PLAY, so it works for ANY pattern, not just the
-  two reserved ones — verify). **Keep** the diagnostic "Put filter + send buzz" fallback button.
-  Disable the Buzz button with the same `progress.saveEnabled(hasActiveWatch)` rule. `VibrationSync
-  .PATTERN_SINGLE/PATTERN_TRIPLE` constants can stay (used elsewhere / as the dropdown default — pick
-  5 as the default selection). No new wire bytes. Update `SettingsViewModelTest` if it asserts the
-  old two-button behavior; add a test that the dropdown selection drives `vibrateWatch(selected)`.
+### Step 2b — Settings: replace the buzz buttons with a vibration-pattern dropdown + one Buzz button
+- In `SettingsScreen.kt` `TestVibrationCard`, the current UI is **two** fixed buttons ("Vibrate
+  (single)"=5, "Vibrate (triple)"=1) PLUS a diagnostic "Put filter + send buzz" button.
+- Replace ALL of them with **one vibration-pattern dropdown + a single "Buzz" button** that buzzes
+  the selected pattern (play-only), so the user can feel each pattern.
+- **The dropdown lists EXACTLY the reserved patterns**, NOT all 10. The distinct useful patterns are
+  `qhybrid.protocol.requests.fossil.notification.BuzzPatterns.RESERVED_PATTERNS` = **`{1, 2, 3, 5, 6,
+  7, 8}`** (7 entries; silent `0`/`9` and the `4≡3` duplicate are deliberately skipped). Label each
+  with `VibePatterns.label(p)` (e.g. `1 — CALL (triple)`). Default the selection to `5`
+  (`VibrationSync.PATTERN_SINGLE`).
+- **The Buzz button uses the play-only path** — `vm.vibrateWatch(selected)` →
+  `VibrationSync.buzz(pattern)` (`forceFilterPlay=false`) → the WP3 service's `buzzPlayOnly` (a SINGLE
+  `NOTIFICATION_PLAY` put). This works because **all 7 reserved patterns are already on the watch**
+  in the reserved filter (written at provisioning + folded into every notification sync via
+  `BuzzPatterns.reservedEntries()`). Do NOT use `onVibrateWithFilter` / `forceFilterPlay=true` here.
+- **REMOVE the diagnostic "Put filter + send buzz" button** (and you may drop the
+  `onVibrateWithFilter` plumbing from this screen if nothing else uses it — but KEEP
+  `vm.vibrateWatchWithFilter` / `VibrationSync.buzz(..., forceFilterPlay=true)` available; just stop
+  surfacing the button. Check no other caller depends on it before removing the wiring).
+- Disable the Buzz button with the same `progress.saveEnabled(hasActiveWatch)` rule. No new wire
+  bytes. Update `SettingsViewModelTest`/`SettingsScreen` tests if they assert the old two/three-button
+  behavior; add a test that the dropdown selection drives `vibrateWatch(selected)` for each reserved
+  pattern (and that only reserved patterns are offered).
 - Gate → commit.
 
 ### Step 3 — Leave-with-pending prompt (all 3 screens)
