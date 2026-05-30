@@ -14,6 +14,15 @@ import qhybrid.protocol.requests.fossil.alarm.CalendarAlarmMapper.CalendarEvent
  * concrete dated occurrences that fall inside a time range — exactly the `[now, now + windowDays)`
  * window the WP9 mapper wants. Querying raw `Events` would require expanding RRULEs by hand.
  *
+ * **Why `Instances.query(...)` and NOT a raw `CONTENT_URI/<begin>/<end>` cursor:** the provider's
+ * `Instances` table is expanded **lazily/asynchronously** — a freshly-added (or server-synced)
+ * event lands in the `Events` table immediately but its expanded occurrences can lag the
+ * `Instances` table by MINUTES. `CalendarContract.Instances.query(...)` is documented to **trigger
+ * the instance expansion for the requested range**, so reading through it makes the new occurrences
+ * materialize on-demand instead of returning a stale/empty range. This is the fix for "a just-added
+ * Sunday event didn't get an alarm until ~5 min later" — the raw-URI cursor read the not-yet-
+ * expanded table.
+ *
  * **All-day events are skipped.** An all-day event's `BEGIN` is midnight UTC, which maps to an
  * arbitrary local hour — there is no meaningful wall-clock alarm time, and the watch alarm is a
  * wall-clock minute/hour. So `Instances.ALL_DAY = 1` rows are dropped.
@@ -28,19 +37,17 @@ class SystemCalendarSource(context: Context) : CalendarSource {
 
     override fun upcomingEvents(nowEpochMillis: Long, windowDays: Int): List<CalendarEvent> {
         val windowEnd = nowEpochMillis + windowDays.toLong() * MILLIS_PER_DAY
-        val uri = CalendarContract.Instances.CONTENT_URI.buildUpon()
-            .appendPath(nowEpochMillis.toString())
-            .appendPath(windowEnd.toString())
-            .build()
 
         val out = ArrayList<CalendarEvent>()
+        // Instances.query(...) FORCES the provider to expand the [begin, end) range on demand
+        // (vs. a raw CONTENT_URI cursor which can read a stale, not-yet-expanded table). This is
+        // what makes a just-added / just-synced event show up immediately instead of minutes later.
         val cursor: Cursor? = runCatching {
-            appContext.contentResolver.query(
-                uri,
+            CalendarContract.Instances.query(
+                appContext.contentResolver,
                 PROJECTION,
-                /* selection */ null,
-                /* selectionArgs */ null,
-                /* sortOrder */ "${CalendarContract.Instances.BEGIN} ASC",
+                /* begin */ nowEpochMillis,
+                /* end */ windowEnd,
             )
         }.onFailure { Log.w(TAG, "calendar query failed", it) }.getOrNull()
 

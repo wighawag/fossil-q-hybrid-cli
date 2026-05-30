@@ -105,6 +105,10 @@ class WatchConnectionService : Service() {
         // WP13: debounce window coalescing a burst of calendar provider changes into ONE refresh
         // (the provider can fire several onChange callbacks for a single user edit / sync).
         private const val CALENDAR_DEBOUNCE_MS = 1_500L
+        // WP13: a user-initiated resync re-checks a few times in case the provider's Instances
+        // table is still expanding a just-added/synced event (which can lag by minutes).
+        private const val CALENDAR_SETTLE_RETRIES = 3
+        private const val CALENDAR_SETTLE_RETRY_MS = 4_000L
         // WP-SYNCFIX: which sync sections an explicit Save requested (section names). Absent =
         // full reconcile (connect / periodic). Present = targeted save (e.g. just BUTTONS).
         const val EXTRA_SECTIONS = "sections"
@@ -397,9 +401,11 @@ class WatchConnectionService : Service() {
                 }
             }
             ACTION_REFRESH_CALENDAR -> {
-                // WP13: a (re-)grant in Setup — (re-)register the observer + do an immediate refresh.
+                // WP13: a user-initiated "Resync calendar now" or a permission (re-)grant in Setup.
+                // (Re-)register the observer + refresh with a short settle-retry window (the
+                // Instances table can still be expanding right after a server/laptop sync).
                 ensureCalendarObserver()
-                scheduleCalendarRefresh()
+                scheduleCalendarRefreshWithRetries()
             }
             ACTION_DISCONNECT -> submitDisconnect(stopAfter = false)
             ACTION_FORGET -> {
@@ -449,8 +455,13 @@ class WatchConnectionService : Service() {
             }
         }
         runCatching {
+            // Observe the TOP-LEVEL calendar URI with notifyForDescendants=true so we catch changes
+            // to BOTH the Events table (where a new/edited event lands IMMEDIATELY) and the
+            // Instances table (the lazily-expanded occurrences). Observing only Instances meant we
+            // sometimes only woke once the provider finished its async expansion (minutes later);
+            // waking on the Events change lets the next read force-expand via Instances.query(...).
             contentResolver.registerContentObserver(
-                CalendarContract.Instances.CONTENT_URI, /* notifyForDescendants */ true, observer,
+                CalendarContract.CONTENT_URI, /* notifyForDescendants */ true, observer,
             )
             calendarObserver = observer
             Log.i(TAG, "calendar observer registered")
@@ -460,6 +471,25 @@ class WatchConnectionService : Service() {
     /** Schedule a debounced calendar refresh (coalesces a burst into one read+map+replace+push). */
     private fun scheduleCalendarRefresh() {
         calendarDebouncer.schedule { calendarScope.launch { runCalendarRefresh() } }
+    }
+
+    /**
+     * WP13 — a USER-INITIATED "Resync calendar now" (or a permission (re-)grant). Runs the refresh
+     * immediately, then RE-RUNS it a few times spaced [CALENDAR_SETTLE_RETRY_MS] apart, because the
+     * provider's Instances table can still be mid-expansion right after a server/laptop sync — a
+     * single read can legitimately come back empty/stale even via Instances.query(...). Each re-run
+     * is a no-op (no push) once the rows stop changing, so the retries are cheap and self-cancelling
+     * in effect. Observer/connect-driven refreshes do NOT retry (the Events observer re-fires them
+     * naturally); only the explicit user ask pays for the settle window.
+     */
+    private fun scheduleCalendarRefreshWithRetries() {
+        calendarScope.launch {
+            runCalendarRefresh()
+            repeat(CALENDAR_SETTLE_RETRIES) {
+                kotlinx.coroutines.delay(CALENDAR_SETTLE_RETRY_MS)
+                runCalendarRefresh()
+            }
+        }
     }
 
     /**
