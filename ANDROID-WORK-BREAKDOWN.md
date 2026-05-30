@@ -592,6 +592,29 @@ unchanged; `:android:assembleDebug` succeeds. No protocol wire bytes / `AlarmSlo
 
 ## WP11 — Notification Listener Glue → WP6
 
+> **WP11 STATUS:** ✅ DONE & VERIFIED (pure decider/extractor/dispatch core + permission helper
+> JVM/Robolectric-tested; the `NotificationListenerService` + WP3 play hook build + lint-pass; the
+> live OS interception + BLE buzz flagged on-device-pending). See **`WP11-STATUS.md`**. Shipped in 5
+> committed sub-parts (`wp11:` / `wp10:`). **Invents NO new wire bytes.**
+>
+> - **Play-only-by-package.** The per-app vibe + hand degrees are ALREADY on the watch in its
+>   `NOTIFICATION_FILTER` (init/provision + WP14 rule edits), so a runtime notification is a single
+>   play-only put: `FossilController.playNotification(package)` (NO per-notification filter upload).
+>   WP11 only decides *“play package X”*; the watch owns the pattern/degrees.
+> - **Decider policy (ported from `FossilOfficialApp-deobf`):** rule gate first (only configured apps
+>   buzz, no useless plays); skip ongoing / group-summary / download-progress; consecutive-duplicate
+>   suppression on `(id, package, title, text, whenTime)` (the official app's exact dedupe — NOT a
+>   time window, NOT a rate-limit); priority NOT filtered (a rule is an explicit opt-in).
+> - **Connect-then-play** via the WP3 service (link up → play now; link down → connect then play on
+>   the on-connect hook), with a **30 s stale-drop** so a notification queued during a long
+>   disconnect never buzzes late; no `SyncState` (silent background effect); no watch → dropped.
+> - **WP10 piece folded in:** the special Notification-Access permission row in Setup (grant
+>   detection via `getEnabledListenerPackages` + deep-link `ACTION_NOTIFICATION_LISTENER_SETTINGS`)
+>   and the manifest `<service>` (`BIND_NOTIFICATION_LISTENER_SERVICE` + listener intent-filter).
+>
+> Gates at completion: `:protocol:test` 124/0/0; `:android:testDebugUnitTest` **399/0/0** (was 359);
+> lint + assembleDebug ok; CLI `--help` md5 unchanged.
+
 **Goal:** `NotificationListenerService` that maps an intercepted notification's package → rule → triggers play file via the service.
 
 **Depends on:** WP3 (service/connection), WP6 (compile/play), WP4 (rule lookup).
