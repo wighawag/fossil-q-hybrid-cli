@@ -2,6 +2,7 @@ package qhybrid.android.notifications
 
 import android.content.Context
 import qhybrid.android.sync.ServiceSaveToWatch
+import qhybrid.android.sync.SyncSection
 
 /**
  * WP16c — narrow, injectable seam for the "Save to watch" intent (mirrors WP16b's
@@ -39,8 +40,8 @@ class ServiceNotificationSync(context: Context) : NotificationSync {
     override fun saveToWatch(): Boolean {
         // WP14: drives the SyncOrchestrator (WP6 compile → BLE filter-file write) on the service's
         // ble-worker; rows are already persisted to Room by the intents.
-        // WP-SYNCFIX: publish SYNCING immediately (spinner shows at once) + connect-then-sync.
-        return ServiceSaveToWatch.trigger(appContext) && FILTER_UPLOAD_WIRED
+        // WP-SYNCFIX: publish SYNCING immediately + connect-then-sync, TARGETED to just the filter.
+        return ServiceSaveToWatch.trigger(appContext, SyncSection.NOTIFICATIONS_ONLY) && FILTER_UPLOAD_WIRED
     }
 
     companion object {

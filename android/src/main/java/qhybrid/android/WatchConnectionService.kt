@@ -17,6 +17,7 @@ import qhybrid.android.db.WatchRepository
 import qhybrid.android.settings.SharedPreferencesSettingsPrefs
 import qhybrid.android.sync.SyncDataLoader
 import qhybrid.android.sync.SyncOrchestrator
+import qhybrid.android.sync.SyncSection
 import qhybrid.android.sync.SyncState
 import qhybrid.android.sync.SyncStateReporter
 import qhybrid.android.sync.Uploader
@@ -56,6 +57,9 @@ class WatchConnectionService : Service() {
         const val ACTION_STOP = "qhybrid.android.action.STOP"
         const val EXTRA_MAC = "mac"
         const val EXTRA_KEEP = "keep"
+        // WP-SYNCFIX: which sync sections an explicit Save requested (section names). Absent =
+        // full reconcile (connect / periodic). Present = targeted save (e.g. just BUTTONS).
+        const val EXTRA_SECTIONS = "sections"
 
         private const val INIT_TIMEOUT_MS = 60_000L
 
@@ -73,8 +77,21 @@ class WatchConnectionService : Service() {
         fun connectNow(context: Context, mac: String? = null) =
             start(context, ACTION_CONNECT, mac ?: CompanionManager.getAssociatedMac(context))
 
-        /** Re-run the sync-on-connect operations (WP5/6/9 fill these in). */
-        fun syncNow(context: Context) = start(context, ACTION_SYNC_NOW)
+        /**
+         * Re-run the sync operations. [sections] limits the pass to those sections (a targeted
+         * "Save to watch" from one screen); null/empty = a full reconcile (connect / periodic).
+         * WP-SYNCFIX: targeting avoids re-pushing unrelated sections the user never changed and
+         * keeps a single file-put in flight per pass.
+         */
+        fun syncNow(context: Context, sections: Set<SyncSection>? = null) {
+            val intent = Intent(context, WatchConnectionService::class.java).apply {
+                action = ACTION_SYNC_NOW
+                if (!sections.isNullOrEmpty()) {
+                    putExtra(EXTRA_SECTIONS, sections.map { it.name }.toTypedArray())
+                }
+            }
+            ContextCompatStartForeground(context, intent)
+        }
 
         /**
          * WP-ACTIVITY — read the watch's activity file (BLE read on the ble-worker), parse it via
@@ -118,11 +135,20 @@ class WatchConnectionService : Service() {
     // Guards against overlapping connect attempts (single-link device).
     private val connecting = AtomicBoolean(false)
 
-    // WP-SYNCFIX: set true when an explicit user "Save to watch" requested a sync while the link
-    // was down, so a connect-then-sync runs and a CONNECT FAILURE is surfaced honestly as a
-    // SyncState ERROR ("watch not reachable") rather than silently dropping the write. Cleared
-    // once the connect attempt resolves (success runs the sync; failure publishes the error).
+    // WP-SYNCFIX: set when an explicit user "Save to watch" requested a sync while the link was
+    // down, so a connect-then-sync runs and a CONNECT FAILURE is surfaced honestly as a SyncState
+    // ERROR ("watch not reachable") rather than silently dropping the write. The held value is the
+    // TARGETED section set to run on connect (null = full reconcile). Cleared once the connect
+    // attempt resolves (success runs the targeted sync; failure publishes the error).
     private val pendingSyncOnConnect = AtomicBoolean(false)
+    private val pendingSyncSections = AtomicReference<Set<SyncSection>?>(null)
+
+    /** WP-SYNCFIX: decode the requested sync sections from a SYNC_NOW intent (null = reconcile). */
+    private fun parseSections(intent: Intent?): Set<SyncSection>? {
+        val names = intent?.getStringArrayExtra(EXTRA_SECTIONS) ?: return null
+        val parsed = names.mapNotNull { runCatching { SyncSection.valueOf(it) }.getOrNull() }.toSet()
+        return parsed.ifEmpty { null }
+    }
 
     // ---- binding (thin client reads state / triggers actions) ---------------
 
@@ -167,7 +193,7 @@ class WatchConnectionService : Service() {
                     }
                 }
             }
-            ACTION_SYNC_NOW -> submitSync()
+            ACTION_SYNC_NOW -> submitSync(parseSections(intent))
             ACTION_REQUEST_ACTIVITY -> submitRequestActivity(intent.getBooleanExtra(EXTRA_KEEP, false))
             ACTION_DISCONNECT -> submitDisconnect(stopAfter = false)
             ACTION_STOP -> submitDisconnect(stopAfter = true)
@@ -277,10 +303,12 @@ class WatchConnectionService : Service() {
                 )
                 // A connect requested by an explicit Save-to-watch is about to run the sync via
                 // the on-connect hook below; clear the pending flag so the failure paths don't
-                // also publish an error.
+                // also publish an error. Pick up the TARGETED sections it requested (null = full
+                // reconcile, the default for a plain on-connect).
                 pendingSyncOnConnect.set(false)
+                val onConnectSections = pendingSyncSections.getAndSet(null) ?: SyncSection.ALL
                 // WP3 sync-on-connect hook (WP5/6/9 fill in alarm/filter/calendar uploads).
-                runOnConnectSync(controller)
+                runOnConnectSync(controller, onConnectSections)
                 // WP-ACTIVITY: also pull the activity file on connect so the Sleep screen +
                 // Dashboard steps are populated hands-free. We are already on the ble-worker, so
                 // drive the existing fetch path directly; the result is published by
@@ -340,13 +368,17 @@ class WatchConnectionService : Service() {
      * (WP14 sub-part 1). Reuses the golden-tested protocol compilers/façade — no wire bytes
      * invented.
      */
-    private fun runOnConnectSync(controller: FossilController) {
+    private fun runOnConnectSync(
+        controller: FossilController,
+        sections: Set<SyncSection> = SyncSection.ALL,
+    ) {
         try {
             val input = runBlocking { loader().load() }
             if (!input.hasWatch) {
                 Log.i(TAG, "sync: no active watch — nothing to upload")
                 return
             }
+            Log.i(TAG, "sync: sections=$sections")
             // WP-PROGRESS (sub-part 2): the WP3 service is the SINGLE writer of the process-wide
             // SyncState. Delegate the phase choreography (SYNCING before the pass — the Save
             // buttons spin + disable — then SUCCESS from the result, or ERROR if the pass throws
@@ -355,7 +387,7 @@ class WatchConnectionService : Service() {
             // BLE effect itself is on-device-pending; section-level failures are carried through
             // honestly via SyncResult.errors (see SyncState.SyncStatus.hadSectionErrors).
             val result = SyncStateReporter.reportAround(System::currentTimeMillis) {
-                SyncOrchestrator.sync(input, ServiceUploader(controller))
+                SyncOrchestrator.sync(input, ServiceUploader(controller), sections)
             }
             if (result != null) {
                 Log.i(
@@ -394,12 +426,13 @@ class WatchConnectionService : Service() {
      * The app-side already published SYNCING (see [qhybrid.android.sync.ServiceSaveToWatch]) so the
      * Save button shows the spinner the instant the user taps it, even before the link is up.
      */
-    private fun submitSync() {
+    private fun submitSync(sections: Set<SyncSection>? = null) {
+        val target = sections ?: SyncSection.ALL
         worker.execute {
             val c = controllerRef.get()
-            Log.i(TAG, "syncNow: controller=${c != null} linkUp=${isLinkUp()}")
+            Log.i(TAG, "syncNow: controller=${c != null} linkUp=${isLinkUp()} sections=$target")
             if (c != null && isLinkUp()) {
-                runCatching { runOnConnectSync(c) }
+                runCatching { runOnConnectSync(c, target) }
                     .onFailure {
                         Log.e(TAG, "sync failed", it)
                         SyncState.publish(
@@ -421,7 +454,8 @@ class WatchConnectionService : Service() {
                 )
                 return@execute
             }
-            Log.i(TAG, "syncNow: link down — connecting then syncing ($mac)")
+            Log.i(TAG, "syncNow: link down — connecting then syncing ($mac) sections=$target")
+            pendingSyncSections.set(target)
             pendingSyncOnConnect.set(true)
             submitConnect(mac)
         }

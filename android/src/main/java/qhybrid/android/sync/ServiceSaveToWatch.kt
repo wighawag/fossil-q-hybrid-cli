@@ -23,13 +23,19 @@ import qhybrid.android.WatchConnectionService
 object ServiceSaveToWatch {
 
     /**
-     * Mark a sync in flight ([SyncState] SYNCING) and poke the WP3 service to perform it. Returns
-     * true (the upload pipeline is wired); the terminal SUCCESS/ERROR phase is published by the
-     * service once the connect-then-sync resolves.
+     * Mark a sync in flight ([SyncState] SYNCING) and poke the WP3 service to perform it, limited
+     * to [sections] (a TARGETED save — e.g. just [SyncSection.BUTTONS_ONLY] from the Buttons
+     * screen — so we don't re-push sections the user never touched). Returns true (the upload
+     * pipeline is wired); the terminal SUCCESS/ERROR phase is published by the service once the
+     * connect-then-sync resolves.
      */
-    fun trigger(context: Context, now: () -> Long = System::currentTimeMillis): Boolean {
+    fun trigger(
+        context: Context,
+        sections: Set<SyncSection>,
+        now: () -> Long = System::currentTimeMillis,
+    ): Boolean {
         SyncState.publish(SyncState.SyncPhase.SYNCING, nowMillis = now())
-        WatchConnectionService.syncNow(context.applicationContext)
+        WatchConnectionService.syncNow(context.applicationContext, sections)
         return true
     }
 }

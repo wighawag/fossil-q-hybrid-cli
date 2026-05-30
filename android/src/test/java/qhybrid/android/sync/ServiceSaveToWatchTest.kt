@@ -33,7 +33,7 @@ class ServiceSaveToWatchTest {
     @Test
     fun triggerPublishesSyncingImmediatelyWithInjectedClock() {
         assertEquals(SyncState.SyncPhase.IDLE, SyncState.status.value.phase)
-        val wired = ServiceSaveToWatch.trigger(context, now = { 777L })
+        val wired = ServiceSaveToWatch.trigger(context, SyncSection.BUTTONS_ONLY, now = { 777L })
         assertTrue(wired)
         val s = SyncState.status.value
         assertEquals(SyncState.SyncPhase.SYNCING, s.phase)

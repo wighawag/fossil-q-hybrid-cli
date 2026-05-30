@@ -2,6 +2,7 @@ package qhybrid.android.buttons
 
 import android.content.Context
 import qhybrid.android.sync.ServiceSaveToWatch
+import qhybrid.android.sync.SyncSection
 
 /**
  * WP16d — narrow, injectable seam for the "Save to watch" intent (mirrors WP16b's `AlarmSync`
@@ -39,8 +40,9 @@ class ServiceButtonSync(context: Context) : ButtonSync {
     override fun saveToWatch(): Boolean {
         // WP14: drives the SyncOrchestrator (WP7 compile → BLE 0x0600 file write) on the service's
         // ble-worker; rows are already persisted to Room by the intents.
-        // WP-SYNCFIX: publish SYNCING immediately (spinner shows at once) + connect-then-sync.
-        return ServiceSaveToWatch.trigger(appContext) && BUTTON_UPLOAD_WIRED
+        // WP-SYNCFIX: publish SYNCING immediately (spinner shows at once) + connect-then-sync,
+        // TARGETED to just the buttons section (don't re-push alarms/settings the user didn't touch).
+        return ServiceSaveToWatch.trigger(appContext, SyncSection.BUTTONS_ONLY) && BUTTON_UPLOAD_WIRED
     }
 
     companion object {

@@ -2,6 +2,7 @@ package qhybrid.android.settings
 
 import android.content.Context
 import qhybrid.android.sync.ServiceSaveToWatch
+import qhybrid.android.sync.SyncSection
 
 /**
  * WP16g — narrow, injectable seam for the LIVE settings commands the Settings screen can push to
@@ -75,8 +76,9 @@ class ServiceSettingsSync(context: Context) : SettingsSync {
         // WP14: drives the SyncOrchestrator, which applies the just-persisted vibration / nudge /
         // second-timezone values live via the golden-tested façade settings methods on the WP3
         // service's ble-worker (no new wire behavior, no invented bytes).
-        // WP-SYNCFIX: publish SYNCING immediately (status row shows at once) + connect-then-sync.
-        return ServiceSaveToWatch.trigger(appContext) && SETTINGS_WIRED
+        // WP-SYNCFIX: publish SYNCING immediately + connect-then-sync, TARGETED to the live
+        // settings (vibration / nudge / 2nd-tz) — don't re-push alarms/buttons the user didn't touch.
+        return ServiceSaveToWatch.trigger(appContext, SyncSection.SETTINGS_ONLY) && SETTINGS_WIRED
     }
 
     companion object {
