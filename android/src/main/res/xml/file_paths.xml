@@ -2,4 +2,6 @@
 <!-- WP15: exported log files live in cache/logs and are shared via FileProvider. -->
 <paths>
     <cache-path name="logs" path="logs/" />
+    <!-- WP-DEFAULTS: exported defaults-profile JSON lives in cache/defaults and is shared via FileProvider. -->
+    <cache-path name="defaults" path="defaults/" />
 </paths>

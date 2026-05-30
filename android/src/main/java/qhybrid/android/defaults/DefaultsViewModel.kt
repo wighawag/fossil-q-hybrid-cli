@@ -112,6 +112,19 @@ open class DefaultsViewModel(
 
     // ---- reset + apply -------------------------------------------------------
 
+    // ---- export / import (WP-DEFAULTS sub-part 5) ----------------------------
+
+    /** The current profile encoded as export bytes (the Compose screen writes these to a file). */
+    fun exportBytes(): ByteArray = DefaultsProfileTransfer.toBytes(current())
+
+    /**
+     * Import a defaults profile from raw bytes (e.g. an opened document). Tolerant: garbage /
+     * foreign bytes fall back to the FACTORY profile (never throws). Persists + re-publishes.
+     */
+    fun importBytes(bytes: ByteArray?) {
+        publish(DefaultsProfileTransfer.fromBytes(bytes))
+    }
+
     /** Restore the [DefaultsProfile.FACTORY] defaults (factory buttons; empty alarms/rules). */
     fun resetToFactory() {
         store.resetToFactory()

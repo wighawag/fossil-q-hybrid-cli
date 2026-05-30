@@ -22,6 +22,10 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import android.content.Intent
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -31,6 +35,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
+import java.io.File
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import qhybrid.android.buttons.ButtonActions
@@ -56,14 +62,54 @@ fun DefaultsScreen(modifier: Modifier = Modifier) {
     val vm: DefaultsViewModel = viewModel(factory = DefaultsViewModel.factory(context))
     val state by vm.uiState.collectAsStateWithLifecycle()
 
+    // WP-DEFAULTS sub-part 5: import via ACTION_OPEN_DOCUMENT — read the picked document's bytes
+    // and hand them to the tolerant VM importer (garbage/foreign → factory; never crashes).
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            val bytes = runCatching {
+                context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            }.getOrNull()
+            vm.importBytes(bytes)
+            Toast.makeText(context, "Defaults imported.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     DefaultsContent(
         state = state,
         onSetButtonSlot = vm::setButtonSlot,
         onClearButtonSlot = vm::clearButtonSlot,
         onResetToFactory = vm::resetToFactory,
         onApplyToWatch = vm::applyToActiveWatch,
+        onExport = { exportDefaults(context, vm.exportBytes()) },
+        onImport = { importLauncher.launch(arrayOf(DefaultsProfileTransfer.MIME_TYPE, "text/*", "*/*")) },
         modifier = modifier,
     )
+}
+
+/**
+ * WP-DEFAULTS sub-part 5 — export the encoded defaults to a cache file and open the share-sheet via
+ * the app's existing FileProvider authority (`${packageName}.fileprovider`, reused from the log
+ * exporter). No new manifest entry needed.
+ */
+private fun exportDefaults(context: android.content.Context, bytes: ByteArray) {
+    runCatching {
+        val dir = File(context.cacheDir, "defaults").apply { mkdirs() }
+        val file = File(dir, DefaultsProfileTransfer.EXPORT_FILENAME)
+        file.writeBytes(bytes)
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        val share = Intent(Intent.ACTION_SEND).apply {
+            type = DefaultsProfileTransfer.MIME_TYPE
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(Intent.createChooser(share, "Export defaults").apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        })
+    }.onFailure {
+        Toast.makeText(context, "Export failed: ${it.message}", Toast.LENGTH_LONG).show()
+    }
 }
 
 /**
@@ -77,6 +123,8 @@ fun DefaultsContent(
     onClearButtonSlot: (Int) -> Unit,
     onResetToFactory: () -> Unit,
     onApplyToWatch: () -> Boolean,
+    onExport: () -> Unit = {},
+    onImport: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     var note by remember { mutableStateOf<String?>(null) }
@@ -117,6 +165,7 @@ fun DefaultsContent(
 
             HorizontalDivider()
             ApplyToWatchRow(onApplyToWatch) { note = it }
+            ExportImportRow(onExport, onImport)
             ResetToFactoryRow(onResetToFactory) { note = it }
 
             note?.let { Text(it, style = MaterialTheme.typography.labelSmall) }
@@ -251,6 +300,28 @@ private fun ApplyToWatchRow(onApplyToWatch: () -> Boolean, onNote: (String) -> U
             },
             dismissButton = { TextButton(onClick = { confirming = false }) { Text("Cancel") } },
         )
+    }
+}
+
+@Composable
+private fun ExportImportRow(onExport: () -> Unit, onImport: () -> Unit) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text("Export / import defaults", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Back up your defaults profile to a JSON file, or restore it on another device. " +
+                    "Importing replaces the current defaults; a foreign / corrupt file falls back " +
+                    "to the built-in factory defaults.",
+                style = MaterialTheme.typography.labelSmall,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onExport, modifier = Modifier.weight(1f)) { Text("Export") }
+                OutlinedButton(onClick = onImport, modifier = Modifier.weight(1f)) { Text("Import") }
+            }
+        }
     }
 }
 
