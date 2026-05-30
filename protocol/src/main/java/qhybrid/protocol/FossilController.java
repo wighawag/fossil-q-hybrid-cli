@@ -112,6 +112,37 @@ public class FossilController {
         adapter.playNotificationByPackageName(packageName);
     }
 
+    /**
+     * Make the watch vibrate NOW with the given vibration pattern (a one-shot "buzz").
+     *
+     * <p>Thin passthrough to {@link FossilQAdapter#playNotificationWithPattern(byte)} — it uploads
+     * a notification filter carrying the requested pattern, then writes a NOTIFICATION_PLAY file,
+     * exactly like the CLI {@code notify}/{@code notify-test} commands. The hands stay at the
+     * neutral 90deg/90deg position (the 1-arg adapter overload's default).
+     *
+     * <p>Pattern bytes (hardware-tested — see {@code cli/.../Main.java}):
+     * {@code 1 = CALL (triple buzz)}, {@code 5 = ONE_SHORT_VIBE (strong single buzz)}.
+     * Invents NO new wire bytes — reuses the golden NOTIFICATION_FILTER + NOTIFICATION_PLAY path.
+     *
+     * @param vibePattern vibration pattern byte (0-9)
+     */
+    public void buzz(int vibePattern) {
+        adapter.playNotificationWithPattern((byte) vibePattern);
+    }
+
+    /**
+     * Make the watch vibrate NOW with the given vibration pattern AND move the hands to the given
+     * position. Thin passthrough to
+     * {@link FossilQAdapter#playNotificationWithPattern(byte, short, short)} (no new wire bytes).
+     *
+     * @param vibePattern vibration pattern byte (0-9)
+     * @param hourDeg     hour hand position in degrees (0-359)
+     * @param minDeg      minute hand position in degrees (0-359)
+     */
+    public void buzz(int vibePattern, int hourDeg, int minDeg) {
+        adapter.playNotificationWithPattern((byte) vibePattern, (short) hourDeg, (short) minDeg);
+    }
+
     /** Upload a prebuilt button-config file (SETTINGS_BUTTONS, 0x0600). */
     public void setButtons(byte[] buttonConfigFile) {
         adapter.setButtonsRaw(buttonConfigFile);
