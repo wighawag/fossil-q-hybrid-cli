@@ -175,6 +175,16 @@ open class NotificationsViewModel(
         return play.play(packageName)
     }
 
+    /**
+     * Flip the enabled flag of [packageName]'s rule. A disabled rule is kept (still listed/editable)
+     * but excluded from the uploaded notification filter, so the watch stops buzzing for that app
+     * without losing the rule's vibe/hands config (mirrors the alarm enable/disable switch).
+     */
+    fun toggleEnabled(packageName: String) {
+        val rule = uiState.value.rules.firstOrNull { it.packageName == packageName } ?: return
+        updateRule(rule.copy(isEnabled = !rule.isEnabled))
+    }
+
     /** Set the vibe pattern (0–9, WP6 1:1) for [packageName]'s rule. */
     fun setVibePattern(packageName: String, vibePattern: Int) {
         val rule = uiState.value.rules.firstOrNull { it.packageName == packageName } ?: return

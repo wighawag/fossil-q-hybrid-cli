@@ -25,6 +25,10 @@ data class NotificationRuleEntity(
     val vibePattern: Int,         // 0 to 9 (0=AUTO, 1=CALL, 2=TEXT, 3=EMAIL, 4=DEFAULT, etc.)
     val hourHandDegrees: Int,     // 0 to 359 (precise hand location)
     val minuteHandDegrees: Int,   // 0 to 359
+    // When false the rule is kept (still listed/editable in the UI) but is NOT uploaded to the
+    // watch's notification filter — i.e. it stops buzzing without losing its config (mirrors the
+    // alarm enable/disable switch). Defaults true so existing rows stay active.
+    val isEnabled: Boolean = true,
     // WP-SYNCSTATUS — when this row was last written to the DB (stamped by WatchRepository on every
     // upsert path). Compared against WatchEntity.notificationFilterSyncedAt to decide "on watch?".
     // IGNORED by the WP14 compilers (no wire bytes change).

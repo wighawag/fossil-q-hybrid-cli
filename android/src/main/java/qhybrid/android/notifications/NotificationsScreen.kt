@@ -32,6 +32,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -103,6 +104,7 @@ fun NotificationsScreen(modifier: Modifier = Modifier, leaveGuard: LeaveGuardSta
         onAdd = { pkg, vibe, hourDeg, minDeg -> vm.addRule(pkg, vibe, hourDeg, minDeg) },
         onUpdate = vm::updateRule,
         onDelete = vm::deleteRule,
+        onToggleEnabled = vm::toggleEnabled,
         onPlay = vm::playRule,
         onSave = { vm.saveToWatch() },
         progress = progress,
@@ -124,6 +126,8 @@ fun NotificationsContent(
     onSave: () -> Boolean,
     modifier: Modifier = Modifier,
     progress: SyncProgressUi = SyncProgressUi.IDLE,
+    // Enable/disable a rule (kept but not uploaded when off) — mirrors the alarm switch.
+    onToggleEnabled: (pkg: String) -> Unit = {},
     // WP11: test the on-watch play for a saved rule (buzz + hands per the already-uploaded filter).
     onPlay: (pkg: String) -> Boolean = { false },
 ) {
@@ -211,6 +215,7 @@ fun NotificationsContent(
                                     rule = r,
                                     onWatch = state.isOnWatch(r.packageName),
                                     onClick = { addingNew = false; editing = r },
+                                    onToggleEnabled = { onToggleEnabled(r.packageName) },
                                     onPlay = { onPlay(r.packageName) },
                                     onDelete = { onDelete(r.packageName) },
                                 )
@@ -249,6 +254,7 @@ private fun RuleRow(
     onClick: () -> Unit,
     onPlay: () -> Unit,
     onDelete: () -> Unit,
+    onToggleEnabled: () -> Unit = {},
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Row(
@@ -272,14 +278,26 @@ private fun RuleRow(
                     VibePatterns.handSummary(rule.hourHandDegrees, rule.minuteHandDegrees),
                     style = MaterialTheme.typography.labelSmall,
                 )
+                if (!rule.isEnabled) {
+                    Text(
+                        "Disabled · not sent to the watch",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.outline,
+                    )
+                }
                 // WP-SYNCSTATUS: ✓ on-watch vs ⏳ not-synced for THIS rule.
                 SyncRowBadge(onWatch = onWatch)
             }
+            // Enable/disable: a disabled rule is kept/editable but excluded from the uploaded
+            // notification filter (mirrors the alarm switch). Toggling marks the section pending
+            // until the next save re-pushes the filter without (or with) this entry.
+            Switch(checked = rule.isEnabled, onCheckedChange = { onToggleEnabled() })
             // WP11: test the on-watch play for THIS app (buzz + hands per the saved rule, which is
             // already on the watch in its NOTIFICATION_FILTER). Connect-then-play if disconnected.
             // WP-SYNCSTATUS: DISABLED until the rule is on the watch — the watch doesn't have this
-            // rule's vibe/hands yet, so a play would no-op (or buzz the wrong/stale config).
-            IconButton(onClick = onPlay, enabled = onWatch) {
+            // rule's vibe/hands yet, so a play would no-op (or buzz the wrong/stale config). Also
+            // disabled when the rule itself is OFF (it's not in the watch's filter).
+            IconButton(onClick = onPlay, enabled = onWatch && rule.isEnabled) {
                 Icon(Icons.Filled.PlayArrow, contentDescription = "Play on watch")
             }
             IconButton(onClick = onDelete) {

@@ -416,6 +416,23 @@ class SyncOrchestratorTest {
     }
 
     @Test
+    fun disabledRulesAreExcludedFromTheUploadedFilter() {
+        // A disabled rule is kept in the DB/UI but must NOT reach the watch's notification filter
+        // (so it stops buzzing); enabled rules still upload.
+        val up = FakeUploader()
+        SyncOrchestrator.sync(
+            SyncInput(watch = watch(),
+                rules = listOf(
+                    rule("com.whatsapp"),
+                    rule("com.slack").copy(isEnabled = false),
+                ),
+                settings = SyncSettings()),
+            up,
+        )
+        assertEquals(listOf("com.whatsapp"), up.filterEntries!!.map { it.packageName })
+    }
+
+    @Test
     fun buttonBytesMatchButtonCompilerForSingleAction() {
         val up = FakeUploader()
         SyncOrchestrator.sync(

@@ -95,7 +95,9 @@ object SyncOrchestrator {
         // reserved filter → manual buzz silently does nothing. The user rules (possibly empty) are
         // passed through; the uploader merges the reserved entries on top.
         runSection(SyncSection.NOTIFICATION_FILTER, sections, performed, skipped, errors) {
-            val entries = input.rules.map { it.toFilterEntry() }
+            // DISABLED rules are kept in the DB/UI but excluded from the uploaded filter, so the
+            // watch stops buzzing for them without the user losing the rule's config.
+            val entries = input.rules.filter { it.isEnabled }.map { it.toFilterEntry() }
             uploader.uploadNotificationFilter(entries)
         }
 

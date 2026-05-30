@@ -260,6 +260,41 @@ class NotificationsViewModelTest : DbTestBase() {
         runBlocking { assertEquals(1, repo.getRules("AA:00:00:00:00:01").size) }
     }
 
+    // ---- enable / disable -----------------------------------------------------
+
+    @Test
+    fun toggleEnabledFlipsFlag_keepsRuleInUiState() {
+        runBlocking {
+            watchDao.upsert(watch("AA:00:00:00:00:01", active = true))
+            ruleDao.upsert(rule("AA:00:00:00:00:01", "com.whatsapp"))
+        }
+        val model = vm()
+        awaitState(model.uiState) { it.rules.firstOrNull()?.isEnabled == true }
+
+        // Disable: the rule stays in the list (still configurable), just flagged off.
+        model.toggleEnabled("com.whatsapp")
+        var s = awaitState(model.uiState) { it.rules.firstOrNull()?.isEnabled == false }
+        assertEquals(1, s.rules.size)
+        assertFalse(s.rules.first().isEnabled)
+        runBlocking { assertFalse(repo.getRules("AA:00:00:00:00:01").first().isEnabled) }
+
+        // Re-enable.
+        model.toggleEnabled("com.whatsapp")
+        s = awaitState(model.uiState) { it.rules.firstOrNull()?.isEnabled == true }
+        assertTrue(s.rules.first().isEnabled)
+    }
+
+    @Test
+    fun newRulesDefaultEnabled() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }
+        val model = vm()
+        awaitState(model.uiState) { it.hasActiveWatch }
+
+        assertTrue(model.addRule("com.whatsapp"))
+        val s = awaitState(model.uiState) { it.rules.size == 1 }
+        assertTrue(s.rules.first().isEnabled)
+    }
+
     // ---- play (WP11 per-app test button) -------------------------------------
 
     @Test

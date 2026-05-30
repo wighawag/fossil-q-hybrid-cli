@@ -183,9 +183,16 @@ fun AlarmsContent(
                             }
                         } else {
                             items(state.alarms, key = { it.slotId }) { alarm ->
+                                // A one-off whose single occurrence has already passed shows as
+                                // auto-deactivated (switch off + dimmed) — the watch drops it after
+                                // it fires; we mirror that in the UI without mutating the row.
+                                val expired = remember(alarm.updatedAt, alarm.hour, alarm.minute, alarm.daysMask, alarm.isRepeating) {
+                                    AlarmExpiry.hasPassed(alarm, System.currentTimeMillis())
+                                }
                                 AlarmRow(
                                     alarm = alarm,
                                     onWatch = state.isOnWatch(alarm.slotId),
+                                    expired = expired,
                                     onClick = { editing = alarm },
                                     onToggleEnabled = { onToggleEnabled(alarm.slotId) },
                                     onDelete = { onDelete(alarm.slotId) },
@@ -251,6 +258,7 @@ private fun AlarmRow(
     onClick: () -> Unit,
     onToggleEnabled: () -> Unit,
     onDelete: () -> Unit,
+    expired: Boolean = false,
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Row(
@@ -274,10 +282,25 @@ private fun AlarmRow(
                 alarm.label?.takeIf { it.isNotBlank() }?.let {
                     Text(it, style = MaterialTheme.typography.labelSmall)
                 }
+                if (expired) {
+                    // A passed one-off: the watch has already fired and dropped it. Show as
+                    // auto-deactivated so the UI doesn't imply it's still armed.
+                    Text(
+                        "Passed · auto-deactivated",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.outline,
+                    )
+                }
                 // WP-SYNCSTATUS: ✓ on-watch vs ⏳ not-synced for THIS alarm.
                 SyncRowBadge(onWatch = onWatch)
             }
-            Switch(checked = alarm.isEnabled, onCheckedChange = { onToggleEnabled() })
+            // A passed one-off renders OFF regardless of its stored flag; re-enabling means
+            // editing the alarm (which re-stamps its set-time / next occurrence).
+            Switch(
+                checked = alarm.isEnabled && !expired,
+                enabled = !expired,
+                onCheckedChange = { onToggleEnabled() },
+            )
             IconButton(onClick = onDelete) {
                 Icon(Icons.Filled.Delete, contentDescription = "Delete alarm")
             }
