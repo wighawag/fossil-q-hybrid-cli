@@ -67,8 +67,9 @@ class ServiceWatchAdminSync(
         runCatching { CompanionManager.stopObserving(appContext, normalized) }
         runCatching { CompanionManager.disassociate(appContext, normalized) }
         runCatching { CompanionManager.setAssociatedMac(appContext, null) }
-        // 2. Drop the live link if any.
-        runCatching { WatchConnectionService.disconnect(appContext) }
+        // 2. Drop the live link if any — FORGET (not plain disconnect) so the service suppresses
+        // auto-reconnect; otherwise the just-removed watch immediately reconnects and looks un-removed.
+        runCatching { WatchConnectionService.forget(appContext) }
         // 3. Delete the app's knowledge of the watch (→ next connect provisions as new).
         launchDbRemoval { removeFromDb(normalized) }
         return WatchAdminSync.WATCHADMIN_WIRED

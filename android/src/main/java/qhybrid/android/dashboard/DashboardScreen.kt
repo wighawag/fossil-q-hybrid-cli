@@ -151,15 +151,15 @@ fun DashboardContent(
 private fun ProvisioningDialog(status: qhybrid.android.onboard.ProvisioningState.Status) {
     val phase = status.phase
     if (phase == qhybrid.android.onboard.ProvisioningState.Phase.IDLE) return
-    // Acknowledge a terminal outcome locally so it dismisses without mutating the process-wide state.
-    var acknowledged by remember(status.lastUpdatedMillis) { mutableStateOf(false) }
-    if (acknowledged) return
     val provisioning = phase == qhybrid.android.onboard.ProvisioningState.Phase.PROVISIONING
+    // Acknowledging a terminal outcome CLEARS the process-wide state (back to IDLE) so it never
+    // re-appears when navigating back to the Dashboard — the stale-modal bug.
+    val ack = { qhybrid.android.onboard.ProvisioningState.acknowledge() }
     AlertDialog(
-        onDismissRequest = { if (!provisioning) acknowledged = true },
+        onDismissRequest = { if (!provisioning) ack() },
         confirmButton = {
             if (!provisioning) {
-                TextButton(onClick = { acknowledged = true }) { Text("OK") }
+                TextButton(onClick = ack) { Text("OK") }
             }
         },
         title = {

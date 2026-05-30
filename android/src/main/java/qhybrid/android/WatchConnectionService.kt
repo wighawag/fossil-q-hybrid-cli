@@ -55,6 +55,9 @@ class WatchConnectionService : Service() {
 
         const val ACTION_CONNECT = "qhybrid.android.action.CONNECT"
         const val ACTION_DISCONNECT = "qhybrid.android.action.DISCONNECT"
+        // WP-ONBOARD: forget = disconnect AND do NOT auto-reconnect (used by Remove watch). Without
+        // this the disconnect callback re-arms presence and the watch reconnects — fighting removal.
+        const val ACTION_FORGET = "qhybrid.android.action.FORGET"
         const val ACTION_SYNC_NOW = "qhybrid.android.action.SYNC_NOW"
         const val ACTION_REQUEST_ACTIVITY = "qhybrid.android.action.REQUEST_ACTIVITY"
         const val ACTION_BUZZ = "qhybrid.android.action.BUZZ"
@@ -73,6 +76,9 @@ class WatchConnectionService : Service() {
         const val EXTRA_SECTIONS = "sections"
 
         private const val INIT_TIMEOUT_MS = 60_000L
+        // How long after a Remove-watch we suppress auto-reconnect, so the disconnect + CDM teardown
+        // settles before any later (re-)add is allowed to reconnect.
+        private const val FORGET_GRACE_MS = 4_000L
 
         // ---- static entry points other WPs / receivers call --------------
 
@@ -139,6 +145,9 @@ class WatchConnectionService : Service() {
 
         fun disconnect(context: Context) = start(context, ACTION_DISCONNECT)
 
+        /** Remove watch: disconnect WITHOUT re-arming auto-reconnect (the caller cleared the assoc). */
+        fun forget(context: Context) = start(context, ACTION_FORGET)
+
         /** Event-driven reconnect trigger (from CDM presence / fallback). */
         fun onDeviceAppeared(context: Context, mac: String) =
             start(context, ACTION_DEVICE_APPEARED, mac)
@@ -179,6 +188,9 @@ class WatchConnectionService : Service() {
     private val pendingBuzzPattern = AtomicReference<Int?>(null)
     // Whether the pending connect-then-buzz should force the self-contained filter+play path.
     private val pendingBuzzForceFilter = AtomicBoolean(false)
+    // WP-ONBOARD: set while a Remove-watch is tearing down, to suppress the disconnect callback's
+    // auto-reconnect re-arm and ignore a stray DEVICE_APPEARED for the watch being removed.
+    private val forgetting = AtomicBoolean(false)
 
     /** WP-SYNCFIX: decode the requested sync sections from a SYNC_NOW intent (null = reconcile). */
     private fun parseSections(intent: Intent?): Set<SyncSection>? {
@@ -221,7 +233,9 @@ class WatchConnectionService : Service() {
             }
             ACTION_DEVICE_APPEARED -> {
                 val mac = intent.getStringExtra(EXTRA_MAC) ?: CompanionManager.getAssociatedMac(this)
-                if (mac != null) {
+                if (forgetting.get()) {
+                    Log.d(TAG, "device appeared but a remove is in progress — ignoring")
+                } else if (mac != null) {
                     if (isLinkUp()) {
                         Log.d(TAG, "device appeared but link already up — ignoring")
                     } else {
@@ -236,6 +250,16 @@ class WatchConnectionService : Service() {
                 intent.getBooleanExtra(EXTRA_FORCE_FILTER, false),
             )
             ACTION_DISCONNECT -> submitDisconnect(stopAfter = false)
+            ACTION_FORGET -> {
+                // Remove watch: suppress auto-reconnect, then disconnect. The flag is cleared after
+                // a short grace period so a later (re-)add can reconnect normally.
+                forgetting.set(true)
+                submitDisconnect(stopAfter = false)
+                worker.execute {
+                    try { Thread.sleep(FORGET_GRACE_MS) } catch (_: InterruptedException) {}
+                    forgetting.set(false)
+                }
+            }
             ACTION_STOP -> submitDisconnect(stopAfter = true)
             else -> Log.d(TAG, "unhandled action $action")
         }
@@ -289,8 +313,12 @@ class WatchConnectionService : Service() {
                     message = "Disconnected",
                     clearDeviceInfo = true,
                 )
-                CompanionManager.getAssociatedMac(this)?.let {
-                    CompanionManager.startObserving(this, it)
+                // WP-ONBOARD: do NOT re-arm auto-reconnect while removing a watch (Remove watch),
+                // otherwise the just-removed watch immediately reconnects and appears un-removed.
+                if (!forgetting.get()) {
+                    CompanionManager.getAssociatedMac(this)?.let {
+                        CompanionManager.startObserving(this, it)
+                    }
                 }
             }
         }
@@ -393,10 +421,16 @@ class WatchConnectionService : Service() {
                             runOnConnectSync(controller, d.sections)
                             // This is an already-known watch (the user asked to sync it); keep its row.
                             registerWatchRow(mac)
+                            // Not a fresh provision — clear any optimistic "Adding…" modal.
+                            clearOptimisticProvisioning()
                         }
                     }
-                    ConnectSyncDecider.Decision.None ->
+                    ConnectSyncDecider.Decision.None -> {
                         Log.i(TAG, "known watch $mac — no auto-sync on connect (sync is user-initiated)")
+                        // A plain reconnect of an already-added watch — if the UI optimistically
+                        // showed an "Adding…" modal (it can't tell new-vs-known), clear it now.
+                        clearOptimisticProvisioning()
+                    }
                 }
                 // WP-BUZZTEST: a manual buzz requested while the link was down connects here, then
                 // buzzes (we're already on the ble-worker). Runs AFTER any pending sync so it is
@@ -534,6 +568,21 @@ class WatchConnectionService : Service() {
      * upload was performed: the caller marks the watch "added" only then, so a failed provision
      * leaves no row and re-provisions next connect. Runs on the ble-worker.
      */
+    /**
+     * WP-ONBOARD — clear an OPTIMISTIC "Adding your watch…" modal back to IDLE. The add-watch UI
+     * publishes PROVISIONING on tap (so the spinner is instant) without knowing whether the watch is
+     * actually new; if the connect resolves to an already-added watch (no provisioning), we dismiss
+     * the modal here. Only acts while still PROVISIONING (never overwrites a real ADDED/FAILED).
+     */
+    private fun clearOptimisticProvisioning() {
+        if (qhybrid.android.onboard.ProvisioningState.status.value.isProvisioning) {
+            qhybrid.android.onboard.ProvisioningState.publish(
+                qhybrid.android.onboard.ProvisioningState.Phase.IDLE,
+                nowMillis = System.currentTimeMillis(),
+            )
+        }
+    }
+
     private fun provisionNewWatch(controller: FossilController, mac: String): Boolean {
         return try {
             // Phase 1: empty seed (WP-DEFAULTS profile deferred). A minimal watch row so the

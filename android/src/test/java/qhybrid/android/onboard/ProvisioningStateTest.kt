@@ -65,4 +65,25 @@ class ProvisioningStateTest {
         ProvisioningState.publish(ProvisioningState.Phase.PROVISIONING, mac = "CC", nowMillis = 2)
         assertNull(ProvisioningState.status.value.errorMessage)
     }
+
+    @Test
+    fun acknowledgeClearsTerminalToIdle() {
+        // ADDED → acknowledge → IDLE (so the modal never re-appears on navigation).
+        ProvisioningState.publish(ProvisioningState.Phase.ADDED, mac = "AA", nowMillis = 1)
+        ProvisioningState.acknowledge()
+        assertEquals(ProvisioningState.Phase.IDLE, ProvisioningState.status.value.phase)
+
+        // FAILED also clears.
+        ProvisioningState.publish(ProvisioningState.Phase.FAILED, errorMessage = "x", nowMillis = 2)
+        ProvisioningState.acknowledge()
+        assertEquals(ProvisioningState.Phase.IDLE, ProvisioningState.status.value.phase)
+    }
+
+    @Test
+    fun acknowledgeIsNoOpWhileProvisioning() {
+        // A pass in flight must NOT be dismissable by acknowledge().
+        ProvisioningState.publish(ProvisioningState.Phase.PROVISIONING, mac = "AA", nowMillis = 1)
+        ProvisioningState.acknowledge()
+        assertEquals(ProvisioningState.Phase.PROVISIONING, ProvisioningState.status.value.phase)
+    }
 }

@@ -65,6 +65,18 @@ object ProvisioningState {
         )
     }
 
+    /**
+     * Acknowledge a TERMINAL outcome (ADDED / FAILED): clears back to IDLE so the modal does not
+     * re-appear when the user navigates away and back to the Dashboard. No-op while PROVISIONING (a
+     * pass in flight must not be dismissed) or already IDLE. Safe to call from the UI.
+     */
+    fun acknowledge() {
+        val cur = _status.value
+        if (cur.phase == Phase.ADDED || cur.phase == Phase.FAILED) {
+            _status.value = Status()
+        }
+    }
+
     /** Test-only reset to the pristine state. */
     internal fun reset() {
         _status.value = Status()

@@ -452,6 +452,16 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun onAssociated(mac: String) {
+        // Show the "Adding your watch…" spinner IMMEDIATELY (not ~10s later when the service finally
+        // connects). This is published OPTIMISTICALLY for any associate; the SERVICE is the source
+        // of truth and will (a) drive it ADDED/FAILED if it really provisions, or (b) CLEAR it back
+        // to IDLE if the watch turns out to be already-added (a plain reconnect). So we don't need a
+        // fragile main-thread "is this new?" check here.
+        qhybrid.android.onboard.ProvisioningState.publish(
+            qhybrid.android.onboard.ProvisioningState.Phase.PROVISIONING,
+            mac = mac,
+            nowMillis = System.currentTimeMillis(),
+        )
         CompanionManager.setAssociatedMac(this, mac)
         CompanionManager.startObserving(this, mac)
         ReconnectFallback.arm(this, mac)
