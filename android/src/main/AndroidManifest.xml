@@ -92,6 +92,21 @@
             </intent-filter>
         </service>
 
+        <!-- WP11: notification listener — the OS binds this with BIND_NOTIFICATION_LISTENER_SERVICE
+             after the user grants Notification Access (Settings, deep-linked from Setup). On each
+             posted notification it matches the package against the active watch's per-app rule and
+             (if matched) plays it on the watch (play-only-by-package; vibe+hands live in the
+             already-uploaded NOTIFICATION_FILTER). exported is implied true by the intent-filter. -->
+        <service
+            android:name=".notifications.FossilNotificationListenerService"
+            android:exported="true"
+            android:label="Fossil Q notifications"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
         <!-- WP15: share exported log file via a content:// URI (export-to-file). -->
         <provider
             android:name="androidx.core.content.FileProvider"
