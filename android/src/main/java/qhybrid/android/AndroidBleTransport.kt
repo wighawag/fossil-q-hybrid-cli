@@ -70,6 +70,15 @@ class AndroidBleTransport(private val context: Context) : BleTransport {
         // momentarily-busy stack so a chunk is never silently dropped (which truncated the file).
         private const val NO_RESPONSE_PACING_MS = 250L
         private const val NO_RESPONSE_MAX_RETRIES = 20
+        // WP-FILEPUT-RELIABLE: bounded wait for a write-WITH-response (control char 3dda0003) ATT
+        // ack. The file-PUT protocol's real completion signal is the watch's INDICATION (e.g. the
+        // 0x83 PUT accept), NOT the ATT write ack — and that indication arrives on the GATT
+        // callback thread, where the protocol must SYNCHRONOUSLY write the data chunks on 3dda0004.
+        // If we held [opLock] for the full 10s OP_TIMEOUT_MS waiting on the control write's ack, the
+        // accept-driven data write would block on opLock for ~10s and the watch would time the PUT
+        // out and ABORT (0x89) before any data arrived — the exact on-device failure. A short ack
+        // wait frees opLock promptly so the indication handler can transmit in time.
+        private const val CONTROL_WRITE_ACK_MS = 1_500L
         private const val DISCOVER_MAX_ATTEMPTS = 3
         private const val BOND_TIMEOUT_MS = 30_000L
         private const val TARGET_MTU = 512
@@ -458,11 +467,13 @@ class AndroidBleTransport(private val context: Context) : BleTransport {
                 expectedWriteUuid = null
                 return
             }
-            // Wait for completion. For no-response writes onCharacteristicWrite still fires as the
-            // stack's pacing/"ready" signal, so we await it with a SHORT timeout (flow control,
-            // not the 10s op timeout — a 10s-per-chunk stall previously timed the watch out). For
-            // write-with-response (the indicate control chars) we await the real ATT ack.
-            val waitMs = if (noResponse) NO_RESPONSE_PACING_MS else OP_TIMEOUT_MS
+            // Wait for completion. For no-response writes onCharacteristicWrite fires as the stack's
+            // pacing/"ready" signal (flow control), so we await it with a SHORT timeout. For
+            // write-with-response (the indicate control chars) we await the ATT ack but only for a
+            // BOUNDED window (CONTROL_WRITE_ACK_MS) — NOT the full 10s op timeout. Holding opLock for
+            // 10s on a control write starved the accept-driven data write (which runs on the GATT
+            // callback thread and needs opLock), so the watch ABORTed the PUT before data arrived.
+            val waitMs = if (noResponse) NO_RESPONSE_PACING_MS else CONTROL_WRITE_ACK_MS
             writeLatch?.await(waitMs, TimeUnit.MILLISECONDS)
             writeLatch = null
             expectedWriteUuid = null
