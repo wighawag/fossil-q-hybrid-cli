@@ -36,7 +36,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import qhybrid.android.db.ButtonMappingEntity
 import qhybrid.android.sync.ConnectionBanner
+import qhybrid.android.sync.LeaveGuardState
 import qhybrid.android.sync.PendingSyncBanner
+import qhybrid.android.sync.PublishLeaveGuard
 import qhybrid.android.sync.SyncProgressUi
 import qhybrid.android.sync.SyncRowBadge
 import qhybrid.android.sync.SyncSaveButton
@@ -60,11 +62,14 @@ import qhybrid.android.sync.SyncSavingDialog
  * SYNCING→SUCCESS/ERROR state — the visual rendering itself is on-device-pending.
  */
 @Composable
-fun ButtonsScreen(modifier: Modifier = Modifier) {
+fun ButtonsScreen(modifier: Modifier = Modifier, leaveGuard: LeaveGuardState? = null) {
     val context = LocalContext.current
     val vm: ButtonsViewModel = viewModel(factory = ButtonsViewModel.factory(context))
     val state by vm.uiState.collectAsStateWithLifecycle()
     val progress by vm.syncProgress.collectAsStateWithLifecycle()
+
+    // WP-SYNCSTATUS (Step 3): publish pending state + Save action so the host can prompt on leave.
+    PublishLeaveGuard(leaveGuard, state.pendingCount) { vm.saveToWatch() }
 
     ButtonsContent(
         state = state,

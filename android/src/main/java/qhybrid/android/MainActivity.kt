@@ -41,8 +41,10 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -135,6 +137,18 @@ class MainActivity : ComponentActivity() {
         // gears overlay on top of whichever home tab is selected.
         var tab by remember { mutableStateOf(HomeTab.DASHBOARD) }
         val onHome = !showDebug && !showSetup && !showLogs && !showDefaults
+        // WP-SYNCSTATUS (Step 3, approach a): ONE shared guard the active editable screen
+        // (Alarms/Notifications/Buttons) publishes its pending-to-watch count + Save action into.
+        // The host consults it before navigating away (tab switch OR system back) and, when there
+        // are unsaved-to-watch changes, defers the navigation and shows a "Save to watch?" prompt.
+        val leaveGuard = remember { qhybrid.android.sync.LeaveGuardState() }
+        // The navigation to run once the user resolves the leave-prompt (null = no prompt pending).
+        var pendingNav by remember { mutableStateOf<(() -> Unit)?>(null) }
+        // Gate a navigation through the leave-prompt: defer it when the current screen has pending
+        // changes, otherwise run it immediately.
+        val requestLeave: (() -> Unit) -> Unit = { action ->
+            if (leaveGuard.shouldPrompt) pendingNav = action else action()
+        }
         // Bumped whenever an association completes so the "already paired" bonded-watch list (and
         // anything else watch-registry-derived) recomputes WITHOUT needing an app relaunch.
         var bondedRefresh by remember { mutableStateOf(0) }
@@ -166,6 +180,13 @@ class MainActivity : ComponentActivity() {
         val openSetupForMac: () -> Unit = { showSetup = true; showDebug = false; showLogs = false; showDefaults = false }
         // WP-DEFAULTS: system-back closes the defaults editor / log overlays back to the home tabs.
         androidx.activity.compose.BackHandler(enabled = showDefaults) { showDefaults = false }
+        // WP-SYNCSTATUS (Step 3): system-back on an editable tab WITH unsaved-to-watch changes
+        // prompts (Save / Leave / Cancel) instead of leaving silently. We defer the back action
+        // (go to the Dashboard tab) until the user resolves the prompt. Enabled only when the guard
+        // says so AND we're on a home tab (the overlay back-handlers above take precedence).
+        androidx.activity.compose.BackHandler(enabled = onHome && leaveGuard.shouldPrompt) {
+            pendingNav = { tab = HomeTab.DASHBOARD }
+        }
         // Already-bonded (OS-paired) Fossil watches that aren't added in the app yet — offered for
         // one-tap add so the user need not "Forget" + re-pair. Recomputed when entering the home
         // surface (cheap; reads the OS bonded-device list). Adding one associates by its exact MAC.
@@ -220,43 +241,43 @@ class MainActivity : ComponentActivity() {
                     NavigationBar {
                         NavigationBarItem(
                             selected = tab == HomeTab.DASHBOARD,
-                            onClick = { tab = HomeTab.DASHBOARD },
+                            onClick = { requestLeave { tab = HomeTab.DASHBOARD } },
                             icon = { Icon(Icons.Filled.Home, contentDescription = "Dashboard") },
                             label = { Text("Dashboard") },
                         )
                         NavigationBarItem(
                             selected = tab == HomeTab.ALARMS,
-                            onClick = { tab = HomeTab.ALARMS },
+                            onClick = { requestLeave { tab = HomeTab.ALARMS } },
                             icon = { Icon(Icons.Filled.Notifications, contentDescription = "Alarms") },
                             label = { Text("Alarms") },
                         )
                         NavigationBarItem(
                             selected = tab == HomeTab.NOTIFICATIONS,
-                            onClick = { tab = HomeTab.NOTIFICATIONS },
+                            onClick = { requestLeave { tab = HomeTab.NOTIFICATIONS } },
                             icon = { Icon(Icons.Filled.Email, contentDescription = "Notifications") },
                             label = { Text("Notifications") },
                         )
                         NavigationBarItem(
                             selected = tab == HomeTab.BUTTONS,
-                            onClick = { tab = HomeTab.BUTTONS },
+                            onClick = { requestLeave { tab = HomeTab.BUTTONS } },
                             icon = { Icon(Icons.Filled.Star, contentDescription = "Buttons") },
                             label = { Text("Buttons") },
                         )
                         NavigationBarItem(
                             selected = tab == HomeTab.CALIBRATION,
-                            onClick = { tab = HomeTab.CALIBRATION },
+                            onClick = { requestLeave { tab = HomeTab.CALIBRATION } },
                             icon = { Icon(Icons.Filled.Refresh, contentDescription = "Calibration") },
                             label = { Text("Calibrate") },
                         )
                         NavigationBarItem(
                             selected = tab == HomeTab.SLEEP,
-                            onClick = { tab = HomeTab.SLEEP },
+                            onClick = { requestLeave { tab = HomeTab.SLEEP } },
                             icon = { Icon(Icons.Filled.DateRange, contentDescription = "Sleep & Activity") },
                             label = { Text("Sleep") },
                         )
                         NavigationBarItem(
                             selected = tab == HomeTab.SETTINGS,
-                            onClick = { tab = HomeTab.SETTINGS },
+                            onClick = { requestLeave { tab = HomeTab.SETTINGS } },
                             icon = { Icon(Icons.Filled.Info, contentDescription = "Settings") },
                             label = { Text("Settings") },
                         )
@@ -270,9 +291,9 @@ class MainActivity : ComponentActivity() {
                     showSetup -> HomeScreen()
                     showLogs -> LogConsole()
                     showDefaults -> qhybrid.android.defaults.DefaultsScreen()
-                    tab == HomeTab.ALARMS -> AlarmsScreen()
-                    tab == HomeTab.NOTIFICATIONS -> NotificationsScreen()
-                    tab == HomeTab.BUTTONS -> ButtonsScreen()
+                    tab == HomeTab.ALARMS -> AlarmsScreen(leaveGuard = leaveGuard)
+                    tab == HomeTab.NOTIFICATIONS -> NotificationsScreen(leaveGuard = leaveGuard)
+                    tab == HomeTab.BUTTONS -> ButtonsScreen(leaveGuard = leaveGuard)
                     tab == HomeTab.CALIBRATION -> CalibrationScreen()
                     tab == HomeTab.SLEEP -> SleepActivityScreen()
                     tab == HomeTab.SETTINGS -> SettingsScreen(
@@ -285,6 +306,40 @@ class MainActivity : ComponentActivity() {
                         onEnterMacManually = openSetupForMac,
                         bondedWatches = bondedWatches,
                         onAddBondedWatch = addBondedWatch,
+                    )
+                }
+
+                // WP-SYNCSTATUS (Step 3): the leave-with-pending prompt. When a navigation was
+                // deferred (pendingNav != null) because the current editable screen has
+                // unsaved-to-watch changes, offer Save (push then leave) / Leave (rows stay in the
+                // DB) / Cancel (stay). NO silent auto-save, NO background-save.
+                pendingNav?.let { nav ->
+                    val save = leaveGuard.save
+                    AlertDialog(
+                        onDismissRequest = { pendingNav = null },
+                        title = { Text("Save to watch?") },
+                        text = {
+                            Text(
+                                "You have changes that aren't on the watch yet. Save them to the " +
+                                    "watch before leaving, or leave (your changes stay saved in the app)."
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                // Push to the watch (the existing blocking SyncSavingDialog shows on
+                                // the screen), then leave. The targeted save is fire-and-forget; the
+                                // rows are already in the DB so leaving is safe regardless.
+                                save?.invoke()
+                                pendingNav = null
+                                nav()
+                            }) { Text("Save") }
+                        },
+                        dismissButton = {
+                            Row {
+                                TextButton(onClick = { pendingNav = null; nav() }) { Text("Leave") }
+                                TextButton(onClick = { pendingNav = null }) { Text("Cancel") }
+                            }
+                        },
                     )
                 }
             }

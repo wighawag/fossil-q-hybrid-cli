@@ -51,7 +51,9 @@ import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import qhybrid.android.sync.ConnectionBanner
+import qhybrid.android.sync.LeaveGuardState
 import qhybrid.android.sync.PendingSyncBanner
+import qhybrid.android.sync.PublishLeaveGuard
 import qhybrid.android.sync.SyncProgressUi
 import qhybrid.android.sync.SyncRowBadge
 import qhybrid.android.sync.SyncSaveButton
@@ -78,11 +80,14 @@ import qhybrid.android.db.NotificationRuleEntity
  * query doesn't surface.
  */
 @Composable
-fun NotificationsScreen(modifier: Modifier = Modifier) {
+fun NotificationsScreen(modifier: Modifier = Modifier, leaveGuard: LeaveGuardState? = null) {
     val context = LocalContext.current
     val vm: NotificationsViewModel = viewModel(factory = NotificationsViewModel.factory(context))
     val state by vm.uiState.collectAsStateWithLifecycle()
     val progress by vm.syncProgress.collectAsStateWithLifecycle()
+
+    // WP-SYNCSTATUS (Step 3): publish pending state + Save action so the host can prompt on leave.
+    PublishLeaveGuard(leaveGuard, state.pendingCount) { vm.saveToWatch() }
 
     // Load the installed launchable apps off the main thread; empty until ready so the dialog
     // still works (free-text) before the list arrives.

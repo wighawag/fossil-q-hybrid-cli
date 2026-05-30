@@ -9,6 +9,9 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -76,4 +79,21 @@ fun PendingSyncBanner(pendingCount: Int, modifier: Modifier = Modifier) {
 fun pendingMessage(pendingCount: Int): String {
     val noun = if (pendingCount == 1) "change" else "changes"
     return "$pendingCount $noun not on the watch — Save to watch."
+}
+
+/**
+ * WP-SYNCSTATUS (Step 3) — an editable screen publishes its current pending state + "Save to watch"
+ * action into the host's shared [LeaveGuardState] while it is composed, and clears it on dispose.
+ * The host (MainActivity) consults the guard to decide whether to prompt before navigating away
+ * (tab switch OR system back). No-op when [guard] is null (previews / UI tests).
+ */
+@Composable
+fun PublishLeaveGuard(guard: LeaveGuardState?, pendingCount: Int, onSave: () -> Unit) {
+    if (guard == null) return
+    // Keep the latest save action without re-running the effect on every recomposition.
+    val latestSave by rememberUpdatedState(onSave)
+    DisposableEffect(guard, pendingCount) {
+        guard.publish(pendingCount) { latestSave() }
+        onDispose { guard.clear() }
+    }
 }
