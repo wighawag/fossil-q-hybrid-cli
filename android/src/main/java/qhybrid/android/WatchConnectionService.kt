@@ -397,6 +397,7 @@ class WatchConnectionService : Service() {
     private fun submitSync() {
         worker.execute {
             val c = controllerRef.get()
+            Log.i(TAG, "syncNow: controller=${c != null} linkUp=${isLinkUp()}")
             if (c != null && isLinkUp()) {
                 runCatching { runOnConnectSync(c) }
                     .onFailure {
@@ -491,6 +492,7 @@ class WatchConnectionService : Service() {
         }
 
         override fun uploadButtons(buttonConfigFile: ByteArray): Boolean {
+            Log.i(TAG, "uploadButtons: ${buttonConfigFile.size} bytes — queueing SETTINGS_BUTTONS write")
             controller.setButtons(buttonConfigFile)
             return true
         }
