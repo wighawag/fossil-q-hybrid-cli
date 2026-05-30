@@ -6,10 +6,17 @@
 > independently shippable; they are ordered by value/risk. Nothing here changes protocol **wire
 > bytes** — every BLE behaviour reuses an existing golden-tested path.
 >
-> **Work packages:** WP-BTN (button cardinality), WP-PROGRESS (sync spinner), WP-VIBEACK
-> (confirmation buzz), WP-MULTIWATCH (multi-watch presentation + add/delete + export/import; removes
-> clone/transfer), WP-DEFAULTS (defaults profile for unreadable sections + predefined button
-> defaults + defaults export/import), WP-ONBOARD (watch-first onboarding).
+> **Work packages:** WP-BTN (button cardinality), WP-PROGRESS (sync spinner), ~~WP-VIBEACK
+> (confirmation buzz)~~ **[WON'T DO]**, WP-MULTIWATCH (multi-watch presentation + add/delete +
+> export/import; removes clone/transfer) **[DEFERRED — later]**, WP-DEFAULTS (defaults profile for
+> unreadable sections + predefined button defaults + defaults export/import), WP-ONBOARD
+> (watch-first onboarding).
+>
+> **STATUS UPDATE (2026-05):** WP-BTN, WP-PROGRESS, WP-DEFAULTS, WP-ONBOARD are **DONE** (shipped;
+> see git log + `WP-DEFAULTS-STATUS.md`). **WP-VIBEACK is WON'T DO** (not wanted). **WP-MULTIWATCH
+> is DEFERRED** (revisit later; skipped for now). The next functional work is the live-event GLUE
+> layer in `ANDROID-WORK-BREAKDOWN.md`: WP10 (permission carousel), WP11 (notification listener →
+> watch), WP12 (button gestures), WP13 (calendar → alarms).
 >
 > **Grounding (verified in code, 2026-05):**
 > - Vibration write = `FossilQAdapter.setVibrationStrength` → `ConfigurationPutRequest`
@@ -133,7 +140,10 @@ it (headlessly tested via the holder + VM; the visual spinner is on-device-pendi
 
 ---
 
-## WP-VIBEACK — Vibration-strength confirmation buzz
+## WP-VIBEACK — Vibration-strength confirmation buzz  — **WON'T DO (2026-05)**
+
+> **DECISION: WON'T DO.** This UX nicety is not wanted. Left below for historical context only; do
+> NOT implement.
 
 **Problem.** Setting vibration strength only stores config `0x0A`; the watch does not buzz, so the
 user can't feel the new level (the Fossil app buzzes on change as a UX gesture). We have the buzz
@@ -168,7 +178,11 @@ strong; set 25 → trigger again → weak; this isolates "stored & effective" fr
 
 ---
 
-## WP-MULTIWATCH — Multi-watch presentation + add/delete + export/import (removes clone/transfer)
+## WP-MULTIWATCH — Multi-watch presentation + add/delete + export/import (removes clone/transfer)  — **DEFERRED (2026-05)**
+
+> **DECISION: DEFERRED — revisit later, skipped for now.** Not a priority; the single-watch flow is
+> sufficient for current needs. (Note: WP-DEFAULTS already shipped a self-contained defaults
+> export/import codec, so it no longer depends on this WP's shared codec.)
 
 **Problem.** Multi-watch is confusing today: the Dashboard has an "Active watch" dropdown
 (`ExposedDropdownMenuBox`, "Receiving live notifications") but **adding** a watch is hidden behind
@@ -486,16 +500,17 @@ optimization rather than a correctness requirement.
 
 ## Suggested execution order
 
-1. **WP-BTN** (fixes a real correctness bug; small, self-contained).
-2. **WP-PROGRESS** (UX; introduces the reusable `SyncState` holder others can lean on).
-3. **WP-VIBEACK** (UX; small; benefits from WP-PROGRESS's "userInitiated vs reconcile" split).
-4. **WP-MULTIWATCH** (multi-watch IA + add/delete + export/import; introduces the shared config
-   JSON codec WP-DEFAULTS reuses; removes clone/transfer).
-5. **WP-DEFAULTS** (the unreadable-section defaults profile + factory button defaults; reuses the
-   WP-MULTIWATCH codec; WP-ONBOARD consumes it).
-6. **WP-ONBOARD** (largest; reorders onboarding, adds the watch→phone read seam + PROVISION mode +
-   full delete). Do last so `SyncState`, the userInitiated-sync split, the config codec, and the
-   defaults profile all already exist.
+> **DONE / DROPPED (2026-05):** 1–2 + 5–6 are shipped; 3 is WON'T DO; 4 is DEFERRED. The next work
+> is the live-event glue layer (WP10–WP13) in `ANDROID-WORK-BREAKDOWN.md`.
+
+1. ~~**WP-BTN**~~ **[DONE]** (fixes a real correctness bug; small, self-contained).
+2. ~~**WP-PROGRESS**~~ **[DONE]** (UX; introduces the reusable `SyncState` holder others can lean on).
+3. ~~**WP-VIBEACK**~~ **[WON'T DO]** (UX nicety; not wanted).
+4. ~~**WP-MULTIWATCH**~~ **[DEFERRED — later]** (multi-watch IA + add/delete + export/import; removes
+   clone/transfer). WP-DEFAULTS shipped its own self-contained codec, so nothing blocks on this.
+5. ~~**WP-DEFAULTS**~~ **[DONE]** (the unreadable-section defaults profile + factory button defaults).
+6. ~~**WP-ONBOARD**~~ **[DONE]** (reorders onboarding, adds the watch→phone read seam + PROVISION
+   mode + full delete).
 
 Each WP keeps `:protocol:test` ≥108 and `:android:testDebugUnitTest` green, `./fossil-q --help`
 unchanged, the WP15 Debug Menu release-gated, and WP14 + WP16a–g + WP-ACTIVITY still working.
