@@ -12,8 +12,9 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * End-to-end file-PUT regression through {@link FakeBleTransport}, exercising the
- * FilePutRawRequest state machine: type-3 accept -> chunked data on 3dda0004 ->
- * type-8 CRC confirm -> type-4 close -> onFilePut(true).
+ * FilePutRawRequest state machine: PUT accept (0x83) -> chunked data on 3dda0004 ->
+ * EOF_REACH (0x88, sizeWritten + watch CRC32) -> VERIFY_FILE(4) -> 0x84 SUCCESS ->
+ * onFilePut(true).
  *
  * <p>Also locks the notification-filter 32-byte entry layout and the
  * null-terminated package CRC (FINDINGS #17), driven through the real adapter
@@ -52,10 +53,12 @@ public class AdapterFilePutTest {
         byte[] payload = reassemble(t.writesTo(FakeBleTransport.UUID_CHAR_DATA));
         assertTrue(payload.length > 0, "expected data chunks on 3dda0004");
 
+        // EOF_REACH (0x88) reports sizeWritten + the watch CRC32 — but does NOT complete the put.
         t.injectNotification(FileTransferResponder.CONTROL,
-                FileTransferResponder.crcConfirmFrame(NOTIFICATION_FILTER_HANDLE, payload));
+                FileTransferResponder.eofReachFrame(NOTIFICATION_FILTER_HANDLE, payload));
+        // The adapter has now sent VERIFY_FILE(4); the 0x84 SUCCESS is the real completion.
         t.injectNotification(FileTransferResponder.CONTROL,
-                FileTransferResponder.closeFrame(NOTIFICATION_FILTER_HANDLE));
+                FileTransferResponder.verifyFrame(NOTIFICATION_FILTER_HANDLE));
 
         // ---- Assertions on the uploaded payload (FilePutRequest framing) ----
         // payload = [handle(2 LE)][version(2 LE)][0(4)][len(4 LE)][file...][crc32c(4)]

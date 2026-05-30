@@ -38,24 +38,70 @@ import qhybrid.protocol.file.FileHandle;
 import qhybrid.protocol.requests.fossil.FossilRequest;
 import qhybrid.protocol.requests.fossil.file.ResultCode;
 
+/**
+ * WP-FILEPUT-RELIABLE: re-implements the file-PUT state machine to MATCH the official Fossil app
+ * (decoded under {@code tmp/FossilOfficialApp-deobf}). The earlier {@code wp-buzztest} heuristics
+ * (complete-on-type-8, fire-and-forget close) were a guess at the protocol; this is the real
+ * firmware contract.
+ *
+ * <p>Control channel = FTC {@code 3dda0003} (write-with-response / INDICATE). Data channel =
+ * {@code 3dda0004} (write-WITHOUT-response). Operation codes:
+ * {@code PUT_FILE=3, VERIFY_FILE=4, EOF_REACH=8, ABORT_FILE=9, WAITING_REQUEST=10}. A response
+ * frame is {@code op | 0x80} (PUT→0x83, VERIFY→0x84, EOF_REACH→0x88, ABORT→0x89, WAITING→0x8A).
+ * Control frames are little-endian: {@code [opByte][handle:2][status:1][...]}.
+ *
+ * <p>The sequence (mirrors {@code TransmitDataPhase} / {@code PutFileRequest} /
+ * {@code TransferDataRequest} / {@code VerifyFileRequest}):
+ * <ol>
+ *   <li><b>PUT_FILE(3)</b> open on 3dda0003 → watch replies {@code 0x83} accept.</li>
+ *   <li>Transmit data chunks on 3dda0004 (write-without-response, paced).</li>
+ *   <li>Watch reports progress/finish via <b>EOF_REACH(0x88)</b> / <b>WAITING_REQUEST(0x8A)</b>
+ *       carrying {@code sizeWritten} (offset 4) + {@code CRC32} of bytes received (offset 8).
+ *       Compare that CRC to our own {@link CRC32} of the bytes we sent.
+ *       <ul>
+ *         <li>bytes complete + CRC match → send <b>VERIFY_FILE(4)</b> and await its {@code 0x84}.</li>
+ *         <li>otherwise → resume PUT_FILE(3) from the written offset (bounded retry, ≈3).</li>
+ *       </ul></li>
+ *   <li><b>VERIFY_FILE(4)</b> on 3dda0003 → <b>WAIT for {@code 0x84} SUCCESS</b>. THIS is the real
+ *       "file committed" confirmation (the put completes here, NOT on type-8). ABORT(0x89) /
+ *       non-success → {@code onFilePut(false)}.</li>
+ * </ol>
+ */
 public class FilePutRawRequest extends FossilRequest {
 
-    // WP-BUZZTEST diagnostics (C): INFO-level trace of the file-PUT handshake so on-device logcat
-    // shows WHY a put stalls (e.g. a missing type-4 close-ack). Logging only — no behaviour change.
     private static final Logger PUTLOG = LoggerFactory.getLogger(FilePutRawRequest.class);
-    public enum UploadState {INITIALIZED, UPLOADING, CLOSING, UPLOADED}
+
+    private static final UUID CONTROL_CHARACTERISTIC =
+            UUID.fromString("3dda0003-957f-7d4a-34a6-74696673696d");
+    private static final UUID DATA_CHARACTERISTIC =
+            UUID.fromString("3dda0004-957f-7d4a-34a6-74696673696d");
+
+    /** Mirrors the official app's no-progress retry bound (TransmitDataPhase.m11144q → 3). */
+    private static final int DATA_TRANSFER_RETRY_THRESHOLD = 3;
+    /** Mirrors VerifyFileRequest's retryThreshold (= 3). */
+    private static final int VERIFY_RETRY_THRESHOLD = 3;
+
+    public enum UploadState {INITIALIZED, UPLOADING, VERIFYING, UPLOADED, FAILED}
 
     public UploadState state;
 
     public ArrayList<byte[]> packets = new ArrayList<>();
 
-    private short handle;
+    private final short handle;
 
-    private FossilWatchAdapter adapter;
+    private final FossilWatchAdapter adapter;
 
     byte[] file;
 
     int fullCRC;
+
+    /** Total file length (bytes transmitted as data chunks = our payload length). */
+    private long totalLength;
+
+    /** sizeWritten from the most recent EOF_REACH/WAITING_REQUEST, for no-progress detection. */
+    private long lastSizeWritten = -1;
+    private int noProgressRetries = 0;
+    private int verifyRetries = 0;
 
     public FilePutRawRequest(short handle, byte[] file, FossilWatchAdapter adapter) {
         this.handle = handle;
@@ -71,6 +117,7 @@ public class FilePutRawRequest extends FossilRequest {
         this.data = buffer.array();
 
         this.file = file;
+        this.totalLength = fileLength;
 
         state = UploadState.INITIALIZED;
     }
@@ -79,227 +126,244 @@ public class FilePutRawRequest extends FossilRequest {
         this(handle.getHandle(), file, adapter);
     }
 
-        public short getHandle() {
+    public short getHandle() {
         return handle;
     }
 
     @Override
     public void handleResponse(java.util.UUID uuid, byte[] value) {
-        if (uuid.toString().equals("3dda0003-957f-7d4a-34a6-74696673696d")) {
-            int responseType = value[0] & 0x0F;
-            log("response: " + responseType);
-            // WP-BUZZTEST (C): trace every control-channel frame the put sees, with handle + state.
-            PUTLOG.info("FilePut[0x{}] state={} <- control type={} ({} bytes)",
-                    String.format("%04X", handle), state, responseType, value.length);
-            // WP-BUZZTEST: ignore any framed control response addressed to a DIFFERENT file handle.
-            // Since we now COMPLETE a put on its type-8 CRC-confirm and advance the serial queue,
-            // a previous put's DELAYED type-4 close-ack (which DOES arrive on BlueZ) can land while
-            // the NEXT put is current. That stale ack carries the previous handle; without this
-            // guard the next put mis-reads it as its own close with the wrong handle and aborts
-            // ("wrong file closing handle") — killing e.g. the buzz's play file. Frames 3/4/8 carry
-            // the handle at offset 1; ignore them when they aren't for THIS put.
-            if ((responseType == 3 || responseType == 4 || responseType == 8) && value.length >= 3) {
-                short frameHandle = ByteBuffer.wrap(value).order(ByteOrder.LITTLE_ENDIAN).getShort(1);
-                if (frameHandle != this.handle) {
-                    PUTLOG.info("FilePut[0x{}] ignoring stale control type={} for other handle 0x{}",
-                            String.format("%04X", handle), responseType, String.format("%04X", frameHandle));
-                    return;
-                }
-            }
-            switch (responseType) {
-                case 3: {
-                    if (value.length != 5 || (value[0] & 0x0F) != 3) {
-                        throw new RuntimeException("wrong answer header");
-                    }
-                    state = UploadState.UPLOADING;
+        if (!uuid.toString().equals("3dda0003-957f-7d4a-34a6-74696673696d")) {
+            return;
+        }
+        if (value.length == 0) {
+            return;
+        }
+        // Response frames are op|0x80; the low nibble recovers the op code (3/4/8/9/10).
+        int responseType = value[0] & 0x0F;
+        log("response: " + responseType);
+        PUTLOG.info("FilePut[0x{}] state={} <- control type={} ({} bytes)",
+                String.format("%04X", handle), state, responseType, value.length);
 
-                    WriteBatch transactionBuilder = adapter.getDeviceSupport().createWriteBatch("file upload");
-                    java.util.UUID uploadCharacteristic = (UUID.fromString("3dda0004-957f-7d4a-34a6-74696673696d"));
-
-                    this.prepareFilePackets(this.file);
-                    PUTLOG.info("FilePut[0x{}] accepted — writing {} data chunk(s) ({} bytes)",
-                            String.format("%04X", handle), packets.size(), file.length);
-
-                    for (int i = 0, packetCount = packets.size(); i < packetCount; i++) {
-                        byte[] packet = packets.get(i);
-                        transactionBuilder.write(uploadCharacteristic, packet);
-                        onPacketWritten(transactionBuilder, i, packetCount);
-                    }
-
-                    transactionBuilder.queue();
-                    break;
-                }
-                case 8: {
-                    if (value.length == 4) return;
-                    ByteBuffer buffer = ByteBuffer.wrap(value);
-                    buffer.order(ByteOrder.LITTLE_ENDIAN);
-                    short handle = buffer.getShort(1);
-                    int crc = buffer.getInt(8);
-                    byte status = value[3];
-
-                    ResultCode code = ResultCode.fromCode(status);
-                    if(!code.inidicatesSuccess()){
-                        throw new RuntimeException("upload status: " + code + "   (" + status + ")");
-                    }
-
-                    if (handle != this.handle) {
-                        throw new RuntimeException("wrong response handle");
-                    }
-
-                    if (crc != this.fullCRC) {
-                        throw new RuntimeException("file upload exception: wrong crc");
-                    }
-
-
-                    // WP-BUZZTEST: the type-8 CRC-confirm IS the watch's "file received + verified"
-                    // signal — the bytes are committed on the watch at this point. COMPLETE the put
-                    // HERE rather than waiting for a type-4 close-ack.
-                    //
-                    // WHY: on this firmware over Android's GATT stack the type-4 close-ack is NEVER
-                    // delivered (confirmed on-device: every file-PUT gets accept → data → type-8,
-                    // then silence). Waiting for it stalled the strictly-serial request queue, so a
-                    // follow-up put (e.g. the buzz's NOTIFICATION_PLAY file after its filter) never
-                    // ran — no vibration. The CLI/BlueZ path does receive the final ack, but the file
-                    // is equally committed at type-8 there (verified: CLI buzz works), so completing
-                    // on type-8 yields the SAME effective outcome on both transports. A later type-4
-                    // (other firmware) is handled as a harmless no-op (the put is already UPLOADED).
-                    //
-                    // ORDER MATTERS: mark UPLOADED + fire onFilePut(true) BEFORE sending the close
-                    // frame. The close is a best-effort courtesy only; on Android the close WRITE
-                    // can block/throw inside the transport, and if it ran first it prevented the
-                    // completion below from ever executing (the put silently never finished, so the
-                    // next put — the buzz's play file — never ran). Completion must NOT depend on it.
-                    // WP-BUZZTEST: SEND the type-4 close frame so the WATCH finalises this put and
-                    // promptly accepts the NEXT one. On-device we found that WITHOUT the close the
-                    // watch takes ~10s to accept the following put (the buzz's play file), by which
-                    // time it returns its own type-9 PUT-timeout — no vibration. The CLI/BlueZ path
-                    // always sent the close and got fast accepts; we must do the same.
-                    //
-                    // BUT we still COMPLETE this put on the type-8 CRC-confirm (we do NOT wait for
-                    // a type-4 close-ACK, which this firmware never delivers over Android). The
-                    // close is sent fire-and-forget AFTER marking UPLOADED + firing onFilePut, so
-                    // completion/queue-advance never depends on it, and a transport hiccup on the
-                    // close can't undo completion. A later/stale type-4 is ignored by the
-                    // handle-guard at the top of this method.
-                    // Send the close INLINE first (ordered correctly on the serial control channel,
-                    // ahead of the next put's open), then COMPLETE without waiting for a type-4 ack.
-                    sendCloseFrame();
-                    this.state = UploadState.UPLOADED;
-                    PUTLOG.info("FilePut[0x{}] COMPLETE (CRC confirmed at type-8; close sent)",
-                            String.format("%04X", handle));
-                    onFilePut(true);
-                    break;
-                }
-                case 4: {
-                    // Already completed at type-8 (this firmware doesn't send type-4 anyway). If a
-                    // type-4 close-ack DOES arrive (other firmware/transport), treat it as a no-op
-                    // — the put is already UPLOADED and the queue has advanced.
-                    if (state == UploadState.UPLOADED) return;
-                    if (value.length == 9) return;
-                    if (value.length != 4 || (value[0] & 0x0F) != 4) {
-                        throw new RuntimeException("wrong file closing header");
-                    }
-                    ByteBuffer buffer = ByteBuffer.wrap(value);
-                    buffer.order(ByteOrder.LITTLE_ENDIAN);
-
-                    short handle = buffer.getShort(1);
-
-                    if (handle != this.handle) {
-                        onFilePut(false);
-                        throw new RuntimeException("wrong file closing handle");
-                    }
-
-                    byte status = buffer.get(3);
-
-                    ResultCode code = ResultCode.fromCode(status);
-                    if(!code.inidicatesSuccess()){
-                        onFilePut(false);
-                        throw new RuntimeException("wrong closing status: " + code + "   (" + status + ")");
-                    }
-
-                    this.state = UploadState.UPLOADED;
-
-                    onFilePut(true);
-
-                    log("uploaded file");
-                    PUTLOG.info("FilePut[0x{}] COMPLETE (close-ack received)",
-                            String.format("%04X", handle));
-
-                    break;
-                }
-                case 9: {
-                    PUTLOG.warn("FilePut[0x{}] WATCH-SIDE TIMEOUT (control type 9) in state {}",
-                            String.format("%04X", handle), state);
-                    this.onFilePut(false);
-                    throw new RuntimeException("file put timeout");
-                    /*timeout = true;
-                    ByteBuffer buffer2 = ByteBuffer.allocate(3);
-                    buffer2.order(ByteOrder.LITTLE_ENDIAN);
-                    buffer2.put((byte) 4);
-                    buffer2.putShort(this.handle);
-
-                    new WriteBatch("file close")
-                            .write(
-                                    adapter.getDeviceSupport().getCharacteristic(UUID.fromString("3dda0003-957f-7d4a-34a6-74696673696d")),
-                                    buffer2.array()
-                            )
-                            .queue(adapter.getDeviceSupport().getQueue());
-
-                    this.state = UploadState.CLOSING;
-                    break;*/
-                }
+        // Ignore any framed control response addressed to a DIFFERENT file handle. A previous put's
+        // DELAYED/stale control frame (which DOES arrive late on BlueZ) can land while the NEXT put
+        // is current; without this guard the next put would mis-read it as its own and corrupt its
+        // state. Frames 3/4/8/9/10 carry the handle at offset 1.
+        if (value.length >= 3
+                && (responseType == 3 || responseType == 4 || responseType == 8
+                    || responseType == 9 || responseType == 10)) {
+            short frameHandle = ByteBuffer.wrap(value).order(ByteOrder.LITTLE_ENDIAN).getShort(1);
+            if (frameHandle != this.handle) {
+                PUTLOG.info("FilePut[0x{}] ignoring stale control type={} for other handle 0x{}",
+                        String.format("%04X", handle), responseType, String.format("%04X", frameHandle));
+                return;
             }
         }
+
+        switch (responseType) {
+            case 3:
+                handlePutAccept(value);
+                break;
+            case 8:   // EOF_REACH — progress/finish report (sizeWritten + watch CRC32)
+            case 10:  // WAITING_REQUEST — same payload prefix + a firmware-proposed timeout
+                handleEofReach(value);
+                break;
+            case 4:
+                handleVerifyResponse(value);
+                break;
+            case 9:
+                handleAbort(value);
+                break;
+            default:
+                break;
+        }
+    }
+
+    /** PUT_FILE(3) accepted → transmit the data chunks on 3dda0004. */
+    private void handlePutAccept(byte[] value) {
+        if (value.length < 5 || (value[0] & 0x0F) != 3) {
+            throw new RuntimeException("wrong answer header");
+        }
+        state = UploadState.UPLOADING;
+
+        WriteBatch transactionBuilder = adapter.getDeviceSupport().createWriteBatch("file upload");
+
+        this.prepareFilePackets(this.file);
+        PUTLOG.info("FilePut[0x{}] accepted — writing {} data chunk(s) ({} bytes)",
+                String.format("%04X", handle), packets.size(), file.length);
+
+        for (int i = 0, packetCount = packets.size(); i < packetCount; i++) {
+            byte[] packet = packets.get(i);
+            transactionBuilder.write(DATA_CHARACTERISTIC, packet);
+            onPacketWritten(transactionBuilder, i, packetCount);
+        }
+
+        transactionBuilder.queue();
+    }
+
+    /**
+     * EOF_REACH(0x88) / WAITING_REQUEST(0x8A): the watch reports sizeWritten (offset 4) and a CRC32
+     * of the bytes it received (offset 8). Compare to our own CRC32. If the file is fully received
+     * and the CRC matches → VERIFY_FILE(4). Otherwise resume PUT_FILE(3) (bounded retry).
+     */
+    private void handleEofReach(byte[] value) {
+        if (value.length < 12) {
+            // A short EOF/keepalive frame with no size/crc payload — nothing to act on.
+            return;
+        }
+        ByteBuffer buffer = ByteBuffer.wrap(value).order(ByteOrder.LITTLE_ENDIAN);
+        short frameHandle = buffer.getShort(1);
+        byte status = value[3];
+        long sizeWritten = buffer.getInt(4) & 0xFFFFFFFFL;
+        int crc = buffer.getInt(8);
+
+        ResultCode code = ResultCode.fromCode(status);
+        if (!code.inidicatesSuccess()) {
+            onFilePut(false);
+            throw new RuntimeException("upload status: " + code + "   (" + status + ")");
+        }
+        if (frameHandle != this.handle) {
+            throw new RuntimeException("wrong response handle");
+        }
+
+        boolean crcMatch = crc == this.fullCRC;
+        boolean complete = sizeWritten == this.totalLength;
+
+        PUTLOG.info("FilePut[0x{}] EOF_REACH sizeWritten={}/{} crc={} (match={})",
+                String.format("%04X", handle), sizeWritten, totalLength,
+                String.format("%08X", crc), crcMatch);
+
+        if (complete && crcMatch) {
+            sendVerifyFile();
+            return;
+        }
+
+        // Partial / CRC mismatch → resume PUT_FILE from the written offset (bounded retry, mirroring
+        // the official 3-no-progress-retry threshold). The watch generally sends all-or-timeout for
+        // our small files, but we honour the firmware's resume contract rather than falsely succeed.
+        if (!crcMatch && complete) {
+            PUTLOG.warn("FilePut[0x{}] CRC mismatch on full transfer (watch={} ours={}) — resuming",
+                    String.format("%04X", handle),
+                    String.format("%08X", crc), String.format("%08X", this.fullCRC));
+        }
+
+        if (sizeWritten == lastSizeWritten || sizeWritten == 0) {
+            noProgressRetries++;
+        } else {
+            noProgressRetries = 0;
+        }
+        lastSizeWritten = sizeWritten;
+
+        if (noProgressRetries >= DATA_TRANSFER_RETRY_THRESHOLD) {
+            PUTLOG.warn("FilePut[0x{}] no-progress retry threshold reached ({}); FAIL",
+                    String.format("%04X", handle), noProgressRetries);
+            state = UploadState.FAILED;
+            onFilePut(false);
+            return;
+        }
+
+        resumePutFile(sizeWritten);
+    }
+
+    /** Re-open PUT_FILE(3) from the given written offset to continue the transfer. */
+    private void resumePutFile(long writtenOffset) {
+        long remaining = this.totalLength - writtenOffset;
+        ByteBuffer buffer = ByteBuffer.allocate(15).order(ByteOrder.LITTLE_ENDIAN);
+        buffer.put((byte) 0x03);
+        buffer.putShort(1, this.handle);
+        buffer.putInt(3, (int) writtenOffset);
+        buffer.putInt(7, (int) remaining);
+        buffer.putInt(11, (int) this.totalLength);
+        // Re-arm the resume offset so prepareFilePackets re-chunks from there.
+        this.resumeOffset = (int) writtenOffset;
+        PUTLOG.info("FilePut[0x{}] resuming PUT_FILE from offset {} ({} remaining)",
+                String.format("%04X", handle), writtenOffset, remaining);
+        adapter.getDeviceSupport().createWriteBatch("file resume")
+                .write(CONTROL_CHARACTERISTIC, buffer.array())
+                .queue();
+    }
+
+    private int resumeOffset = 0;
+
+    /** Send VERIFY_FILE(4) and await its 0x84 SUCCESS (the real "file committed" confirmation). */
+    private void sendVerifyFile() {
+        state = UploadState.VERIFYING;
+        ByteBuffer buffer = ByteBuffer.allocate(3).order(ByteOrder.LITTLE_ENDIAN);
+        buffer.put((byte) 0x04);
+        buffer.putShort(this.handle);
+        PUTLOG.info("FilePut[0x{}] data complete + CRC match — sending VERIFY_FILE(4)",
+                String.format("%04X", handle));
+        adapter.getDeviceSupport().createWriteBatch("file verify")
+                .write(CONTROL_CHARACTERISTIC, buffer.array())
+                .queue();
+    }
+
+    /** VERIFY_FILE response (0x84): SUCCESS completes the put; otherwise honest failure. */
+    private void handleVerifyResponse(byte[] value) {
+        // WAITING_REQUEST while verifying is handled by the 0x8A path; here we expect 0x84.
+        if (value.length < 4) {
+            throw new RuntimeException("wrong file verify header");
+        }
+        ByteBuffer buffer = ByteBuffer.wrap(value).order(ByteOrder.LITTLE_ENDIAN);
+        short frameHandle = buffer.getShort(1);
+        if (frameHandle != this.handle) {
+            onFilePut(false);
+            throw new RuntimeException("wrong file verify handle");
+        }
+        byte status = buffer.get(3);
+        ResultCode code = ResultCode.fromCode(status);
+        if (!code.inidicatesSuccess()) {
+            // Bounded retry of the VERIFY itself (mirrors VerifyFileRequest retryThreshold = 3).
+            if (verifyRetries < VERIFY_RETRY_THRESHOLD) {
+                verifyRetries++;
+                PUTLOG.warn("FilePut[0x{}] VERIFY status {} ({}) — retry {}/{}",
+                        String.format("%04X", handle), code, status, verifyRetries, VERIFY_RETRY_THRESHOLD);
+                sendVerifyFile();
+                return;
+            }
+            state = UploadState.FAILED;
+            onFilePut(false);
+            throw new RuntimeException("file verify failed: " + code + "   (" + status + ")");
+        }
+
+        this.state = UploadState.UPLOADED;
+        log("uploaded file");
+        PUTLOG.info("FilePut[0x{}] COMPLETE (VERIFY_FILE 0x84 SUCCESS)", String.format("%04X", handle));
+        onFilePut(true);
+    }
+
+    /** ABORT_FILE(0x89): the watch aborted the transfer — honest failure. */
+    private void handleAbort(byte[] value) {
+        PUTLOG.warn("FilePut[0x{}] WATCH ABORT (control type 9) in state {}",
+                String.format("%04X", handle), state);
+        state = UploadState.FAILED;
+        this.onFilePut(false);
+        throw new RuntimeException("file put aborted by watch");
     }
 
     @Override
     public boolean isFinished() {
-        return this.state == UploadState.UPLOADED;
-    }
-
-    /**
-     * WP-BUZZTEST: send the type-4 "file close" frame so the watch finalises this transfer and
-     * accepts the next put promptly (without it, on-device the watch took ~10s to accept the next
-     * put and then returned its own type-9 timeout). Sent INLINE so it is correctly ordered on the
-     * single control channel, ahead of any following put's open. Best-effort: the put is already
-     * being completed by the caller regardless of this write's outcome.
-     */
-    private void sendCloseFrame() {
-        try {
-            ByteBuffer buffer2 = ByteBuffer.allocate(3);
-            buffer2.order(ByteOrder.LITTLE_ENDIAN);
-            buffer2.put((byte) 4);
-            buffer2.putShort(this.handle);
-            // Fire-and-forget: the watch needs the close to finalise the transfer, but it sends no
-            // ack to it — a blocking write would stall the serial request queue for the op-timeout
-            // (~10s) and delay the next put (the buzz's play file). See WriteBatch.writeNoWait.
-            adapter.getDeviceSupport().createWriteBatch("file close")
-                    .writeNoWait(UUID.fromString("3dda0003-957f-7d4a-34a6-74696673696d"), buffer2.array())
-                    .queue();
-        } catch (RuntimeException e) {
-            PUTLOG.warn("FilePut[0x{}] close frame failed (ignored — already complete): {}",
-                    String.format("%04X", this.handle), e.toString());
-        }
+        return this.state == UploadState.UPLOADED || this.state == UploadState.FAILED;
     }
 
     private void prepareFilePackets(byte[] file) {
         int maxPacketSize = calcMaxWriteChunk(adapter.getMTU()) - 1;
 
-        byte[] data = file;
-
         CRC32 fullCRC = new CRC32();
-
-        fullCRC.update(data);
+        fullCRC.update(file);
         this.fullCRC = (int) fullCRC.getValue();
 
-        int packetCount = (int) Math.ceil(data.length / (float) maxPacketSize);
+        packets.clear();
+
+        int start = this.resumeOffset;
+        int remaining = file.length - start;
+        int packetCount = (int) Math.ceil(remaining / (float) maxPacketSize);
 
         for (int i = 0; i < packetCount; i++) {
-            int currentPacketLength = Math.min(maxPacketSize, data.length - i * maxPacketSize);
+            int chunkOffset = start + i * maxPacketSize;
+            int currentPacketLength = Math.min(maxPacketSize, file.length - chunkOffset);
             byte[] packet = new byte[currentPacketLength + 1];
             packet[0] = (byte) i;
-            System.arraycopy(data, i * maxPacketSize, packet, 1, currentPacketLength);
-
+            System.arraycopy(file, chunkOffset, packet, 1, currentPacketLength);
             packets.add(packet);
         }
     }

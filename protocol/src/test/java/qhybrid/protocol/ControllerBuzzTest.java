@@ -82,32 +82,34 @@ public class ControllerBuzzTest {
         assertEquals(32, fileLen, "one filter entry = 32 bytes");
         assertEquals(pattern, filterPayload[12 + 31], "filter carries the requested vibe pattern");
 
-        // 2. The CRC-confirm COMPLETES the filter put (WP-BUZZTEST: no type-4 close-ack on this
-        //    firmware) and the strictly-serial queue advances to the NOTIFICATION_PLAY put. Capture
-        //    the play chunks AFTER this cascade (do NOT inject a closeFrame — it would land on the
-        //    play put with the wrong handle).
+        // 2. EOF_REACH reports the bytes arrived; VERIFY(0x84) then COMPLETES the filter put and the
+        //    strictly-serial queue advances to the NOTIFICATION_PLAY put. Capture the play chunks
+        //    AFTER this cascade.
         int playBaseline = t.writesTo(FakeBleTransport.UUID_CHAR_DATA).size();
         t.injectNotification(FileTransferResponder.CONTROL,
-                FileTransferResponder.crcConfirmFrame(NOTIFICATION_FILTER_HANDLE, filterPayload));
+                FileTransferResponder.eofReachFrame(NOTIFICATION_FILTER_HANDLE, filterPayload));
+        t.injectNotification(FileTransferResponder.CONTROL,
+                FileTransferResponder.verifyFrame(NOTIFICATION_FILTER_HANDLE));
 
         // 3. The play file (NOTIFICATION_PLAY 0x0900) is now the current put. BUT first simulate the
-        //    real BlueZ behaviour that broke on-device: the FILTER's DELAYED type-4 close-ack
-        //    (handle 0x0C00) arrives NOW, while the play put is current. It must be IGNORED as a
-        //    stale ack for the previous handle — NOT mis-read as the play put's close (which aborted
-        //    it with "wrong file closing handle" and killed the buzz).
+        //    real behaviour: a DELAYED/stale control frame for the FILTER's handle (0x0C00) arrives
+        //    NOW, while the play put is current. It must be IGNORED as a stale frame for the previous
+        //    handle — NOT mis-read as the play put's frame (which would corrupt it and kill the buzz).
         t.injectNotification(FileTransferResponder.CONTROL,
-                FileTransferResponder.closeFrame(NOTIFICATION_FILTER_HANDLE));
+                FileTransferResponder.verifyFrame(NOTIFICATION_FILTER_HANDLE));
 
-        // The play put must still be alive: accept it + confirm.
+        // The play put must still be alive: accept it + EOF + VERIFY.
         t.injectNotification(FileTransferResponder.CONTROL,
                 FileTransferResponder.acceptFrame(NOTIFICATION_PLAY_HANDLE));
         assertTrue(awaitChunks(t, playBaseline),
                 "expected a NOTIFICATION_PLAY file-put (the buzz trigger) after the filter completed "
-                        + "— a stale filter close-ack must NOT abort the play put");
+                        + "— a stale filter control frame must NOT abort the play put");
         byte[] playPayload = reassembleFrom(t, playBaseline);
 
         t.injectNotification(FileTransferResponder.CONTROL,
-                FileTransferResponder.crcConfirmFrame(NOTIFICATION_PLAY_HANDLE, playPayload));
+                FileTransferResponder.eofReachFrame(NOTIFICATION_PLAY_HANDLE, playPayload));
+        t.injectNotification(FileTransferResponder.CONTROL,
+                FileTransferResponder.verifyFrame(NOTIFICATION_PLAY_HANDLE));
     }
 
     /** Flip the adapter into Fossil protocol mode without a live handshake. */

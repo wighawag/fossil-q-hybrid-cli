@@ -65,10 +65,11 @@ public class AdapterButtonPutTest {
         byte[] payload = reassemble(t.writesTo(FakeBleTransport.UUID_CHAR_DATA));
         assertTrue(payload.length > 0, "expected data chunks on the data characteristic");
 
+        // EOF_REACH (0x88) reports sizeWritten + CRC32 but does NOT complete; VERIFY(0x84) does.
         t.injectNotification(FileTransferResponder.CONTROL,
-                FileTransferResponder.crcConfirmFrame(SETTINGS_BUTTONS_HANDLE, payload));
+                FileTransferResponder.eofReachFrame(SETTINGS_BUTTONS_HANDLE, payload));
         t.injectNotification(FileTransferResponder.CONTROL,
-                FileTransferResponder.closeFrame(SETTINGS_BUTTONS_HANDLE));
+                FileTransferResponder.verifyFrame(SETTINGS_BUTTONS_HANDLE));
 
         // The whole point of the fix: the future resolves true (the caller can WAIT on it).
         assertTrue(done.get(2, TimeUnit.SECONDS), "button file-put future should complete true on ack");
@@ -82,11 +83,11 @@ public class AdapterButtonPutTest {
     }
 
     @Test
-    void buttonUpload_completesOnType8_withoutType4CloseAck() throws Exception {
-        // WP-BUZZTEST regression lock: this firmware (over Android's GATT stack) NEVER sends the
-        // type-4 file-close ack — the type-8 CRC-confirm IS completion. The put MUST resolve its
-        // future on type-8 alone (NO closeFrame injected), or a strictly-serial queue stalls and a
-        // follow-up put (e.g. the buzz's play file) never runs.
+    void buttonUpload_completesOnlyAfterVerifySuccess() throws Exception {
+        // WP-FILEPUT-RELIABLE regression lock: the put completes ONLY on the VERIFY_FILE(4) -> 0x84
+        // SUCCESS exchange — NOT on the EOF_REACH(0x88) report. EOF_REACH carries the watch's CRC32
+        // and tells us the bytes arrived, but the official app then sends VERIFY and waits for its
+        // 0x84 success before considering the file committed.
         FakeBleTransport t = new FakeBleTransport();
         t.connect("AA:BB:CC:DD:EE:FF");
         FossilQAdapter adapter = new FossilQAdapter(t);
@@ -100,11 +101,35 @@ public class AdapterButtonPutTest {
                 FileTransferResponder.acceptFrame(SETTINGS_BUTTONS_HANDLE));
         byte[] payload = reassemble(t.writesTo(FakeBleTransport.UUID_CHAR_DATA));
         t.injectNotification(FileTransferResponder.CONTROL,
-                FileTransferResponder.crcConfirmFrame(SETTINGS_BUTTONS_HANDLE, payload));
-        // Deliberately DO NOT inject a closeFrame (type-4) — the firmware never sends one.
+                FileTransferResponder.eofReachFrame(SETTINGS_BUTTONS_HANDLE, payload));
+        // The put must NOT be complete yet — VERIFY's 0x84 has not arrived.
+        assertFalse(done.isDone(), "put must NOT complete on EOF_REACH(0x88) alone");
 
+        // Now deliver the VERIFY-success: this is the real completion.
+        t.injectNotification(FileTransferResponder.CONTROL,
+                FileTransferResponder.verifyFrame(SETTINGS_BUTTONS_HANDLE));
         assertTrue(done.get(2, TimeUnit.SECONDS),
-                "file-put future must complete on the type-8 CRC-confirm without a type-4 close-ack");
+                "file-put future must complete on the VERIFY_FILE 0x84 SUCCESS");
+    }
+
+    @Test
+    void buttonUpload_abortFailsThePut() throws Exception {
+        // ABORT_FILE(0x89) -> onFilePut(false): an honest failure, not a false success.
+        FakeBleTransport t = new FakeBleTransport();
+        t.connect("AA:BB:CC:DD:EE:FF");
+        FossilQAdapter adapter = new FossilQAdapter(t);
+        forceFossilProtocol(adapter);
+
+        byte[] file = sampleButtonFile();
+        CompletableFuture<Boolean> done = new CompletableFuture<>();
+        adapter.setButtonsRaw(file, done);
+
+        t.injectNotification(FileTransferResponder.CONTROL,
+                FileTransferResponder.acceptFrame(SETTINGS_BUTTONS_HANDLE));
+        t.injectNotification(FileTransferResponder.CONTROL,
+                FileTransferResponder.abortFrame(SETTINGS_BUTTONS_HANDLE));
+
+        assertFalse(done.get(2, TimeUnit.SECONDS), "ABORT(0x89) must fail the put");
     }
 
     @Test
