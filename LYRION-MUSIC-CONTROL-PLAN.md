@@ -87,6 +87,10 @@ Add to `AppSettings` / `SettingsVocabulary` / `SettingsPrefs`:
 - `lyrionServerPort` : Int (default `9000`, the HTTP/JSON-RPC port).
 - `lyrionPlayerId`   : String (MAC of chosen player, `""` = unset).
 - `lyrionPlayerName` : String (cached display name for the UI).
+- `lyrionEmptyQueueFallback` : `FAVORITE` (default) | `RANDOM` | `NONE` — what to start
+  when a PLAY/TOGGLE gesture hits an **empty playlist** (see §3.4 + §5.3).
+- `lyrionFavoriteId` : String — the favourite to start when fallback == `FAVORITE`
+  (`""` = unset; picked from the server's favourites list in Settings).
 
 All app-level prefs (never sent to the watch), same pattern as `preferredMusicApp`.
 Add `normalize*` + defaults in `SettingsVocabulary`, getters/setters in `SettingsPrefs`,
@@ -116,9 +120,20 @@ existing `MusicSessionDispatcher` interface:
   configured server for the configured `lyrionPlayerId`. For PLAY/TOGGLE it also sends
   `power 1` first (so a powered-off player wakes and plays — this is the "start music
   on my device by talking to the server" requirement).
+- **Empty-queue fallback.** For PLAY/TOGGLE, before issuing `play`, check the queue via
+  the `status` query (`playlist_tracks`). If the queue is empty, start music per the
+  configured `lyrionEmptyQueueFallback`:
+  - `FAVORITE` → play the configured `lyrionFavoriteId` (e.g.
+    `["favorites","playlist","play","item_id:<id>"]`); if no favourite is configured,
+    fall back to `RANDOM`.
+  - `RANDOM` → `["randomplay","tracks"]`.
+  - `NONE` → just `play` (no-op on an empty queue — current passive behaviour).
+  This is the "configurable fallback (default favourite, can be random)" requirement.
+  Keep the empty-queue check + fallback choice in the **pure** `LyrionCommands` layer so
+  it is unit-tested; the dispatcher only wires the status read + the chosen command.
 - `launchThenDispatch(pkg, action)` → for LMS there is no "app to launch"; treat as a
-  plain `dispatch(action)` (optionally `power 1` + `play`). The local-only
-  launch-fallback concept doesn't apply.
+  plain `dispatch(action)` (power + play with the same empty-queue fallback). The
+  local-only launch-fallback concept doesn't apply.
 
 ### 3.5 Backend selection in the service
 In `ServiceMusicDispatch` (or a small new selector), choose which
@@ -150,11 +165,11 @@ Mirror the existing `preferredMusicApp` dropdown pattern for the player picker.
 | WP | Scope | Deliverable | Tests |
 |----|-------|-------------|-------|
 | **L1** | Prefs | `musicBackend`, `lyrionServerHost/Port`, `lyrionPlayerId/Name` in `SettingsVocabulary` + `AppSettings` + `SettingsPrefs` | round-trip + normalization unit tests |
-| **L2** | Pure commands | `LyrionCommands` (request builder, action map, players/status queries, player parser) | full unit coverage, no I/O |
+| **L2** | Pure commands | `LyrionCommands` (request builder, action map, players/status queries, player + favourites parser, empty-queue fallback selection) | full unit coverage, no I/O |
 | **L3** | Transport seam | `LyrionClient` interface + `HttpLyrionClient` | fake client in tests; manual on-network smoke |
 | **L4** | Dispatcher | `LyrionMusicSessionDispatcher implements MusicSessionDispatcher` (power+play, next/prev, volume) | dispatch decisions via fake `LyrionClient` |
 | **L5** | Backend selection | `ServiceMusicDispatch` chooses LOCAL vs LYRION from prefs | selector unit test |
-| **L6** | Settings UI | backend toggle + server fields + player picker (load players, choose target) | ViewModel state tests |
+| **L6** | Settings UI | backend toggle + server fields + player picker + empty-queue fallback selector (FAVORITE/RANDOM/NONE) + favourite picker (load favourites) | ViewModel state tests |
 | **L7** | Discovery (optional) | UDP 3483 auto-discovery of servers (like Squeezer) | deferred / nice-to-have |
 
 Suggested order: L1 → L2 → L4 (+L3) → L5 → L6, then L7 if wanted.
@@ -169,15 +184,42 @@ Suggested order: L1 → L2 → L4 (+L3) → L5 → L6, then L7 if wanted.
    JSON-RPC is the right fit. (Raw CLI 9090 is an easy alternative if HTTP is disabled.)
 2. **Player identity = MAC/playerid** returned by the `players` query (stable, the
    canonical LMS identifier).
-3. **"Start music on my device"**: PLAY/TOGGLE sends `power 1` first so a sleeping
-   player wakes. If the player has an empty playlist, `play` resumes nothing — consider
-   a follow-up option to start a default playlist / favourite / `randomplay tracks`
-   when the queue is empty (future enhancement).
-4. **Auth/password-protected servers**: LMS supports a `login` command / HTTP basic
-   auth. Out of scope for v1 (assume open server on LAN); add later if needed.
+3. **"Start music on my device" + empty-queue fallback** *(decided)*: PLAY/TOGGLE
+   sends `power 1` first so a sleeping player wakes. If the queue is empty, the
+   dispatcher starts music per the configurable `lyrionEmptyQueueFallback`:
+   **`FAVORITE` (default)** plays the configured favourite; **`RANDOM`** does
+   `randomplay tracks`; **`NONE`** leaves it passive. `FAVORITE` with no favourite set
+   degrades gracefully to `RANDOM`. See §3.4.
+4. **Auth/password-protected servers** *(deferred — later)*: LMS supports a `login`
+   command / HTTP basic auth. Out of scope for v1 (assume open server on LAN); add in a
+   later WP when needed.
 5. **Backend scope**: global app pref (one server, one target player), matching the
    request ("specific maybe one device as player in the settings"). Per-watch is not
    needed.
+
+### 5.3 Empty-queue fallback — detail
+When a PLAY/TOGGLE gesture targets a player whose playlist is empty, plain `play` does
+nothing. The configured `lyrionEmptyQueueFallback` decides what to start:
+
+| Value | Behaviour | LMS command |
+|-------|-----------|-------------|
+| `FAVORITE` *(default)* | Play the configured favourite. If none set → degrade to `RANDOM`. | `["favorites","playlist","play","item_id:<lyrionFavoriteId>"]` |
+| `RANDOM` | Play a random mix of tracks. | `["randomplay","tracks"]` |
+| `NONE` | Do nothing extra (passive `play`). | `["play"]` |
+
+Decision rule (lives in pure `LyrionCommands`, unit-tested):
+```
+fun resolvePlay(queueEmpty, fallback, favoriteId): List<String> =
+  if (!queueEmpty) ["play"]
+  else when (fallback) {
+    NONE     -> ["play"]
+    RANDOM   -> ["randomplay","tracks"]
+    FAVORITE -> if (favoriteId.isNotBlank()) ["favorites","playlist","play","item_id:$favoriteId"]
+                else ["randomplay","tracks"]   // graceful degrade
+  }
+```
+Favourites for the Settings picker come from `["favorites","items","0","999"]` (id +
+name per item).
 6. **No watch-protocol changes.** This is purely phone-side dispatch routing — the
    watch's existing `{"type":"music",...}` event contract is reused unchanged, exactly
    like the local backend.
