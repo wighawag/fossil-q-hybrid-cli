@@ -31,15 +31,16 @@ data class DefaultsProfile(
     companion object {
         /**
          * The FACTORY defaults (user-overridable), translated to the CURRENT button vocabulary
-         * (post-WP-BTN): the stale `MUSIC_MULTIMODE`/`MUSIC_CONTROL` spec is replaced by
-         * [ButtonActions.MULTI_FUNCTION] (the current music-control payload).
+         * (post-WP12): the stale `MUSIC_MULTIMODE` / placeholder `MULTI_FUNCTION` spec is now the
+         * concrete [ButtonActions.MUSIC_CONTROL] (byte-identical wire payload; WP12 drives the
+         * active phone media session via [qhybrid.android.music.MusicController]).
          *
          * - **Alarms:** empty (no standard alarms).
          * - **Notification rules:** empty.
          * - **Buttons** (non-empty):
          *   - TOP (0x10)    → SINGLE_ACTION / STOPWATCH.
          *   - MIDDLE (0x20) → CUSTOM_TOGGLE / cycle [TIMEZONE_2, ALARM, DATE] (canonical order).
-         *   - BOTTOM (0x30) → SINGLE_ACTION / MULTI_FUNCTION (the current music-control payload).
+         *   - BOTTOM (0x30) → SINGLE_ACTION / MUSIC_CONTROL (the music-control payload).
          */
         val FACTORY: DefaultsProfile = DefaultsProfile(
             alarms = emptyList(),
@@ -60,7 +61,7 @@ data class DefaultsProfile(
                 DefaultButton(
                     buttonId = ButtonSlots.BOTTOM,
                     modeType = ButtonModes.SINGLE_ACTION,
-                    actions = listOf(ButtonActions.MULTI_FUNCTION),
+                    actions = listOf(ButtonActions.MUSIC_CONTROL),
                 ),
             ),
         )

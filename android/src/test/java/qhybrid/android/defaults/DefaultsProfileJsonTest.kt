@@ -39,7 +39,8 @@ class DefaultsProfileJsonTest {
 
         val bot = b[ButtonSlots.BOTTOM]!!
         assertEquals(ButtonModes.SINGLE_ACTION, bot.modeType)
-        assertEquals(listOf(ButtonActions.MULTI_FUNCTION), bot.actions)
+        // WP12: the factory BOTTOM button is the concrete MUSIC_CONTROL action.
+        assertEquals(listOf(ButtonActions.MUSIC_CONTROL), bot.actions)
     }
 
     @Test

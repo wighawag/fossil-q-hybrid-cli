@@ -94,30 +94,52 @@ class ButtonVocabularyTest {
             assertTrue("missing label for $id", ButtonActions.isKnown(id))
         }
         assertEquals(9, ButtonActions.ALL.size)
-        assertEquals(ButtonActions.MULTI_FUNCTION, ButtonActions.DEFAULT)
-        // The redundant duplicates are NOT offered.
-        assertFalse(ButtonActions.MUSIC_CONTROL in ButtonActions.ALL)
+        // WP12: the concrete MUSIC_CONTROL is now the selectable + the default.
+        assertEquals(ButtonActions.MUSIC_CONTROL, ButtonActions.DEFAULT)
+        assertTrue(ButtonActions.MUSIC_CONTROL in ButtonActions.ALL)
+        assertTrue(ButtonActions.isKnown(ButtonActions.MUSIC_CONTROL))
+        // The redundant duplicates / former placeholder are NOT offered.
+        assertFalse(ButtonActions.MULTI_FUNCTION in ButtonActions.ALL)
         assertFalse(ButtonActions.FORWARD_TO_PHONE_MULTI in ButtonActions.ALL)
         assertFalse(ButtonActions.FORWARD_TO_PHONE in ButtonActions.ALL)
         // isKnown reflects the SELECTABLE set (legacy aliases are not "known").
-        assertFalse(ButtonActions.isKnown(ButtonActions.MUSIC_CONTROL))
+        assertFalse(ButtonActions.isKnown(ButtonActions.MULTI_FUNCTION))
+        assertFalse(ButtonActions.isKnown(ButtonActions.FORWARD_TO_PHONE_MULTI))
         assertEquals("Ring phone", ButtonActions.label(ButtonActions.RING_PHONE))
-        assertEquals("Multi-function (app decides)", ButtonActions.label(ButtonActions.MULTI_FUNCTION))
+        assertEquals("Music control", ButtonActions.label(ButtonActions.MUSIC_CONTROL))
+        // The legacy placeholder keeps a readable (folded) label if an old row surfaces.
+        assertEquals("Music control", ButtonActions.label(ButtonActions.MULTI_FUNCTION))
         // Unknown id renders raw.
         assertEquals("BOGUS", ButtonActions.label("BOGUS"))
     }
 
     @Test
     fun payloadNameCollapsesRedundantAliasesAndIsIdentityOtherwise() {
-        // The two duplicate pairs collapse onto a single canonical wire payload.
-        assertEquals("FORWARD_TO_PHONE_MULTI", ButtonActions.payloadName(ButtonActions.MULTI_FUNCTION))
+        // WP12: MUSIC_CONTROL + its legacy aliases collapse onto the SAME canonical wire payload
+        // (byte-identical to the pre-rename MULTI_FUNCTION output).
         assertEquals("FORWARD_TO_PHONE_MULTI", ButtonActions.payloadName(ButtonActions.MUSIC_CONTROL))
+        assertEquals("FORWARD_TO_PHONE_MULTI", ButtonActions.payloadName(ButtonActions.MULTI_FUNCTION))
         assertEquals("FORWARD_TO_PHONE_MULTI", ButtonActions.payloadName(ButtonActions.FORWARD_TO_PHONE_MULTI))
         assertEquals("RING_PHONE", ButtonActions.payloadName(ButtonActions.FORWARD_TO_PHONE))
         // Distinct actions are their own payloads (identity).
         assertEquals("VOLUME_UP", ButtonActions.payloadName(ButtonActions.VOLUME_UP))
         assertEquals("VOLUME_DOWN", ButtonActions.payloadName(ButtonActions.VOLUME_DOWN))
         assertEquals("STOPWATCH", ButtonActions.payloadName(ButtonActions.STOPWATCH))
+    }
+
+    @Test
+    fun normalizeFoldsLegacyAliasesOntoSelectableVocabulary() {
+        // WP12: the rename is a label/vocabulary fold — a stored placeholder MULTI_FUNCTION (or the
+        // byte-identical FORWARD_TO_PHONE_MULTI) surfaces as the new selectable MUSIC_CONTROL.
+        assertEquals(ButtonActions.MUSIC_CONTROL, ButtonActions.normalize(ButtonActions.MULTI_FUNCTION))
+        assertEquals(ButtonActions.MUSIC_CONTROL, ButtonActions.normalize(ButtonActions.FORWARD_TO_PHONE_MULTI))
+        assertEquals(ButtonActions.MUSIC_CONTROL, ButtonActions.normalize("  MULTI_FUNCTION "))
+        // MUSIC_CONTROL is already canonical; the dropped RING duplicate folds too.
+        assertEquals(ButtonActions.MUSIC_CONTROL, ButtonActions.normalize(ButtonActions.MUSIC_CONTROL))
+        assertEquals(ButtonActions.RING_PHONE, ButtonActions.normalize(ButtonActions.FORWARD_TO_PHONE))
+        // Distinct ids pass through (trimmed); unknown ids are left for the caller.
+        assertEquals(ButtonActions.STOPWATCH, ButtonActions.normalize("  STOPWATCH "))
+        assertEquals("BOGUS", ButtonActions.normalize("BOGUS"))
     }
 
     // ---- ButtonActionsJson round-trip + tolerance ----------------------------

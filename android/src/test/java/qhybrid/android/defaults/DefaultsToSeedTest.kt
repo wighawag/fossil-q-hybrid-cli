@@ -72,7 +72,8 @@ class DefaultsToSeedTest {
 
         val bot = byId[ButtonSlots.BOTTOM]!!
         assertEquals(ButtonModes.SINGLE_ACTION, bot.modeType)
-        assertEquals(listOf(ButtonActions.MULTI_FUNCTION), ButtonActionsJson.decode(bot.actionsJson))
+        // WP12: the factory BOTTOM button seeds the concrete MUSIC_CONTROL action.
+        assertEquals(listOf(ButtonActions.MUSIC_CONTROL), ButtonActionsJson.decode(bot.actionsJson))
     }
 
     @Test

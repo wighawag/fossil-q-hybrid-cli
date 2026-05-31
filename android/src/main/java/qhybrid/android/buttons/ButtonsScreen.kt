@@ -273,7 +273,7 @@ private fun SlotEditorDialog(
                     )
                 } else {
                     // Single-select: one action only (WP-BTN cardinality contract). The catalog is
-                    // already deduped to wire-unique actions incl. MULTI_FUNCTION.
+                    // already deduped to wire-unique actions incl. MUSIC_CONTROL (WP12).
                     Text("Action", style = MaterialTheme.typography.labelLarge)
                     ActionRadioGroup(
                         options = ButtonActions.ALL,

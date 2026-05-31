@@ -37,6 +37,13 @@ object ButtonActionsJson {
      * - array of objects `[{"action":"X"}]` (canonical),
      * - array of bare strings `["X","Y"]` (lenient fallback).
      * Blank/whitespace-only entries are dropped.
+     *
+     * **WP12 — single source of truth for legacy folding.** Each decoded id is run through
+     * [ButtonActions.normalize], so a row written before the WP12 rename (e.g. `MULTI_FUNCTION` /
+     * `FORWARD_TO_PHONE_MULTI`) surfaces as the new selectable [ButtonActions.MUSIC_CONTROL] in the
+     * editor + on the dial picker, AND compiles to byte-identical wire output (the payload bytes are
+     * unchanged). Dial-mode ids ([ButtonDialModes]) and unknown ids pass through untouched. No DB
+     * migration: old rows keep their stored bytes; the fold is purely at read time.
      */
     fun decode(actionsJson: String?): List<String> {
         val raw = actionsJson?.trim().orEmpty()
@@ -50,7 +57,7 @@ object ButtonActionsJson {
                     is String -> item
                     else -> item?.toString().orEmpty()
                 }.trim()
-                if (id.isNotEmpty()) out.add(id)
+                if (id.isNotEmpty()) out.add(ButtonActions.normalize(id))
             }
             out
         } catch (_: Exception) {

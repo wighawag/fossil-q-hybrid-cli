@@ -234,7 +234,7 @@ object SyncOrchestrator {
 
     /**
      * Map an app-level action id to a button entry; null if unknown. The id is first resolved to
-     * its backing [ConfigPayload] NAME via [ButtonActions.payloadName] so [ButtonActions.MULTI_FUNCTION]
+     * its backing [ConfigPayload] NAME via [ButtonActions.payloadName] so [ButtonActions.MUSIC_CONTROL]
      * (and the retained legacy aliases) compile to the correct golden payload — no wire bytes invented.
      */
     private fun actionEntry(actionId: String): ButtonConfigBuilder.ButtonEntry? {

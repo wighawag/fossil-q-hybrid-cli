@@ -289,6 +289,12 @@ class WatchConnectionService : Service() {
     // Single-thread serializer for ALL blocking transport ops.
     private val worker = Executors.newSingleThreadExecutor { r -> Thread(r, "ble-worker") }
 
+    // WP12: turns the watch's music-gesture events (onEventJson) into Android media-session /
+    // AudioManager actions, with the preferred-music-app launch fallback. Lazy so the system
+    // services are resolved against the running service context. Pure logic is unit-tested
+    // ([MusicController]/[MusicDispatcher]); the live media dispatch is on-device-pending.
+    private val musicDispatch by lazy { qhybrid.android.music.ServiceMusicDispatch(applicationContext) }
+
     private val controllerRef = AtomicReference<FossilController?>(null)
     private val transportRef = AtomicReference<AndroidBleTransport?>(null)
 
@@ -737,6 +743,12 @@ class WatchConnectionService : Service() {
         // WP-ACTIVITY: parse + publish the activity file as soon as the watch delivers it
         // (same callback the CLI `activity` command uses).
         controller.onActivityData { bytes -> onActivityBytes(bytes) }
+        // WP12: feed the watch's event JSON (music gestures emitted by a MUSIC_CONTROL button) into
+        // the music dispatcher. Wired for BOTH the foreground and the auto-connect controllers so a
+        // gesture is handled whichever controller owns the live link. The callback arrives on the
+        // ble-gatt thread; [ServiceMusicDispatch] marshals the actual media calls onto the main
+        // looper. NO new wire bytes — the JSON contract is already emitted by the adapter.
+        controller.onEventJson { json -> musicDispatch.onEventJson(json) }
     }
 
     /**

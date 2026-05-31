@@ -41,7 +41,8 @@ class ApplyDefaultsPersistTest : DbTestBase() {
         val buttons = buttonDao.getForWatch(mac).associateBy { it.buttonId }
         assertEquals(3, buttons.size)
         assertEquals(listOf("STOPWATCH"), ButtonActionsJson.decode(buttons[ButtonSlots.TOP]!!.actionsJson))
-        assertEquals(listOf("MULTI_FUNCTION"), ButtonActionsJson.decode(buttons[ButtonSlots.BOTTOM]!!.actionsJson))
+        // WP12: the factory BOTTOM button seeds + decodes the concrete MUSIC_CONTROL action.
+        assertEquals(listOf("MUSIC_CONTROL"), ButtonActionsJson.decode(buttons[ButtonSlots.BOTTOM]!!.actionsJson))
         // Rules fully replaced (factory rules empty → the user's rule is gone).
         assertTrue(ruleDao.getForWatch(mac).isEmpty())
         // Alarms preserved (apply does NOT blank the user's per-watch alarms).

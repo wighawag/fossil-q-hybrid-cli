@@ -205,7 +205,7 @@ class SyncOrchestratorTest {
                     button(ButtonSlots.TOP, ButtonModes.SINGLE_ACTION, listOf(ButtonActions.STOPWATCH)),
                     button(ButtonSlots.MIDDLE, ButtonModes.CUSTOM_TOGGLE,
                         listOf(ButtonDialModes.TIMEZONE_2, ButtonDialModes.ALARM, ButtonDialModes.DATE)),
-                    button(ButtonSlots.BOTTOM, ButtonModes.SINGLE_ACTION, listOf(ButtonActions.MULTI_FUNCTION)),
+                    button(ButtonSlots.BOTTOM, ButtonModes.SINGLE_ACTION, listOf(ButtonActions.MUSIC_CONTROL)),
                 ),
                 settings = SyncSettings(vibrationStrength = null),
             ),
@@ -450,14 +450,14 @@ class SyncOrchestratorTest {
     }
 
     @Test
-    fun multiFunctionActionCompilesToTheMultiWirePayload() {
-        // WP-BTN: MULTI_FUNCTION (and the legacy MUSIC_CONTROL alias) resolve to the SAME wire
-        // payload (FORWARD_TO_PHONE_MULTI == MUSIC_CONTROL bytes) via ButtonActions.payloadName.
+    fun musicControlActionCompilesToTheMultiWirePayload() {
+        // WP12: MUSIC_CONTROL (and the legacy MULTI_FUNCTION placeholder) resolve to the SAME wire
+        // payload (FORWARD_TO_PHONE_MULTI) via ButtonActions.payloadName — bytes UNCHANGED.
         val up = FakeUploader()
         SyncOrchestrator.sync(
             SyncInput(watch = watch(),
                 buttons = listOf(button(ButtonSlots.TOP, ButtonModes.SINGLE_ACTION,
-                    listOf(ButtonActions.MULTI_FUNCTION))),
+                    listOf(ButtonActions.MUSIC_CONTROL))),
                 settings = SyncSettings()),
             up,
         )
@@ -466,12 +466,12 @@ class SyncOrchestratorTest {
             emptyArray(), emptyArray(),
         )
         assertArrayEquals(expected, up.buttonBytes)
-        // The legacy MUSIC_CONTROL id must compile to byte-identical output.
+        // A legacy DB row still holding MULTI_FUNCTION must compile to byte-identical output.
         val up2 = FakeUploader()
         SyncOrchestrator.sync(
             SyncInput(watch = watch(),
                 buttons = listOf(button(ButtonSlots.TOP, ButtonModes.SINGLE_ACTION,
-                    listOf(ButtonActions.MUSIC_CONTROL))),
+                    listOf(ButtonActions.MULTI_FUNCTION))),
                 settings = SyncSettings()),
             up2,
         )

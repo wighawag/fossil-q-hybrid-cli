@@ -10,12 +10,12 @@ package qhybrid.android.buttons
  *
  * The contract (verified in ANDROID-FOLLOWUPS-PLAN.md WP-BTN):
  * - [ButtonModes.SINGLE_ACTION] → **exactly one** [ButtonActions] id (incl.
- *   [ButtonActions.MULTI_FUNCTION], the open-ended "emit gestures to phone" action).
+ *   [ButtonActions.MUSIC_CONTROL], the "control phone media" action).
  * - [ButtonModes.CUSTOM_TOGGLE] → **one-or-more** dial-mode ids — the genuine "cycle through
  *   several dial modes in turn" (see [ButtonDialModes] / `ButtonCompiler.compileMultiEntry`).
  *
- * **WP-BTN:** the former `MUSIC_MULTIMODE` mode was removed — multi-function is now just the
- * single [ButtonActions.MULTI_FUNCTION] action inside `SINGLE_ACTION`.
+ * **WP-BTN / WP12:** the former `MUSIC_MULTIMODE` mode was removed — music control is now just the
+ * single [ButtonActions.MUSIC_CONTROL] action inside `SINGLE_ACTION`.
  *
  * This is the single source of truth shared by [ButtonsViewModel.setSlot] (normalize before
  * persisting) and `SyncOrchestrator.entriesFor` (defensively collapse a legacy multi-id row),
