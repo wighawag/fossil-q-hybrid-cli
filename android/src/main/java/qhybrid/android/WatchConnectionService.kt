@@ -560,6 +560,23 @@ class WatchConnectionService : Service() {
 
     private fun isLinkUp(): Boolean = transportRef.get()?.isConnected() == true
 
+    /**
+     * Resolve the MAC to connect-then-do against (Save / buzz / play while the link is down).
+     *
+     * The CDM association ([CompanionManager.getAssociatedMac], a SharedPreferences blob) is NOT
+     * the only source of truth for "which watch": the active watch lives in the Room DB, and the
+     * two can legitimately disagree (e.g. a watch added via the already-bonded path, or the CDM
+     * pref cleared/not yet written). MainActivity's Connect already falls back to the DB active
+     * watch (connectActiveOrField), which is why Connect works while a Save reported
+     * "No watch associated" — the save paths only looked at the CDM pref. Mirror that fallback here
+     * so a save/buzz/play resolves the same watch Connect would. Runs on the ble-worker; the
+     * suspending DB read is done with [runBlocking] safely (never the main thread).
+     */
+    private fun resolveTargetMac(): String? =
+        CompanionManager.getAssociatedMac(this)
+            ?: runCatching { runBlocking { WatchRepository(applicationContext).getActiveWatch()?.macAddress } }
+                .getOrNull()
+
     private fun submitConnect(mac: String) {
         if (!connecting.compareAndSet(false, true)) {
             Log.d(TAG, "connect already in progress — skipping")
@@ -640,7 +657,7 @@ class WatchConnectionService : Service() {
         if (forgetting.get()) return
         val future = reconnectScheduler.schedule({
             if (forgetting.get() || isLinkUp()) return@schedule
-            val target = CompanionManager.getAssociatedMac(this) ?: return@schedule
+            val target = resolveTargetMac() ?: return@schedule
             armAutoReconnect(target)
         }, AUTO_RECONNECT_FALLBACK_MS, TimeUnit.MILLISECONDS)
         pendingReconnect.getAndSet(future)?.cancel(false)
@@ -698,15 +715,16 @@ class WatchConnectionService : Service() {
             // WP-ONBOARD: do NOT re-arm auto-reconnect while removing a watch (Remove watch),
             // otherwise the just-removed watch immediately reconnects and appears un-removed.
             if (!forgetting.get()) {
-                CompanionManager.getAssociatedMac(this)?.let { assocMac ->
-                    // Event-driven reconnect (CDM presence wakes us when the watch reappears) — the
-                    // complementary OS-level mechanism, kept alongside the auto-connect.
-                    CompanionManager.startObserving(this, assocMac)
-                    // HYBRID-AUTOCONNECT: hand the keep-alive to the OS BLE controller via
-                    // connect(mac, autoConnect=true) instead of an app-level backoff loop (see
-                    // [armAutoReconnect]). Idempotent + a no-op if the link is already back up.
-                    armAutoReconnect(assocMac)
-                }
+                // Event-driven reconnect (CDM presence wakes us when the watch reappears) — the
+                // complementary OS-level mechanism, kept alongside the auto-connect. Only the CDM
+                // pref drives presence (it is a CDM API), so guard it on getAssociatedMac.
+                CompanionManager.getAssociatedMac(this)?.let { CompanionManager.startObserving(this, it) }
+                // HYBRID-AUTOCONNECT: hand the keep-alive to the OS BLE controller via
+                // connect(mac, autoConnect=true) instead of an app-level backoff loop (see
+                // [armAutoReconnect]). Resolve the watch the SAME way Connect/Save do (CDM pref OR
+                // the Room active watch) so a DB-only watch still gets a background reconnect.
+                // Idempotent + a no-op if the link is already back up.
+                resolveTargetMac()?.let { armAutoReconnect(it) }
             }
         }
         controller.onAuthRequired {
@@ -800,7 +818,7 @@ class WatchConnectionService : Service() {
                 // lands). The immediate honest error was already reported to any pending save above.
                 // Suppressed while removing a watch.
                 if (!forgetting.get()) {
-                    CompanionManager.getAssociatedMac(this)?.let { armAutoReconnect(it) }
+                    resolveTargetMac()?.let { armAutoReconnect(it) }
                 }
                 return
             }
@@ -1299,10 +1317,12 @@ class WatchConnectionService : Service() {
                     }
                 return@execute
             }
-            // Link is down — connect first, then sync on connect.
-            val mac = CompanionManager.getAssociatedMac(this)
+            // Link is down — connect first, then sync on connect. Resolve the watch the SAME way
+            // Connect does (CDM pref OR the Room active watch), so a Save never reports
+            // "No watch associated" while Connect works.
+            val mac = resolveTargetMac()
             if (mac == null) {
-                Log.w(TAG, "syncNow: no associated watch")
+                Log.w(TAG, "syncNow: no associated watch (no CDM pref + no active DB watch)")
                 SyncState.publish(
                     SyncState.SyncPhase.ERROR,
                     errorMessage = "No watch associated.",
@@ -1356,10 +1376,11 @@ class WatchConnectionService : Service() {
                 runBuzz(c, pattern, forceFilterPlay)
                 return@execute
             }
-            // Link is down — connect first, then buzz on connect.
-            val mac = CompanionManager.getAssociatedMac(this)
+            // Link is down — connect first, then buzz on connect. Resolve the watch the SAME way
+            // Connect does (CDM pref OR the Room active watch).
+            val mac = resolveTargetMac()
             if (mac == null) {
-                Log.w(TAG, "buzzNow: no associated watch")
+                Log.w(TAG, "buzzNow: no associated watch (no CDM pref + no active DB watch)")
                 SyncState.publish(
                     SyncState.SyncPhase.ERROR,
                     errorMessage = "No watch associated.",
@@ -1389,9 +1410,9 @@ class WatchConnectionService : Service() {
                 runPlayNotification(c, packageName)
                 return@execute
             }
-            val mac = CompanionManager.getAssociatedMac(this)
+            val mac = resolveTargetMac()
             if (mac == null) {
-                Log.w(TAG, "playNotification: no associated watch — dropping play for $packageName")
+                Log.w(TAG, "playNotification: no associated watch (no CDM pref + no active DB watch) — dropping play for $packageName")
                 return@execute
             }
             Log.i(TAG, "playNotification: link down — connecting then playing ($mac) package=$packageName")
