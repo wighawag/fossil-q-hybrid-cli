@@ -122,6 +122,16 @@ class SettingsViewModelTest : DbTestBase() {
                 ringDurationSeconds = SettingsVocabulary.normalizeRingDuration(seconds),
             )
         }
+        override fun setNavCue(enabled: Boolean, soonMeters: Int, nowMeters: Int) {
+            current = current.copy(
+                navCueEnabled = enabled,
+                navCueSoonMeters = SettingsVocabulary.normalizeNavCueSoonMeters(soonMeters),
+                navCueNowMeters = SettingsVocabulary.normalizeNavCueNowMeters(nowMeters),
+            )
+        }
+        override fun setNavCueBackend(backend: String) {
+            current = current.copy(navCueBackend = backend)
+        }
     }
 
     private class FakeSync(private val wired: Boolean = false) : SettingsSync {

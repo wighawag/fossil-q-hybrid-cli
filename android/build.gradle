@@ -37,6 +37,11 @@ android {
         compose true
         // WP15: BuildConfig.DEBUG gates the Debug Menu so it never ships enabled.
         buildConfig true
+        // WP-NAV: compile the vendored OsmAnd `net.osmand.aidlapi.*` .aidl files in
+        // src/main/aidl/ so the binder client stubs (IOsmAndAidlInterface / IOsmAndAidlCallback)
+        // are generated. No remote dependency — the AIDL surface + its parcelable impls are
+        // vendored from osmandapp/OsmAnd (see PROTOCOL-PROVENANCE / NOTICE).
+        aidl true
     }
 
     // WP4: Robolectric unit tests need Android resources available on the JVM.

@@ -184,6 +184,28 @@ public class FossilController {
                         .packageNameForPattern(vibePattern));
     }
 
+    /**
+     * WP-NAV: play a turn cue — vibrate NOW with [vibePattern] AND point BOTH hands to [deg]° —
+     * using a SINGLE play-file put (NO filter upload). Like {@link #buzzPlayOnly(int)} this relies on
+     * the reserved nav-cue filter entries
+     * ({@link qhybrid.protocol.requests.fossil.notification.NavCuePatterns}) already being on the
+     * watch (folded into the notification-sync filter + new-watch provisioning). The cue is then a
+     * single {@code NOTIFICATION_PLAY} put for the reserved {@code qhybrid.linux.nav.<deg>.<vibe>}
+     * package, which the watch matches by CRC to pick the hand degrees + pattern.
+     *
+     * <p>This is the CORRECT nav-cue path: it does NOT replace the whole NOTIFICATION_FILTER (unlike
+     * {@link #buzz(int,int,int)}, which is a self-contained two-put that clobbers the managed
+     * filter). Invents NO new wire bytes.
+     *
+     * @param deg         the absolute degrees BOTH hands point to (0–359)
+     * @param vibePattern the reserved nav-cue vibration pattern (see {@code NavCuePatterns})
+     */
+    public void navCuePlayOnly(int deg, int vibePattern) {
+        adapter.playNotificationByPackageName(
+                qhybrid.protocol.requests.fossil.notification.NavCuePatterns
+                        .packageNameFor(deg, vibePattern));
+    }
+
     /** Upload a prebuilt button-config file (SETTINGS_BUTTONS, 0x0600). */
     public void setButtons(byte[] buttonConfigFile) {
         adapter.setButtonsRaw(buttonConfigFile);

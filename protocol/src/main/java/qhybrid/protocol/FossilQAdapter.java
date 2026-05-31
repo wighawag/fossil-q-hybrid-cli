@@ -329,6 +329,34 @@ public class FossilQAdapter {
     }
 
     /**
+     * Upload a notification filter and WAIT for the watch's file-put acknowledgement, completing
+     * [result] with the success flag. Used by the CLI {@code filter-capacity} test to learn how many
+     * entries the watch accepts (the fire-and-forget {@link #uploadNotificationFilterEntries} can't
+     * report per-size success). Same bytes/path as the no-future form.
+     */
+    public void uploadNotificationFilterEntries(
+            java.util.List<qhybrid.protocol.model.NotificationFilterEntry> entries,
+            java.util.concurrent.CompletableFuture<Boolean> result) {
+        if (!useFossilProtocol) {
+            LOG.warn("Notification filter not supported on Misfit protocol");
+            result.complete(false);
+            return;
+        }
+        byte[] filter = buildNotificationFilterFile(entries);
+        final int count = entries.size();
+        LOG.info("Uploading notification filter with {} entries ({} bytes) [awaited]",
+                count, filter.length);
+        queueWrite(new FilePutRequest(FileHandle.NOTIFICATION_FILTER, filter, fossilAdapter) {
+            @Override
+            public void onFilePut(boolean success) {
+                LOG.info("Notification filter ({} entries) sync: {}",
+                        count, success ? "success" : "FAILED");
+                if (!result.isDone()) result.complete(success);
+            }
+        }, false);
+    }
+
+    /**
      * Play a notification using a specific package name for CRC matching.
      * The package name must match one of the filter entries uploaded by
      * uploadNotificationFilter(). The watch looks up the matching entry

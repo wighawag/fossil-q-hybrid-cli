@@ -130,6 +130,17 @@ data class SettingsUiState(
     val ringDurationSeconds: Int
         get() = SettingsVocabulary.normalizeRingDuration(appSettings.ringDurationSeconds)
 
+    /** WP-NAV — whether turn-by-turn navigation cues (buzz + point both hands) are enabled. */
+    val navCueEnabled: Boolean get() = appSettings.navCueEnabled
+
+    /** WP-NAV — the "turn soon" cue distance (m before the turn; default 40m). */
+    val navCueSoonMeters: Int
+        get() = SettingsVocabulary.normalizeNavCueSoonMeters(appSettings.navCueSoonMeters)
+
+    /** WP-NAV — the "turn now" cue distance (m before the turn; default 10m). */
+    val navCueNowMeters: Int
+        get() = SettingsVocabulary.normalizeNavCueNowMeters(appSettings.navCueNowMeters)
+
     /** Whether the per-watch (persisted + live) settings controls should be enabled. */
     val canEditWatchSettings: Boolean get() = hasActiveWatch
 }
@@ -163,6 +174,9 @@ open class SettingsViewModel(
     private val clearAlarms: ClearAlarmsSync = NoopClearAlarms,
     // WP13: trigger a calendar re-map + silent push after the ring-offset changes (no-op in tests).
     private val calendarRefresh: () -> Unit = {},
+    // WP-NAV: (re-)arm the nav-cue source after the toggle/thresholds change (no-op in tests;
+    // production = WatchConnectionService.refreshNavCues).
+    private val navCueRefresh: () -> Unit = {},
     // Tests inject a real/Unconfined scope; production passes null → uses [viewModelScope].
     scope: CoroutineScope? = null,
     // WP-PROGRESS (sub-part 3): the process-wide sync signal the Save/Apply controls observe.
@@ -452,6 +466,22 @@ open class SettingsViewModel(
         return true
     }
 
+    /**
+     * WP-NAV — persist the navigation-cues toggle + soon/now trigger distances, then (re-)arm the
+     * nav-cue source via [navCueRefresh] so the change takes effect immediately. Pure app-side pref
+     * + an OsmAnd-AIDL bind; NO wire bytes change, no live watch command here. Always returns true.
+     */
+    fun setNavCue(enabled: Boolean, soonMeters: Int, nowMeters: Int): Boolean {
+        val soon = SettingsVocabulary.normalizeNavCueSoonMeters(soonMeters)
+        val now = SettingsVocabulary.normalizeNavCueNowMeters(nowMeters)
+        prefs.setNavCue(enabled, soon, now)
+        appSettings.value = appSettings.value.copy(
+            navCueEnabled = enabled, navCueSoonMeters = soon, navCueNowMeters = now,
+        )
+        navCueRefresh()
+        return true
+    }
+
     // ---- calendar alarm ring offset (WP13 — APP PREF, applied in CalendarRefresher) ----
 
     /**
@@ -629,6 +659,9 @@ open class SettingsViewModel(
                         // WP13: re-read the calendar + re-map slots 16–31 with the new offset.
                         calendarRefresh = {
                             qhybrid.android.WatchConnectionService.refreshCalendarNow(appContext)
+                        },
+                        navCueRefresh = {
+                            qhybrid.android.WatchConnectionService.refreshNavCues(appContext)
                         },
                     ) as T
             }

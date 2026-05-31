@@ -1,6 +1,21 @@
 # WP-NAV — turn-by-turn cues on the watch (buzz + hand direction)
 
-Status: **PLANNED / not started.** Idea: while a navigation app is guiding you (especially walking
+Status: **IMPLEMENTED (code complete + unit-tested; on-device sign-off pending).** The PURE core
+(`TurnCueMapper`, `OsmAndTurnTypes`, `NavCueDispatcher`) + the `NavCueEffects` seam, the
+`OsmAndNavSource` AIDL bind (vendored `net.osmand.aidlapi.*`, binds OsmAnd+ → OsmAnd → dev), the
+`ServiceNavCueDispatch` shell wired to `WatchConnectionService.navCueNow` →
+`FossilController.buzz(pattern,h,m)`, and the Settings "Navigation turn cues" card are all built
+and green (16 navcue unit tests; full `assembleDebug` builds). Live cueing is gated behind
+`NavCueEffects.NAVCUE_WIRED = false` until verified on a real watch with OsmAnd+ navigating.
+Both hands point the turn direction; two-stage cues (soon ~40 m suppressed within 15 s of the
+previous cue / now ~10 m always); off-route = both hands to 6 o'clock "go back". Settings toggle
+shipped; the optional watch-button `TOGGLE_NAV_CUES` action is the documented follow-up (Option A).
+
+---
+
+Original plan below.
+
+Idea: while a navigation app is guiding you (especially walking
 in a city), the watch buzzes when a turn is coming up and **points its hands** in the turn direction
 (left / right / straight / U-turn), so you know when/where to turn without looking at the phone.
 

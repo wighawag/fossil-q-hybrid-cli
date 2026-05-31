@@ -73,6 +73,20 @@ data class AppSettings(
      * stops it early. Phone-side only — never sent to the watch. Default 60s (1 minute).
      */
     val ringDurationSeconds: Int = SettingsVocabulary.RING_DURATION_DEFAULT_SECONDS,
+    /**
+     * WP-NAV — GLOBAL on/off for turn-by-turn navigation cues (buzz + point both hands in the turn
+     * direction, sourced from OsmAnd/OsmAnd+ via AIDL). Default OFF (opt-in; needs OsmAnd installed).
+     */
+    val navCueEnabled: Boolean = SettingsVocabulary.NAVCUE_DEFAULT_ENABLED,
+    /** WP-NAV — "turn soon" cue distance in metres before the turn. */
+    val navCueSoonMeters: Int = SettingsVocabulary.NAVCUE_SOON_METERS_DEFAULT,
+    /** WP-NAV — "turn now" cue distance in metres before the turn. */
+    val navCueNowMeters: Int = SettingsVocabulary.NAVCUE_NOW_METERS_DEFAULT,
+    /**
+     * WP-NAV — which OsmAnd AIDL backend to use (the [qhybrid.android.navcue.NavCueBackend] name:
+     * AUTO / AIDL_LEGACY / AIDLAPI_V2). Default AUTO (probe both). Set on the diagnostics screen.
+     */
+    val navCueBackend: String = "AUTO",
 ) {
     /** The currently-active multi-function mode (clamped; never throws). */
     val activeMode: String
@@ -125,6 +139,12 @@ interface SettingsPrefs {
 
     /** WP-TRACKER — persist the loud-ring auto-stop duration in seconds (normalized 5..300). */
     fun setRingDurationSeconds(seconds: Int)
+
+    /** WP-NAV — persist the navigation-cues enabled flag + the soon/now trigger distances. */
+    fun setNavCue(enabled: Boolean, soonMeters: Int, nowMeters: Int)
+
+    /** WP-NAV — persist the OsmAnd AIDL backend choice (a NavCueBackend enum name). */
+    fun setNavCueBackend(backend: String)
 }
 
 /**
@@ -180,6 +200,14 @@ class SharedPreferencesSettingsPrefs(context: Context) : SettingsPrefs {
             lyrionFavoriteId = SettingsVocabulary.normalizeLyrionFavoriteId(
                 p.getString(KEY_LYRION_FAVORITE_ID, SettingsVocabulary.LYRION_FAVORITE_NONE)
             ),
+            navCueEnabled = p.getBoolean(KEY_NAVCUE_ENABLED, SettingsVocabulary.NAVCUE_DEFAULT_ENABLED),
+            navCueSoonMeters = SettingsVocabulary.normalizeNavCueSoonMeters(
+                p.getInt(KEY_NAVCUE_SOON_M, SettingsVocabulary.NAVCUE_SOON_METERS_DEFAULT)
+            ),
+            navCueNowMeters = SettingsVocabulary.normalizeNavCueNowMeters(
+                p.getInt(KEY_NAVCUE_NOW_M, SettingsVocabulary.NAVCUE_NOW_METERS_DEFAULT)
+            ),
+            navCueBackend = p.getString(KEY_NAVCUE_BACKEND, "AUTO") ?: "AUTO",
         )
     }
 
@@ -280,6 +308,18 @@ class SharedPreferencesSettingsPrefs(context: Context) : SettingsPrefs {
             .apply()
     }
 
+    override fun setNavCue(enabled: Boolean, soonMeters: Int, nowMeters: Int) {
+        prefs.edit()
+            .putBoolean(KEY_NAVCUE_ENABLED, enabled)
+            .putInt(KEY_NAVCUE_SOON_M, SettingsVocabulary.normalizeNavCueSoonMeters(soonMeters))
+            .putInt(KEY_NAVCUE_NOW_M, SettingsVocabulary.normalizeNavCueNowMeters(nowMeters))
+            .apply()
+    }
+
+    override fun setNavCueBackend(backend: String) {
+        prefs.edit().putString(KEY_NAVCUE_BACKEND, backend).apply()
+    }
+
     private companion object {
         const val PREFS = "fossilq_settings"
         const val KEY_NUDGE_ENABLED = "nudge_enabled"
@@ -297,5 +337,9 @@ class SharedPreferencesSettingsPrefs(context: Context) : SettingsPrefs {
         const val KEY_LYRION_FALLBACK = "lyrion_empty_queue_fallback"
         const val KEY_LYRION_FAVORITE_ID = "lyrion_favorite_id"
         const val KEY_RING_DURATION = "ring_duration_seconds"
+        const val KEY_NAVCUE_ENABLED = "navcue_enabled"
+        const val KEY_NAVCUE_SOON_M = "navcue_soon_meters"
+        const val KEY_NAVCUE_NOW_M = "navcue_now_meters"
+        const val KEY_NAVCUE_BACKEND = "navcue_backend"
     }
 }

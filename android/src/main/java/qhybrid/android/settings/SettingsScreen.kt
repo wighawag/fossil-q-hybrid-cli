@@ -71,6 +71,7 @@ fun SettingsScreen(
     onOpenLogs: () -> Unit,
     onOpenDefaults: () -> Unit = {},
     onOpenWaypoints: () -> Unit = {},
+    onOpenNavCueDiag: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -105,11 +106,13 @@ fun SettingsScreen(
         onLoadLyrionFavorites = { host, port -> vm.loadLyrionFavorites(host, port) },
         onDiscoverLyrionServers = vm::discoverLyrionServers,
         onSetRingDuration = vm::setRingDurationSeconds,
+        onSetNavCue = vm::setNavCue,
         onTransfer = vm::transferSettings,
         onRemoveWatch = vm::removeActiveWatch,
         onOpenLogs = onOpenLogs,
         onOpenDefaults = onOpenDefaults,
         onOpenWaypoints = onOpenWaypoints,
+        onOpenNavCueDiag = onOpenNavCueDiag,
         modifier = modifier,
     )
 }
@@ -148,6 +151,8 @@ fun SettingsContent(
     onDiscoverLyrionServers: () -> Unit = {},
     // WP-TRACKER: set the loud-ring auto-stop duration (seconds). No-op default for previews/tests.
     onSetRingDuration: (Int) -> Boolean = { false },
+    // WP-NAV: set the turn-by-turn nav-cue toggle + soon/now trigger distances. No-op default.
+    onSetNavCue: (Boolean, Int, Int) -> Boolean = { _, _, _ -> false },
     // WP13: set the calendar-alarm ring offset (minutes before the event). No-op default.
     onSetCalendarOffset: (Int) -> Boolean = { false },
     // WP13: manually re-read the calendar + re-map/push slots 16–31. No-op default.
@@ -157,6 +162,8 @@ fun SettingsContent(
     onOpenDefaults: () -> Unit = {},
     // WP-TRACKER: open the GPS-waypoint viewer (list + Save/Share GPX). No-op default for previews.
     onOpenWaypoints: () -> Unit = {},
+    // WP-NAV: open the live navigation-cue diagnostics screen. No-op default for previews.
+    onOpenNavCueDiag: () -> Unit = {},
     modifier: Modifier = Modifier,
     progress: SyncProgressUi = SyncProgressUi.IDLE,
     // WP-BUZZTEST: manual "vibrate the watch now" test buttons (pattern byte). No-op default so
@@ -218,6 +225,7 @@ fun SettingsContent(
                 ) { note = it }
             }
             RingDurationCard(state, onSetRingDuration) { note = it }
+            NavCueCard(state, onSetNavCue, onOpenNavCueDiag) { note = it }
             WaypointsEntryCard(onOpenWaypoints)
             HorizontalDivider()
             SyncAllCard(state, progress, onSyncAll) { note = it }
@@ -1255,6 +1263,66 @@ private fun SettingCard(title: String, content: @Composable () -> Unit) {
         }
     }
 }
+
+/**
+ * WP-NAV — turn-by-turn navigation cues: a global toggle + the soon/now trigger distances. The
+ * watch buzzes + points BOTH hands in the turn direction (left/right/straight/U-turn), sourced from
+ * OsmAnd / OsmAnd+ via its AIDL navigation-updates API (no Google, no API key).
+ */
+@Composable
+private fun NavCueCard(
+    state: SettingsUiState,
+    onSetNavCue: (Boolean, Int, Int) -> Boolean,
+    onOpenDiag: () -> Unit,
+    onNote: (String) -> Unit,
+) {
+    SettingCard("Navigation turn cues") {
+        Text(
+            "While OsmAnd (or OsmAnd+) is navigating, the watch buzzes and points BOTH hands in " +
+                "the turn direction so you know when/where to turn without looking at the phone. " +
+                "Requires OsmAnd installed and navigating.",
+            style = MaterialTheme.typography.labelSmall,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(if (state.navCueEnabled) "Enabled" else "Disabled")
+            Switch(
+                checked = state.navCueEnabled,
+                onCheckedChange = {
+                    onSetNavCue(it, state.navCueSoonMeters, state.navCueNowMeters)
+                    onNote(navCueNote(it))
+                },
+            )
+        }
+        Text(
+            "Turn soon: ${state.navCueSoonMeters} m   ·   Turn now: ${state.navCueNowMeters} m",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = {
+                    val next = SettingsVocabulary.normalizeNavCueSoonMeters(state.navCueSoonMeters - 10)
+                    onSetNavCue(state.navCueEnabled, next, state.navCueNowMeters)
+                },
+            ) { Text("Soon − 10m") }
+            OutlinedButton(
+                onClick = {
+                    val next = SettingsVocabulary.normalizeNavCueSoonMeters(state.navCueSoonMeters + 10)
+                    onSetNavCue(state.navCueEnabled, next, state.navCueNowMeters)
+                },
+            ) { Text("Soon + 10m") }
+        }
+        OutlinedButton(onClick = onOpenDiag, modifier = Modifier.fillMaxWidth()) {
+            Text("Live diagnostics + test cue")
+        }
+    }
+}
+
+private fun navCueNote(enabled: Boolean): String =
+    if (enabled) "Navigation turn cues enabled (the watch points its hands at each turn)."
+    else "Navigation turn cues disabled."
 
 private fun applyNote(name: String, wired: Boolean): String =
     if (wired) "$name applied to the watch."

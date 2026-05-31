@@ -81,6 +81,34 @@ class WatchConnectionService : Service() {
         // WP11: a posted phone notification matched a per-app rule — play it on the watch (play-only
         // by package; the watch already holds the per-app vibe+hands in its NOTIFICATION_FILTER).
         const val ACTION_PLAY_NOTIFICATION = "qhybrid.android.action.PLAY_NOTIFICATION"
+        // WP-NAV: a turn-by-turn navigation cue — buzz NOW + point BOTH hands to the turn direction
+        // (FossilController.buzz(pattern, hourDeg, minDeg)). A transient, silent, best-effort effect
+        // (like ACTION_PLAY_NOTIFICATION): dropped if stale, no SyncState modal. No new wire bytes.
+        const val ACTION_NAVCUE = "qhybrid.android.action.NAVCUE"
+        // WP-NAV: (re-)arm the nav-cue source after the Settings toggle / thresholds change. Stops
+        // then (if still enabled + wired) re-binds OsmAnd with the fresh config.
+        const val ACTION_NAVCUE_REFRESH = "qhybrid.android.action.NAVCUE_REFRESH"
+        // WP-NAV (diagnostics): fire one TEST cue for a given maneuver (bypasses OsmAnd) so the
+        // watch-side path can be verified from the diagnostics screen.
+        const val ACTION_NAVCUE_TEST = "qhybrid.android.action.NAVCUE_TEST"
+        const val EXTRA_NAVCUE_MANEUVER = "navcue_maneuver"
+
+        /** WP-NAV — (re-)arm the nav-cue source (call after toggling the Settings switch). */
+        fun refreshNavCues(context: Context) {
+            val intent = Intent(context, WatchConnectionService::class.java).apply {
+                action = ACTION_NAVCUE_REFRESH
+            }
+            ContextCompatStartForeground(context, intent)
+        }
+
+        /** WP-NAV (diagnostics) — fire one test cue for [maneuverName] (a Maneuver enum name). */
+        fun testNavCue(context: Context, maneuverName: String) {
+            val intent = Intent(context, WatchConnectionService::class.java).apply {
+                action = ACTION_NAVCUE_TEST
+                putExtra(EXTRA_NAVCUE_MANEUVER, maneuverName)
+            }
+            ContextCompatStartForeground(context, intent)
+        }
         // WP13: re-read the user's calendar and full-replace alarm slots 16-31, then silently push
         // the alarm file if the rows changed (no SYNCING modal). Driven by the ContentObserver,
         // the on-connect hook, and the permission (re-)grant in Setup.
@@ -102,6 +130,11 @@ class WatchConnectionService : Service() {
         const val EXTRA_PLAY_DEADLINE = "play_deadline"
         // WP11: how long (ms) a connect-then-play stays valid before it is dropped as stale.
         const val PLAY_STALE_AFTER_MS = 30_000L
+        // WP-NAV: hand degrees (0..359) for a navigation cue's hour + minute hands (both point the
+        // turn direction). A cue is only played if the link is ALREADY up — a turn cue is useless
+        // late, so unlike a notification we never connect-then-cue.
+        const val EXTRA_NAVCUE_HOUR_DEG = "navcue_hour_deg"
+        const val EXTRA_NAVCUE_MIN_DEG = "navcue_min_deg"
         // WP13: debounce window coalescing a burst of calendar provider changes into ONE refresh
         // (the provider can fire several onChange callbacks for a single user edit / sync).
         private const val CALENDAR_DEBOUNCE_MS = 1_500L
@@ -205,6 +238,23 @@ class WatchConnectionService : Service() {
         }
 
         /**
+         * WP-NAV — play a turn cue NOW: buzz [pattern] AND point BOTH hands to ([hourDeg],
+         * [minDeg]) (each 0..359), via the existing [FossilController.buzz] (pattern, h, m) golden
+         * primitive — NO new wire bytes. A transient, silent, best-effort effect: it is played ONLY
+         * if the watch link is already up (a turn cue is useless late, so — unlike a notification —
+         * we never connect-then-cue). Publishes NO [SyncState] modal.
+         */
+        fun navCueNow(context: Context, pattern: Int, hourDeg: Int, minDeg: Int) {
+            val intent = Intent(context, WatchConnectionService::class.java).apply {
+                action = ACTION_NAVCUE
+                putExtra(EXTRA_PATTERN, pattern)
+                putExtra(EXTRA_NAVCUE_HOUR_DEG, hourDeg)
+                putExtra(EXTRA_NAVCUE_MIN_DEG, minDeg)
+            }
+            ContextCompatStartForeground(context, intent)
+        }
+
+        /**
          * WP11 — a posted phone notification matched a per-app rule; play it on the watch. A
          * **play-only-by-package** put: the watch already holds the per-app vibration pattern + hand
          * degrees in its NOTIFICATION_FILTER (written at init/provisioning and on WP14 rule edits),
@@ -302,6 +352,13 @@ class WatchConnectionService : Service() {
     // live GPS fix (SystemLocationSource) + loud ring (SystemPhoneRinger) are wired behind seams
     // (zero Google Play Services). NO new wire bytes.
     private val trackerDispatch by lazy { qhybrid.android.tracker.ServiceTrackerDispatch(applicationContext) }
+
+    // WP-NAV: turn-by-turn navigation cues. Binds OsmAnd/OsmAnd+ via AIDL (registerForNavigation
+    // Updates) and, while the global Settings toggle is on, buzzes + points both hands in the turn
+    // direction via FossilController.buzz(pattern,h,m). Pure decision path
+    // (TurnCueMapper/OsmAndTurnTypes/NavCueDispatcher) is unit-tested; the AIDL bind + live hand
+    // move are exercised on-device. NO new wire bytes, no GMS.
+    private val navCueDispatch by lazy { qhybrid.android.navcue.ServiceNavCueDispatch(applicationContext) }
 
     private val controllerRef = AtomicReference<FossilController?>(null)
     private val transportRef = AtomicReference<AndroidBleTransport?>(null)
@@ -436,6 +493,18 @@ class WatchConnectionService : Service() {
                 intent.getIntExtra(EXTRA_PATTERN, 5),
                 intent.getBooleanExtra(EXTRA_FORCE_FILTER, false),
             )
+            ACTION_NAVCUE -> submitNavCue(
+                intent.getIntExtra(EXTRA_PATTERN, 8),
+                intent.getIntExtra(EXTRA_NAVCUE_HOUR_DEG, 0),
+                intent.getIntExtra(EXTRA_NAVCUE_MIN_DEG, 0),
+            )
+            ACTION_NAVCUE_REFRESH -> runCatching { navCueDispatch.refresh() }
+                .onFailure { Log.w(TAG, "navCue refresh failed", it) }
+            ACTION_NAVCUE_TEST -> runCatching {
+                val name = intent.getStringExtra(EXTRA_NAVCUE_MANEUVER) ?: "STRAIGHT"
+                val maneuver = qhybrid.android.navcue.TurnCueMapper.Maneuver.valueOf(name)
+                navCueDispatch.sendTestCue(maneuver)
+            }.onFailure { Log.w(TAG, "navCue test failed", it) }
             ACTION_PLAY_NOTIFICATION -> {
                 val pkg = intent.getStringExtra(EXTRA_PACKAGE)
                 if (pkg.isNullOrBlank()) {
@@ -468,11 +537,18 @@ class WatchConnectionService : Service() {
             ACTION_STOP -> submitDisconnect(stopAfter = true)
             else -> Log.d(TAG, "unhandled action $action")
         }
+        // WP-NAV: best-effort arm the nav-cue source on every start (idempotent; a no-op unless the
+        // global Settings toggle is on). Survives reboot/reconnect like the other features.
+        if (action != ACTION_STOP && action != ACTION_NAVCUE_REFRESH && action != ACTION_NAVCUE_TEST) {
+            runCatching { navCueDispatch.start() }.onFailure { Log.w(TAG, "navCue start failed", it) }
+        }
         return START_STICKY
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        // WP-NAV: unbind OsmAnd's AIDL nav-updates service.
+        runCatching { navCueDispatch.stop() }
         // WP13: unregister the calendar observer + cancel its refresh scope.
         calendarObserver?.let { runCatching { contentResolver.unregisterContentObserver(it) } }
         calendarObserver = null
@@ -1444,6 +1520,42 @@ class WatchConnectionService : Service() {
     }
 
     /**
+     * WP-NAV — play a turn cue (buzz + point both hands) on the ble-worker. ONLY if the link is
+     * already up: a turn cue is useless late, so (unlike [submitBuzz] / [submitPlayNotification])
+     * there is NO connect-then-cue — a down link drops the cue (logged, silent). No [SyncState].
+     */
+    private fun submitNavCue(pattern: Int, hourDeg: Int, minDeg: Int) {
+        worker.execute {
+            val c = controllerRef.get()
+            val linkUp = c != null && isLinkUp()
+            qhybrid.android.navcue.NavCueDiagnostics.onCueSent(
+                "hands $hourDeg°/$minDeg° vibe $pattern", linkUp = linkUp,
+            )
+            if (!linkUp) {
+                Log.i(TAG, "navCue: link down — dropping cue (pattern=$pattern $hourDeg°/$minDeg°)")
+                return@execute
+            }
+            runNavCue(c!!, pattern, hourDeg, minDeg)
+        }
+    }
+
+    /**
+     * WP-NAV — the actual turn cue on the ble-worker via a SINGLE play-only put
+     * ([FossilController.navCuePlayOnly]): the reserved nav-cue filter entry for this
+     * (degrees, pattern) is already on the watch (folded into the managed NOTIFICATION_FILTER by the
+     * notification sync + new-watch provisioning, exactly like the reserved buzz entries), so the
+     * watch matches the play file's package CRC and applies the hand degrees + vibe. This does NOT
+     * re-upload / clobber the whole filter (the bug the earlier `buzz(p,h,m)` two-put caused).
+     * Both hands point the same degree, so [hourDeg] is the key. Silent + best-effort (no
+     * [SyncState] modal); failures are non-fatal (logged). Always on the ble-worker. No new wire bytes.
+     */
+    private fun runNavCue(controller: FossilController, pattern: Int, hourDeg: Int, minDeg: Int) {
+        Log.i(TAG, "navCue (play-only): pattern=$pattern hands=$hourDeg°/$minDeg°")
+        runCatching { controller.navCuePlayOnly(hourDeg, pattern) }
+            .onFailure { e -> Log.w(TAG, "navCue failed", e) }
+    }
+
+    /**
      * WP11 — play a matched notification on the watch. If the link is up, play immediately on the
      * ble-worker; if it is DOWN, do a **connect-then-play** (mirroring [submitBuzz]) by holding the
      * package and kicking a connect, EXCEPT the held play is dropped if it goes stale (past
@@ -1565,7 +1677,10 @@ class WatchConnectionService : Service() {
             // single play-file buzz still matches after a notification sync. (De-dupe by package so
             // a user rule for a reserved name wins.) This fold-in plus new-watch provisioning are the
             // ONLY ways the reserved entries reach the watch — no per-connect/per-buzz standalone put.
-            val reserved = qhybrid.protocol.requests.fossil.notification.BuzzPatterns.reservedEntries()
+            // WP-NAV: the reserved nav-cue entries (turn-direction hands + buzz) are folded in the
+            // SAME way so a turn cue is also a single play-file put (no per-cue filter clobber).
+            val reserved = qhybrid.protocol.requests.fossil.notification.BuzzPatterns.reservedEntries() +
+                qhybrid.protocol.requests.fossil.notification.NavCuePatterns.reservedEntries()
             val userPackages = entries.map { it.packageName }.toSet()
             val merged = entries + reserved.filter { it.packageName !in userPackages }
             controller.uploadNotificationFilter(merged)

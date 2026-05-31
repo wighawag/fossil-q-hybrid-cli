@@ -30,3 +30,22 @@ exact original→re-owned path mapping are recorded in PROTOCOL-PROVENANCE.md.
 
 We gratefully acknowledge the GadgetBridge project's reverse-engineering of the
 Fossil Q Hybrid protocol, without which this project would not exist.
+
+OsmAnd AIDL API (net.osmand.aidlapi.*)
+--------------------------------------
+The Android app's turn-by-turn navigation-cue feature (qhybrid.android.navcue.*)
+sources next-turn data from OsmAnd / OsmAnd+ via its public AIDL API. The AIDL
+interface + parcelable surface under `net.osmand.aidlapi.*`
+(android/src/main/aidl/net/osmand/aidlapi/ + the matching parcelable .java impls
+under android/src/main/java/net/osmand/aidlapi/) is VENDORED VERBATIM from:
+
+    OsmAnd
+    https://github.com/osmandapp/OsmAnd  (OsmAnd-api/src/net/osmand/aidlapi)
+    Copyright (C) the OsmAnd contributors
+
+It is the documented client-integration path (the same files the official
+`osmandapp/osmand-api-demo` instructs integrators to copy). We use only the
+navigation-update subset (`registerForNavigationUpdates` / `ADirectionInfo`);
+the rest of the surface is present so the AIDL binder method/transaction order
+matches the OsmAnd service exactly. No remote dependency, no Google Play
+Services, no API key. OsmAnd is GPLv3-compatible with this project's AGPLv3.

@@ -40,6 +40,8 @@ class SyncDataLoaderTest : DbTestBase() {
         override fun setLyrionEmptyQueueFallback(fallback: String?) {}
         override fun setLyrionFavoriteId(id: String?) {}
         override fun setRingDurationSeconds(seconds: Int) {}
+        override fun setNavCue(enabled: Boolean, soonMeters: Int, nowMeters: Int) {}
+        override fun setNavCueBackend(backend: String) {}
     }
 
     private fun userAlarm(mac: String, slot: Int) =

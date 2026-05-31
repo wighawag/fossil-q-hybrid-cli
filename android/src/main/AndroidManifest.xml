@@ -82,6 +82,22 @@
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
+        <!-- WP-NAV: package visibility for binding OsmAnd's AIDL service to receive turn-by-turn
+             navigation updates (registerForNavigationUpdates). Android 11+ filters PackageManager
+             queries + bindService targets to the visible set; declare the OsmAnd flavours we bind
+             so OsmAndNavSource can detect which is installed and bind it. No QUERY_ALL_PACKAGES. -->
+        <package android:name="net.osmand.plus" />
+        <package android:name="net.osmand" />
+        <package android:name="net.osmand.dev" />
+        <!-- WP-NAV: also make the AIDL service itself resolvable (Android 11+ filters bindService
+             targets by the visible set; an <intent> query for the service action ensures the bind
+             resolves, not just the package). -->
+        <intent>
+            <action android:name="net.osmand.aidlapi.OsmandAidlServiceV2" />
+        </intent>
+        <intent>
+            <action android:name="net.osmand.aidl.OsmandAidlServiceV2" />
+        </intent>
     </queries>
 
     <uses-feature

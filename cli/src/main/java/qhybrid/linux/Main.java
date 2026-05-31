@@ -37,6 +37,7 @@ import org.jline.terminal.TerminalBuilder;
                 Main.TimeCmd.class,
                 Main.NotifyCmd.class,
                 Main.NotifyTestCmd.class,
+                Main.FilterCapacityCmd.class,
                 Main.PositionTestCmd.class,
                 Main.FindCmd.class,
                 Main.HandsCmd.class,
@@ -630,6 +631,157 @@ public class Main implements Runnable {
             System.out.println("\nAll patterns tested.");
             adapter.shutdown();
             return 0;
+        }
+    }
+
+    @Command(name = "filter-capacity", mixinStandardHelpOptions = true,
+             description = "Probe how many NOTIFICATION_FILTER entries the watch accepts. Uploads " +
+                     "filters of increasing entry count and reports which sizes the watch ACKs vs " +
+                     "rejects (mirrors the alarm-capacity probe). Each entry is a synthetic " +
+                     "`qhybrid.linux.cap<N>` package; nothing is played.")
+    static class FilterCapacityCmd implements Callable<Integer> {
+        @ParentCommand Main parent;
+
+        @Option(names = {"--from"}, description = "Start entry count", defaultValue = "2")
+        int from;
+
+        @Option(names = {"--to"}, description = "Max entry count to try", defaultValue = "40")
+        int to;
+
+        @Option(names = {"--step"}, description = "Increment between tries", defaultValue = "2")
+        int step;
+
+        @Option(names = {"--timeout"}, description = "Seconds to wait for each upload ACK", defaultValue = "10")
+        int timeoutSeconds;
+
+        @Option(names = {"--bisect"}, negatable = true,
+                description = "Binary-search the ceiling (default) instead of a linear sweep: grow " +
+                        "from --from by doubling until a size is non-OK, then bisect to the exact max. " +
+                        "Far fewer (slow) uploads. Use --no-bisect for the old linear sweep.",
+                defaultValue = "true")
+        boolean bisect;
+
+        @Override
+        public Integer call() {
+            if (from < 1 || to < from || step < 1) {
+                System.err.println("Require 1 <= --from <= --to and --step >= 1");
+                return 1;
+            }
+            FossilQAdapter adapter = connectAndInit(parent.requireMac(), parent.useSubprocess, true);
+            sleep(3000);
+            System.out.println("A TIMEOUT is NOT a rejection — the watch may just be slow over BLE; each");
+            System.out.println("size is retried once with a longer wait before being called a real failure.\n");
+            System.out.println("Each row: <entries> (<bytes>) -> result\n");
+
+            int result = bisect
+                    ? runBisect(adapter)
+                    : runLinear(adapter);
+
+            adapter.shutdown();
+            return result;
+        }
+
+        /** Exponential-grow to find an upper bound, then binary-search the exact ceiling. */
+        private int runBisect(FossilQAdapter adapter) {
+            System.out.printf("Binary search starting at %d entries (cap %d)...%n%n", from, to);
+            // Phase 1: find lo (last OK) and hi (first non-OK) by doubling.
+            int lo = -1;          // largest confirmed OK
+            int hi = -1;          // smallest confirmed non-OK
+            int n = Math.max(1, from);
+            while (n <= to) {
+                if (probeSize(adapter, n) == Outcome.OK) {
+                    lo = n;
+                    if (n == to) break;
+                    n = Math.min(to, n * 2);
+                } else {
+                    hi = n;
+                    break;
+                }
+            }
+            if (hi < 0) {
+                System.out.println();
+                System.out.printf("Every probed size up to %d ACKed — ceiling is at least %d entries (%d bytes).%n",
+                        lo, lo, lo * 32);
+                System.out.println("Raise --to to push further.");
+                return 0;
+            }
+            if (lo < 0) {
+                System.out.println();
+                System.out.printf("Even %d entries was non-OK — lower --from or check the link.%n", from);
+                return 0;
+            }
+            // Phase 2: bisect (lo OK, hi non-OK) until adjacent.
+            System.out.printf("%n-- bracket: OK at %d, non-OK at %d; bisecting --%n%n", lo, hi);
+            while (hi - lo > 1) {
+                int mid = lo + (hi - lo) / 2;
+                if (probeSize(adapter, mid) == Outcome.OK) lo = mid; else hi = mid;
+            }
+            System.out.println();
+            System.out.printf("MAX accepted: %d entries (%d bytes). First non-OK: %d entries (%d bytes).%n",
+                    lo, lo * 32, hi, hi * 32);
+            return 0;
+        }
+
+        /** The original linear sweep (--no-bisect). */
+        private int runLinear(FossilQAdapter adapter) {
+            int lastOk = -1, firstHardFail = -1;
+            for (int n = from; n <= to; n += step) {
+                Outcome r = probeSize(adapter, n);
+                if (r == Outcome.OK) lastOk = n; else if (firstHardFail < 0) { firstHardFail = n; break; }
+            }
+            System.out.println();
+            if (lastOk >= 0) System.out.printf("Largest size the watch ACKed: %d entries (%d bytes).%n", lastOk, lastOk * 32);
+            else System.out.println("No filter size was ACKed (check connection/auth/range).");
+            if (firstHardFail >= 0) System.out.printf("First non-OK at: %d entries (%d bytes).%n", firstHardFail, firstHardFail * 32);
+            else System.out.printf("Every size %d..%d ACKed — ceiling is at least %d entries.%n", from, to, lastOk);
+            return 0;
+        }
+
+        /** Probe ONE size: build N synthetic entries, upload, retry-once on timeout, print + return. */
+        private Outcome probeSize(FossilQAdapter adapter, int n) {
+            java.util.List<qhybrid.protocol.model.NotificationFilterEntry> entries = new java.util.ArrayList<>(n);
+            for (int i = 0; i < n; i++) {
+                entries.add(new qhybrid.protocol.model.NotificationFilterEntry(
+                        "qhybrid.linux.cap" + i, (byte) 4, (short) 90, (short) 90));
+            }
+            int bytes = n * 32;
+            System.out.printf("  %3d entries (%5d bytes) -> ", n, bytes);
+            System.out.flush();
+            long waitSec = Math.max(timeoutSeconds, 8L + (bytes / 200L));
+            Outcome r = tryUpload(adapter, entries, waitSec);
+            if (r == Outcome.TIMEOUT) {
+                System.out.print("timeout… retrying ");
+                System.out.flush();
+                sleep(3000);
+                r = tryUpload(adapter, entries, waitSec * 2);
+            }
+            switch (r) {
+                case OK -> System.out.println("OK (ACKed)");
+                case FAIL -> System.out.println("REJECTED (watch returned failure)");
+                case TIMEOUT -> System.out.println("NO ACK (timed out twice — inconclusive, link too slow)");
+            }
+            sleep(2500); // settle the link between writes.
+            return r;
+        }
+
+        private enum Outcome { OK, FAIL, TIMEOUT }
+
+        /** Upload [entries] and wait up to [waitSec] for the watch's ACK. Distinguishes a watch
+         *  rejection (FAIL) from no-answer (TIMEOUT, ambiguous/slow link). */
+        private static Outcome tryUpload(
+                FossilQAdapter adapter,
+                java.util.List<qhybrid.protocol.model.NotificationFilterEntry> entries,
+                long waitSec) {
+            java.util.concurrent.CompletableFuture<Boolean> fut = new java.util.concurrent.CompletableFuture<>();
+            try {
+                adapter.uploadNotificationFilterEntries(entries, fut);
+                return fut.get(waitSec, java.util.concurrent.TimeUnit.SECONDS)
+                        ? Outcome.OK : Outcome.FAIL;
+            } catch (java.util.concurrent.TimeoutException te) {
+                return Outcome.TIMEOUT;
+            } catch (Exception e) {
+                return Outcome.TIMEOUT;
+            }
         }
     }
 

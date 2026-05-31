@@ -156,6 +156,33 @@ object SettingsVocabulary {
         }
     }
 
+    // ---- WP-NAV: turn-by-turn navigation cues (app pref; OsmAnd AIDL + watch buzz) ----------
+
+    /**
+     * WP-NAV — the GLOBAL on/off toggle for turn-by-turn navigation cues (buzz + point both hands
+     * in the turn direction, sourced from OsmAnd / OsmAnd+ via its AIDL navigation-updates API).
+     * Default OFF (opt-in): it binds OsmAnd's service + needs OsmAnd installed and navigating.
+     */
+    const val NAVCUE_DEFAULT_ENABLED = false
+
+    /** WP-NAV — "turn soon" cue distance (m before the turn) default + range. */
+    const val NAVCUE_SOON_METERS_DEFAULT = 40
+    const val NAVCUE_SOON_METERS_MIN = 10
+    const val NAVCUE_SOON_METERS_MAX = 200
+
+    /** WP-NAV — "turn now" cue distance (m before the turn) default + range. */
+    const val NAVCUE_NOW_METERS_DEFAULT = 10
+    const val NAVCUE_NOW_METERS_MIN = 2
+    const val NAVCUE_NOW_METERS_MAX = 60
+
+    /** Clamp the "turn soon" distance onto its range. */
+    fun normalizeNavCueSoonMeters(m: Int): Int =
+        m.coerceIn(NAVCUE_SOON_METERS_MIN, NAVCUE_SOON_METERS_MAX)
+
+    /** Clamp the "turn now" distance onto its range (and below the soon distance is fine). */
+    fun normalizeNavCueNowMeters(m: Int): Int =
+        m.coerceIn(NAVCUE_NOW_METERS_MIN, NAVCUE_NOW_METERS_MAX)
+
     // ---- preferred music app (app pref; pure app-side, no live watch command) -
 
     /**
