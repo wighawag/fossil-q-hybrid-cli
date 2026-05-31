@@ -122,6 +122,16 @@ class WatchConnectionService : Service() {
         // settles before any later (re-)add is allowed to reconnect.
         private const val FORGET_GRACE_MS = 4_000L
 
+        // LINK-SURVIVAL: bounded exponential backoff for the active self-reconnect after an
+        // unexpected drop. The watch only directed-advertises and can't ask the phone to reconnect,
+        // so we keep retrying — but with growing gaps so a genuinely out-of-range / off watch
+        // doesn't drain the battery. The last delay (1 min) repeats indefinitely until the watch
+        // comes back (or the user removes it). First retry is quick so a brief drop recovers fast.
+        private val RECONNECT_DELAYS_MS = longArrayOf(2_000L, 5_000L, 10_000L, 20_000L, 60_000L)
+        // After kicking a self-reconnect, re-check this long later: a connect that TIMED OUT without
+        // ever connecting won't fire the disconnect callback, so we must re-arm the backoff here.
+        private const val RECONNECT_RECHECK_MS = 20_000L
+
         // ---- static entry points other WPs / receivers call --------------
 
         private fun start(context: Context, action: String, mac: String? = null) {
@@ -312,6 +322,15 @@ class WatchConnectionService : Service() {
     // auto-reconnect re-arm and ignore a stray DEVICE_APPEARED for the watch being removed.
     private val forgetting = AtomicBoolean(false)
 
+    // LINK-SURVIVAL: a single-thread scheduler driving the active self-reconnect after a drop (so a
+    // watch-initiated event always finds a live control channel). The current backoff attempt index
+    // and the in-flight scheduled future, so a new schedule supersedes the old.
+    private val reconnectScheduler =
+        java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "ble-reconnect") }
+    private val reconnectAttempt = java.util.concurrent.atomic.AtomicInteger(0)
+    private val pendingReconnect =
+        AtomicReference<java.util.concurrent.ScheduledFuture<*>?>(null)
+
     /** WP-SYNCFIX: decode the requested sync sections from a SYNC_NOW intent (null = reconcile). */
     private fun parseSections(intent: Intent?): Set<SyncSection>? {
         val names = intent?.getStringArrayExtra(EXTRA_SECTIONS) ?: return null
@@ -430,6 +449,9 @@ class WatchConnectionService : Service() {
         calendarObserver?.let { runCatching { contentResolver.unregisterContentObserver(it) } }
         calendarObserver = null
         calendarScope.cancel()
+        // LINK-SURVIVAL: stop the active self-reconnect machinery.
+        cancelReconnect()
+        reconnectScheduler.shutdownNow()
         runCatching { controllerRef.getAndSet(null)?.disconnect() }
         transportRef.set(null)
         worker.shutdownNow()
@@ -537,6 +559,47 @@ class WatchConnectionService : Service() {
         }
     }
 
+    /**
+     * LINK-SURVIVAL — after an unexpected drop, ACTIVELY try to re-establish the link so a
+     * watch-initiated event (music control / find-phone) always has a live control channel. The
+     * Fossil Q only directed-advertises to its bond and cannot ask the phone to reconnect, and CDM
+     * presence is not always prompt for it, so we self-reconnect with bounded exponential backoff:
+     *   - schedule a connect after [RECONNECT_DELAYS_MS] (deferred so the GATT teardown settles),
+     *   - each attempt that still finds the link DOWN escalates to the next (longer) delay,
+     *   - a successful connect (or any user/connect action that brings the link up) resets it.
+     *
+     * Idempotent: a connect already in flight / link already up is a no-op (submitConnect guards on
+     * `connecting`/`isLinkUp`). Cancelled while removing a watch ([forgetting]) or on disconnect.
+     */
+    private fun scheduleReconnect(mac: String) {
+        if (forgetting.get()) return
+        val attempt = reconnectAttempt.getAndIncrement()
+        val delay = RECONNECT_DELAYS_MS[attempt.coerceIn(0, RECONNECT_DELAYS_MS.lastIndex)]
+        Log.i(TAG, "scheduleReconnect($mac): attempt #${attempt + 1} in ${delay}ms")
+        val future = reconnectScheduler.schedule({
+            if (forgetting.get() || isLinkUp()) {
+                reconnectAttempt.set(0)
+                return@schedule
+            }
+            // Re-resolve the associated mac in case it changed; bail if the watch was removed.
+            val target = CompanionManager.getAssociatedMac(this) ?: return@schedule
+            submitConnect(target)
+            // If this attempt doesn't bring the link up, the next disconnect callback re-arms; but
+            // a connect that times out without ever connecting won't fire that callback, so also
+            // re-arm here after a grace window if still down.
+            reconnectScheduler.schedule({
+                if (!forgetting.get() && !isLinkUp()) scheduleReconnect(target)
+            }, RECONNECT_RECHECK_MS, TimeUnit.MILLISECONDS)
+        }, delay, TimeUnit.MILLISECONDS)
+        pendingReconnect.getAndSet(future)?.cancel(false)
+    }
+
+    /** Cancel any pending self-reconnect and reset the backoff (link is up / being torn down). */
+    private fun cancelReconnect() {
+        pendingReconnect.getAndSet(null)?.cancel(false)
+        reconnectAttempt.set(0)
+    }
+
     private fun connectAndInit(mac: String) {
         // If already connected to this mac, nothing to do.
         if (isLinkUp()) {
@@ -559,11 +622,24 @@ class WatchConnectionService : Service() {
                     message = "Disconnected",
                     clearDeviceInfo = true,
                 )
+                // Drop the dead controller reference so isLinkUp()/controllerRef reflect the loss
+                // (otherwise a stale controller lingers and a queued Save/connect thinks the link
+                // is still being managed).
+                controllerRef.compareAndSet(controller, null)
                 // WP-ONBOARD: do NOT re-arm auto-reconnect while removing a watch (Remove watch),
                 // otherwise the just-removed watch immediately reconnects and appears un-removed.
                 if (!forgetting.get()) {
-                    CompanionManager.getAssociatedMac(this)?.let {
-                        CompanionManager.startObserving(this, it)
+                    CompanionManager.getAssociatedMac(this)?.let { assocMac ->
+                        // Event-driven reconnect (CDM presence wakes us when the watch reappears).
+                        CompanionManager.startObserving(this, assocMac)
+                        // LINK-SURVIVAL: also ACTIVELY re-arm a reconnect attempt. The watch only
+                        // directed-advertises to its bond and cannot itself ask the phone to
+                        // reconnect, so a watch-initiated event (music control / find-phone) has no
+                        // live control channel after a drop. CDM presence is not always prompt for a
+                        // directed-advertising watch, so we also schedule a self-reconnect (deferred
+                        // briefly so the GATT teardown settles). submitConnect is idempotent (guarded
+                        // by `connecting`) and a no-op if the link is already back up.
+                        scheduleReconnect(assocMac)
                     }
                 }
             }
@@ -591,6 +667,13 @@ class WatchConnectionService : Service() {
                 // when the watch is unreachable — surface an honest sync error instead.
                 failPendingSync("Watch not reachable (out of range / Bluetooth off?)")
                 controllerRef.compareAndSet(controller, null)
+                // LINK-SURVIVAL: a connect that TIMED OUT never fires the disconnect callback, so
+                // re-arm the active self-reconnect here (backoff) — the watch may simply be asleep /
+                // briefly out of range and will accept a directed connect when it wakes. Suppressed
+                // while removing a watch.
+                if (!forgetting.get()) {
+                    CompanionManager.getAssociatedMac(this)?.let { scheduleReconnect(it) }
+                }
                 return
             }
             publish(WatchState.LinkState.INITIALIZING, mac = mac, message = "Connected. Initializing…")
@@ -604,6 +687,8 @@ class WatchConnectionService : Service() {
 
             val initialized = controller.isFossilProtocol()
             if (initialized) {
+                // LINK-SURVIVAL: link is up — cancel any pending self-reconnect + reset the backoff.
+                cancelReconnect()
                 publish(
                     WatchState.LinkState.INITIALIZED,
                     mac = mac,
@@ -1318,6 +1403,8 @@ class WatchConnectionService : Service() {
     }
 
     private fun submitDisconnect(stopAfter: Boolean) {
+        // LINK-SURVIVAL: an INTENTIONAL disconnect must not be fought by the active self-reconnect.
+        cancelReconnect()
         worker.execute {
             runCatching { controllerRef.getAndSet(null)?.disconnect() }
             transportRef.set(null)

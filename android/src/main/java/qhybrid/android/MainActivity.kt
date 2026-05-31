@@ -144,6 +144,34 @@ class MainActivity : ComponentActivity() {
         val leaveGuard = remember { qhybrid.android.sync.LeaveGuardState() }
         // The navigation to run once the user resolves the leave-prompt (null = no prompt pending).
         var pendingNav by remember { mutableStateOf<(() -> Unit)?>(null) }
+        // WP-SYNCSTATUS fix: when the user chose "Save" on the leave-prompt, defer the navigation
+        // until the save actually SUCCEEDS. Holds the nav to run on SUCCESS; an ERROR keeps the user
+        // on the screen (so a failed save — e.g. watch unreachable — does NOT silently switch away).
+        var navAfterSave by remember { mutableStateOf<(() -> Unit)?>(null) }
+        // The sync timestamp captured WHEN the save-then-leave was armed, so we only react to a
+        // FRESH terminal phase (a newer publish) and never to a stale SUCCESS/ERROR left by an
+        // earlier sync that happened before the user tapped "Save".
+        var saveLeaveSince by remember { mutableStateOf(0L) }
+        // Observe the process-wide sync signal so the save-then-leave can react to its outcome.
+        val syncStatus by qhybrid.android.sync.SyncState.status.collectAsStateWithLifecycle()
+        // Resolve a pending save-then-leave once the sync settles: navigate on SUCCESS, stay on ERROR.
+        androidx.compose.runtime.LaunchedEffect(syncStatus.phase, syncStatus.lastUpdatedMillis, navAfterSave) {
+            val nav = navAfterSave ?: return@LaunchedEffect
+            // Ignore a terminal phase that predates the save request (stale prior sync).
+            if (syncStatus.lastUpdatedMillis < saveLeaveSince) return@LaunchedEffect
+            when (syncStatus.phase) {
+                qhybrid.android.sync.SyncState.SyncPhase.SUCCESS -> {
+                    navAfterSave = null
+                    nav()
+                }
+                qhybrid.android.sync.SyncState.SyncPhase.ERROR -> {
+                    // Save failed (e.g. watch not reachable): cancel the deferred leave and keep the
+                    // user on the screen so they see the error and can retry — never switch silently.
+                    navAfterSave = null
+                }
+                else -> Unit // SYNCING / IDLE — keep waiting.
+            }
+        }
         // Gate a navigation through the leave-prompt: defer it when the current screen has pending
         // changes, otherwise run it immediately.
         val requestLeave: (() -> Unit) -> Unit = { action ->
@@ -326,12 +354,19 @@ class MainActivity : ComponentActivity() {
                         },
                         confirmButton = {
                             TextButton(onClick = {
-                                // Push to the watch (the existing blocking SyncSavingDialog shows on
-                                // the screen), then leave. The targeted save is fire-and-forget; the
-                                // rows are already in the DB so leaving is safe regardless.
-                                save?.invoke()
+                                // Push to the watch, then leave ONLY IF the save SUCCEEDS. The
+                                // blocking SyncSavingDialog shows on the screen while it's in flight;
+                                // the LaunchedEffect above runs `nav` on SUCCESS or keeps the user
+                                // here on ERROR (so a failed save never silently switches screens).
+                                // The rows are already in the DB, so the data is safe either way.
+                                if (save != null) {
+                                    saveLeaveSince = System.currentTimeMillis()
+                                    navAfterSave = nav
+                                    save.invoke()
+                                } else {
+                                    nav()
+                                }
                                 pendingNav = null
-                                nav()
                             }) { Text("Save") }
                         },
                         dismissButton = {
