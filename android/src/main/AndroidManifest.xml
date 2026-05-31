@@ -95,6 +95,7 @@
     <application
         android:name=".FossilQApplication"
         android:label="Fossil Q"
+        android:networkSecurityConfig="@xml/network_security_config"
         android:theme="@style/Theme.FossilQ">
 
         <activity

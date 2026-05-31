@@ -63,6 +63,8 @@ data class SettingsUiState(
     val lyrionDiscoveredServers: List<qhybrid.android.music.lyrion.LyrionDiscoveryCodec.DiscoveredServer> = emptyList(),
     /** True while any Lyrion network lookup (players / favourites / discovery) is in flight. */
     val lyrionLoading: Boolean = false,
+    /** Last Lyrion lookup outcome for UI feedback (empty until a lookup completes). */
+    val lyrionLastResult: String = "",
 ) {
     val activeMac: String? get() = activeWatch?.macAddress
     val hasActiveWatch: Boolean get() = activeWatch != null
@@ -191,6 +193,7 @@ open class SettingsViewModel(
         val favorites: List<qhybrid.android.music.lyrion.LyrionCommands.LyrionFavorite> = emptyList(),
         val servers: List<qhybrid.android.music.lyrion.LyrionDiscoveryCodec.DiscoveredServer> = emptyList(),
         val loading: Boolean = false,
+        val lastResult: String = "",
     )
     private val lyrionState = MutableStateFlow(LyrionDiscoveryState())
 
@@ -204,6 +207,7 @@ open class SettingsViewModel(
                 lyrionFavorites = lyrion.favorites,
                 lyrionDiscoveredServers = lyrion.servers,
                 lyrionLoading = lyrion.loading,
+                lyrionLastResult = lyrion.lastResult,
             )
         }.stateIn(
             coroutineScope,
@@ -498,34 +502,54 @@ open class SettingsViewModel(
     // ---- L6/L7: Lyrion network pickers (players / favourites / discovery) -----
 
     /**
-     * L6 — load the players from the configured Lyrion server into [SettingsUiState.lyrionPlayers]
-     * (HTTP off the main thread). No-op when no host is configured. Sets/clears the loading flag.
+     * L6 — load the players from a Lyrion server into [SettingsUiState.lyrionPlayers] (HTTP off the
+     * main thread). [host]/[port] default to the saved config, but the UI passes the live text-field
+     * values so the user need not press "Save server" first; the given values are persisted before
+     * the lookup. No-op when no host is provided. Sets/clears the loading flag.
      */
-    fun loadLyrionPlayers() {
-        val s = appSettings.value
-        val host = SettingsVocabulary.normalizeLyrionHost(s.lyrionServerHost)
-        if (host.isEmpty()) return
-        val port = SettingsVocabulary.normalizeLyrionPort(s.lyrionServerPort)
+    fun loadLyrionPlayers(
+        host: String = appSettings.value.lyrionServerHost,
+        port: Int = appSettings.value.lyrionServerPort,
+    ) {
+        val h = SettingsVocabulary.normalizeLyrionHost(host)
+        if (h.isEmpty()) return
+        val p = SettingsVocabulary.normalizeLyrionPort(port)
+        setLyrionServer(h, p) // persist so the dispatcher + a re-open use the same server
         coroutineScope.launch {
-            lyrionState.value = lyrionState.value.copy(loading = true)
-            val players = withContext(Dispatchers.IO) { lyrionDiscovery.players(host, port) }
-            lyrionState.value = lyrionState.value.copy(players = players, loading = false)
+            lyrionState.value = lyrionState.value.copy(loading = true, lastResult = "")
+            val players = withContext(Dispatchers.IO) { lyrionDiscovery.players(h, p) }
+            lyrionState.value = lyrionState.value.copy(
+                players = players,
+                loading = false,
+                lastResult = if (players.isEmpty())
+                    "No players found at $h:$p (check the server is reachable)."
+                else "Found ${players.size} player(s).",
+            )
         }
     }
 
     /**
-     * L6 — load the favourites from the configured Lyrion server into
-     * [SettingsUiState.lyrionFavorites] (HTTP off the main thread). No-op when no host is configured.
+     * L6 — load the favourites from a Lyrion server into [SettingsUiState.lyrionFavorites] (HTTP off
+     * the main thread). Same host/port handling as [loadLyrionPlayers]. No-op when no host.
      */
-    fun loadLyrionFavorites() {
-        val s = appSettings.value
-        val host = SettingsVocabulary.normalizeLyrionHost(s.lyrionServerHost)
-        if (host.isEmpty()) return
-        val port = SettingsVocabulary.normalizeLyrionPort(s.lyrionServerPort)
+    fun loadLyrionFavorites(
+        host: String = appSettings.value.lyrionServerHost,
+        port: Int = appSettings.value.lyrionServerPort,
+    ) {
+        val h = SettingsVocabulary.normalizeLyrionHost(host)
+        if (h.isEmpty()) return
+        val p = SettingsVocabulary.normalizeLyrionPort(port)
+        setLyrionServer(h, p)
         coroutineScope.launch {
-            lyrionState.value = lyrionState.value.copy(loading = true)
-            val favs = withContext(Dispatchers.IO) { lyrionDiscovery.favorites(host, port) }
-            lyrionState.value = lyrionState.value.copy(favorites = favs, loading = false)
+            lyrionState.value = lyrionState.value.copy(loading = true, lastResult = "")
+            val favs = withContext(Dispatchers.IO) { lyrionDiscovery.favorites(h, p) }
+            lyrionState.value = lyrionState.value.copy(
+                favorites = favs,
+                loading = false,
+                lastResult = if (favs.isEmpty())
+                    "No favourites found at $h:$p (check the server is reachable)."
+                else "Found ${favs.size} favourite(s).",
+            )
         }
     }
 
@@ -535,9 +559,15 @@ open class SettingsViewModel(
      */
     fun discoverLyrionServers() {
         coroutineScope.launch {
-            lyrionState.value = lyrionState.value.copy(loading = true)
+            lyrionState.value = lyrionState.value.copy(loading = true, lastResult = "")
             val servers = withContext(Dispatchers.IO) { lyrionDiscovery.discoverServers() }
-            lyrionState.value = lyrionState.value.copy(servers = servers, loading = false)
+            lyrionState.value = lyrionState.value.copy(
+                servers = servers,
+                loading = false,
+                lastResult = if (servers.isEmpty())
+                    "No servers found on the network (enter the address manually)."
+                else "Found ${servers.size} server(s).",
+            )
         }
     }
 

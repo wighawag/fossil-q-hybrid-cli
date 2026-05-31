@@ -101,8 +101,8 @@ fun SettingsScreen(
         onSetLyrionPlayer = vm::setLyrionPlayer,
         onSetLyrionFallback = vm::setLyrionEmptyQueueFallback,
         onSetLyrionFavorite = vm::setLyrionFavoriteId,
-        onLoadLyrionPlayers = vm::loadLyrionPlayers,
-        onLoadLyrionFavorites = vm::loadLyrionFavorites,
+        onLoadLyrionPlayers = { host, port -> vm.loadLyrionPlayers(host, port) },
+        onLoadLyrionFavorites = { host, port -> vm.loadLyrionFavorites(host, port) },
         onDiscoverLyrionServers = vm::discoverLyrionServers,
         onSetRingDuration = vm::setRingDurationSeconds,
         onTransfer = vm::transferSettings,
@@ -140,10 +140,10 @@ fun SettingsContent(
     onSetLyrionFallback: (String?) -> Unit = {},
     // L1: set the Lyrion favourite id. No-op default.
     onSetLyrionFavorite: (String?) -> Unit = {},
-    // L6: load players from the configured server. No-op default.
-    onLoadLyrionPlayers: () -> Unit = {},
-    // L6: load favourites from the configured server. No-op default.
-    onLoadLyrionFavorites: () -> Unit = {},
+    // L6: load players from a server (host, port passed live from the fields). No-op default.
+    onLoadLyrionPlayers: (String, Int) -> Unit = { _, _ -> },
+    // L6: load favourites from a server (host, port passed live from the fields). No-op default.
+    onLoadLyrionFavorites: (String, Int) -> Unit = { _, _ -> },
     // L7: discover Lyrion servers on the LAN (UDP). No-op default.
     onDiscoverLyrionServers: () -> Unit = {},
     // WP-TRACKER: set the loud-ring auto-stop duration (seconds). No-op default for previews/tests.
@@ -642,8 +642,8 @@ private fun LyrionCard(
     onSetLyrionPlayer: (String?, String?) -> Unit,
     onSetLyrionFallback: (String?) -> Unit,
     onSetLyrionFavorite: (String?) -> Unit,
-    onLoadLyrionPlayers: () -> Unit,
-    onLoadLyrionFavorites: () -> Unit,
+    onLoadLyrionPlayers: (String, Int) -> Unit,
+    onLoadLyrionFavorites: (String, Int) -> Unit,
     onDiscoverLyrionServers: () -> Unit,
     onNote: (String) -> Unit,
 ) {
@@ -654,6 +654,13 @@ private fun LyrionCard(
                 "on that player.",
             style = MaterialTheme.typography.labelSmall,
         )
+
+        // Status line: loading spinner text + last lookup result ("Found N", or an error hint).
+        if (state.lyrionLoading) {
+            Text("Contacting server…", style = MaterialTheme.typography.labelMedium)
+        } else if (state.lyrionLastResult.isNotEmpty()) {
+            Text(state.lyrionLastResult, style = MaterialTheme.typography.labelMedium)
+        }
 
         // L7 — discover servers on the LAN (UDP); selecting one fills host+port.
         OutlinedButton(
@@ -718,10 +725,14 @@ private fun LyrionCard(
             onNote("Lyrion server saved")
         }) { Text("Save server") }
 
-        // L6 — load + pick a player from the configured server (manual id entry still available).
+        // L6 — load + pick a player. Uses the LIVE host/port fields (auto-saves them), so the user
+        // doesn't have to press "Save server" first. Manual id entry still available.
         OutlinedButton(
-            onClick = { onLoadLyrionPlayers(); onNote("Loading players…") },
-            enabled = !state.lyrionLoading && state.lyrionServerHost.isNotEmpty(),
+            onClick = {
+                onLoadLyrionPlayers(host, port.toIntOrNull() ?: SettingsVocabulary.LYRION_PORT_DEFAULT)
+                onNote("Loading players…")
+            },
+            enabled = !state.lyrionLoading && host.isNotBlank(),
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Load players") }
         if (state.lyrionPlayers.isNotEmpty()) {
@@ -815,8 +826,11 @@ private fun LyrionCard(
         // Favourite (used when the fallback is FAVORITE): load + pick, or enter the id manually.
         if (state.lyrionEmptyQueueFallback == SettingsVocabulary.LYRION_FALLBACK_FAVORITE) {
             OutlinedButton(
-                onClick = { onLoadLyrionFavorites(); onNote("Loading favourites…") },
-                enabled = !state.lyrionLoading && state.lyrionServerHost.isNotEmpty(),
+                onClick = {
+                    onLoadLyrionFavorites(host, port.toIntOrNull() ?: SettingsVocabulary.LYRION_PORT_DEFAULT)
+                    onNote("Loading favourites…")
+                },
+                enabled = !state.lyrionLoading && host.isNotBlank(),
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Load favourites") }
             if (state.lyrionFavorites.isNotEmpty()) {

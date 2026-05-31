@@ -717,15 +717,14 @@ class SettingsViewModelTest : DbTestBase() {
         )
         val model = vm(discovery = discovery)
         awaitState(model.uiState) { it.hasActiveWatch }
-        // No host configured yet -> no-op.
-        model.loadLyrionPlayers()
+        // Blank host -> no-op.
+        model.loadLyrionPlayers("", 9000)
         assertTrue(model.uiState.value.lyrionPlayers.isEmpty())
-        // With a host, the picker is populated.
-        model.setLyrionServer("192.168.1.10", 9000)
-        awaitState(model.uiState) { it.lyrionServerHost == "192.168.1.10" }
-        model.loadLyrionPlayers()
+        // Passing the live host auto-saves it AND populates the picker (no "Save server" needed).
+        model.loadLyrionPlayers("192.168.1.10", 9000)
         val s = awaitState(model.uiState) { it.lyrionPlayers.size == 2 }
         assertEquals("Kitchen", s.lyrionPlayers[0].name)
+        assertEquals("192.168.1.10", s.lyrionServerHost) // auto-saved
         assertFalse(s.lyrionLoading)
     }
 
@@ -739,11 +738,10 @@ class SettingsViewModelTest : DbTestBase() {
         )
         val model = vm(discovery = discovery)
         awaitState(model.uiState) { it.hasActiveWatch }
-        model.setLyrionServer("192.168.1.10", 9000)
-        awaitState(model.uiState) { it.lyrionServerHost == "192.168.1.10" }
-        model.loadLyrionFavorites()
+        model.loadLyrionFavorites("192.168.1.10", 9000)
         val s = awaitState(model.uiState) { it.lyrionFavorites.size == 1 }
         assertEquals("Morning Mix", s.lyrionFavorites[0].name)
+        assertEquals("192.168.1.10", s.lyrionServerHost)
     }
 
     @Test

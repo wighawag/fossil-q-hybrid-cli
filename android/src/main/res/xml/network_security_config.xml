@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Lyrion (LMS) music control talks to the server over plain HTTP (jsonrpc.js on port 9000) and a
+  UDP discovery broadcast — LMS does not offer HTTPS on the LAN. Android 9+ (API 28+) blocks
+  cleartext HTTP by default, which made the "Load players"/"Load favourites" calls fail silently.
+
+  We therefore permit cleartext traffic. The base config keeps the system trust anchors; cleartext
+  is allowed so the LAN LMS server (any user-entered IP / hostname) is reachable. This app is a
+  local-network tool — no production cloud endpoints are contacted.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
