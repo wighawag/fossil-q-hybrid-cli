@@ -57,6 +57,12 @@ public class FakeBleTransport implements BleTransport {
     private String connectedMac = "AA:BB:CC:DD:EE:FF";
     private int mtu = 247;
 
+    // HYBRID-AUTOCONNECT: records the autoConnect flag of the LAST connect(...) call (null = never
+    // connected) and counts connect(...) calls, so a service-level test can assert the right path
+    // (fast bounded vs background keep-alive) was chosen.
+    public Boolean lastAutoConnect = null;
+    public int connectCount = 0;
+
     private BiConsumer<UUID, byte[]> notificationCallback;
     private Consumer<Boolean> connectionCallback;
     private Consumer<Integer> mtuCallback;
@@ -137,8 +143,15 @@ public class FakeBleTransport implements BleTransport {
 
     @Override
     public boolean connect(String macAddress) {
+        return connect(macAddress, false);
+    }
+
+    @Override
+    public boolean connect(String macAddress, boolean autoConnect) {
         this.connectedMac = macAddress;
         this.connected = true;
+        this.lastAutoConnect = autoConnect;
+        this.connectCount++;
         if (connectionCallback != null) connectionCallback.accept(true);
         return true;
     }

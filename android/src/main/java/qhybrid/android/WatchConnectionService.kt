@@ -122,15 +122,19 @@ class WatchConnectionService : Service() {
         // settles before any later (re-)add is allowed to reconnect.
         private const val FORGET_GRACE_MS = 4_000L
 
-        // LINK-SURVIVAL: bounded exponential backoff for the active self-reconnect after an
-        // unexpected drop. The watch only directed-advertises and can't ask the phone to reconnect,
-        // so we keep retrying — but with growing gaps so a genuinely out-of-range / off watch
-        // doesn't drain the battery. The last delay (1 min) repeats indefinitely until the watch
-        // comes back (or the user removes it). First retry is quick so a brief drop recovers fast.
-        private val RECONNECT_DELAYS_MS = longArrayOf(2_000L, 5_000L, 10_000L, 20_000L, 60_000L)
-        // After kicking a self-reconnect, re-check this long later: a connect that TIMED OUT without
-        // ever connecting won't fire the disconnect callback, so we must re-arm the backoff here.
-        private const val RECONNECT_RECHECK_MS = 20_000L
+        // HYBRID-AUTOCONNECT: after an unexpected drop (or a user/save connect that timed out
+        // because the watch was asleep), we hand the keep-alive reconnect to the OS BLE controller
+        // via connect(mac, autoConnect=true) — a battery-friendly, non-timing-out pending connect
+        // that fires when the directed-advertising watch reappears (see [armAutoReconnect]). This
+        // REPLACES the old app-level exponential-backoff connect loop (which fought the controller
+        // and flooded the single BLE control channel). The controller owns the retry cadence; we
+        // keep only ONE minimal fallback timer:
+        //
+        // If registering the auto-connect itself fails (connect(...,true) returns false — e.g. BT
+        // momentarily off), re-arm it ONCE after this delay. We do NOT keep polling/connecting on a
+        // timer while an auto-connect is pending, so the controller and the app never both drive
+        // connects at the same time.
+        private const val AUTO_RECONNECT_FALLBACK_MS = 15_000L
 
         // ---- static entry points other WPs / receivers call --------------
 
@@ -322,14 +326,24 @@ class WatchConnectionService : Service() {
     // auto-reconnect re-arm and ignore a stray DEVICE_APPEARED for the watch being removed.
     private val forgetting = AtomicBoolean(false)
 
-    // LINK-SURVIVAL: a single-thread scheduler driving the active self-reconnect after a drop (so a
-    // watch-initiated event always finds a live control channel). The current backoff attempt index
-    // and the in-flight scheduled future, so a new schedule supersedes the old.
+    // HYBRID-AUTOCONNECT: a single-thread scheduler used ONLY as the minimal fallback that re-arms
+    // an auto-connect if REGISTERING it failed (see [AUTO_RECONNECT_FALLBACK_MS]). It does NOT run
+    // the old exponential-backoff connect loop — the OS BLE controller owns the keep-alive retry
+    // once an auto-connect is registered. [pendingReconnect] holds the in-flight fallback future so
+    // a new arm supersedes the old.
     private val reconnectScheduler =
         java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "ble-reconnect") }
-    private val reconnectAttempt = java.util.concurrent.atomic.AtomicInteger(0)
     private val pendingReconnect =
         AtomicReference<java.util.concurrent.ScheduledFuture<*>?>(null)
+    // HYBRID-AUTOCONNECT: the controller/transport currently driving a background autoConnect=true
+    // keep-alive (pending or live), so we never register a second pending GATT and an intentional
+    // disconnect can tear it down. Distinct from [controllerRef] (the active/foreground controller);
+    // an auto-connect promotes itself into [controllerRef] only once its link actually establishes.
+    private val autoReconnectController = AtomicReference<FossilController?>(null)
+    // True while an autoConnect=true keep-alive is registered & pending (or live). Guards against
+    // BOTH double-driving (a timer firing submitConnect while the controller has a pending connect)
+    // AND registering multiple pending auto-connects.
+    private val autoReconnectArmed = AtomicBoolean(false)
 
     /** WP-SYNCFIX: decode the requested sync sections from a SYNC_NOW intent (null = reconcile). */
     private fun parseSections(intent: Intent?): Set<SyncSection>? {
@@ -449,7 +463,8 @@ class WatchConnectionService : Service() {
         calendarObserver?.let { runCatching { contentResolver.unregisterContentObserver(it) } }
         calendarObserver = null
         calendarScope.cancel()
-        // LINK-SURVIVAL: stop the active self-reconnect machinery.
+        // HYBRID-AUTOCONNECT: tear down the background auto-connect keep-alive (cancels its pending
+        // GATT so the controller won't silently reconnect) + stop the fallback scheduler.
         cancelReconnect()
         reconnectScheduler.shutdownNow()
         runCatching { controllerRef.getAndSet(null)?.disconnect() }
@@ -560,44 +575,193 @@ class WatchConnectionService : Service() {
     }
 
     /**
-     * LINK-SURVIVAL — after an unexpected drop, ACTIVELY try to re-establish the link so a
-     * watch-initiated event (music control / find-phone) always has a live control channel. The
-     * Fossil Q only directed-advertises to its bond and cannot ask the phone to reconnect, and CDM
-     * presence is not always prompt for it, so we self-reconnect with bounded exponential backoff:
-     *   - schedule a connect after [RECONNECT_DELAYS_MS] (deferred so the GATT teardown settles),
-     *   - each attempt that still finds the link DOWN escalates to the next (longer) delay,
-     *   - a successful connect (or any user/connect action that brings the link up) resets it.
+     * HYBRID-AUTOCONNECT — after an unexpected drop (or a user/save connect that timed out because
+     * the watch was asleep), keep the link alive so a watch-initiated event (music control /
+     * find-phone) always has a live control channel AND a connect-then-do that couldn't land yet
+     * (e.g. a Save while the watch was asleep) eventually completes when the watch returns.
      *
-     * Idempotent: a connect already in flight / link already up is a no-op (submitConnect guards on
-     * `connecting`/`isLinkUp`). Cancelled while removing a watch ([forgetting]) or on disconnect.
+     * The Fossil Q only directed-advertises to its bond and cannot ask the phone to reconnect. We
+     * REPLACE the old app-level exponential-backoff connect loop with a SINGLE OS-managed BLE
+     * auto-connect: build a fresh controller/transport and call connect(mac, autoConnect=true) on
+     * the worker. {@code connectGatt(autoConnect=true)} does NOT time out — the controller keeps the
+     * pending connect and fires when the watch reappears, at which point the transport's connection
+     * callback (up=true) runs the on-link-up work via [onAutoConnectLinkUp]. This is battery-
+     * friendly and never floods the single BLE control channel with retry connects.
+     *
+     * No double-driving: while an auto-connect is armed ([autoReconnectArmed]) we do NOT also fire
+     * timed submitConnect()s. The ONLY timer kept is a minimal one-shot fallback that re-arms the
+     * auto-connect if REGISTERING it failed (connect(...,true) returned false — e.g. BT momentarily
+     * off). Suppressed while removing a watch ([forgetting]); cancelled on link-up / disconnect.
      */
-    private fun scheduleReconnect(mac: String) {
+    private fun armAutoReconnect(mac: String) {
         if (forgetting.get()) return
-        val attempt = reconnectAttempt.getAndIncrement()
-        val delay = RECONNECT_DELAYS_MS[attempt.coerceIn(0, RECONNECT_DELAYS_MS.lastIndex)]
-        Log.i(TAG, "scheduleReconnect($mac): attempt #${attempt + 1} in ${delay}ms")
-        val future = reconnectScheduler.schedule({
+        if (isLinkUp()) return
+        // Don't register a second pending auto-connect if one is already armed.
+        if (!autoReconnectArmed.compareAndSet(false, true)) {
+            Log.d(TAG, "armAutoReconnect($mac): already armed — skipping")
+            return
+        }
+        Log.i(TAG, "armAutoReconnect($mac): registering OS BLE auto-connect (controller-managed)")
+        worker.execute {
             if (forgetting.get() || isLinkUp()) {
-                reconnectAttempt.set(0)
-                return@schedule
+                autoReconnectArmed.set(false)
+                return@execute
             }
-            // Re-resolve the associated mac in case it changed; bail if the watch was removed.
+            // Build a fresh controller/transport for the background keep-alive and wire its
+            // callbacks (drop → re-arm; link-up → run the on-link-up work). Replace any previous
+            // auto-connect controller (get-and-disconnect-old) so only ONE pending GATT exists.
+            val transport = AndroidBleTransport(applicationContext)
+            val controller = FossilController(transport)
+            wireConnectionCallbacks(controller, transport, mac, auto = true)
+            autoReconnectController.getAndSet(controller)?.let { runCatching { it.disconnect() } }
+
+            val registered = runCatching { controller.connect(mac, /*autoConnect=*/ true) }
+                .getOrElse { e -> Log.w(TAG, "auto-connect register threw", e); false }
+            if (!registered) {
+                // Registering the auto-connect itself failed (e.g. BT off). Drop it and re-arm ONCE
+                // after a short delay — the SINGLE fallback timer we keep. We never poll/connect on
+                // a timer while a pending auto-connect exists, so the two mechanisms never both
+                // drive connects.
+                Log.w(TAG, "auto-connect failed to register for $mac — scheduling one fallback re-arm")
+                autoReconnectController.compareAndSet(controller, null)
+                runCatching { controller.disconnect() }
+                autoReconnectArmed.set(false)
+                scheduleAutoReconnectFallback(mac)
+            }
+        }
+    }
+
+    /**
+     * HYBRID-AUTOCONNECT — the ONLY retry timer kept from the old machinery: a single one-shot that
+     * re-arms the OS auto-connect if REGISTERING it failed (see [armAutoReconnect]). It does NOT run
+     * the old 5-step exponential backoff. A new schedule supersedes the old.
+     */
+    private fun scheduleAutoReconnectFallback(mac: String) {
+        if (forgetting.get()) return
+        val future = reconnectScheduler.schedule({
+            if (forgetting.get() || isLinkUp()) return@schedule
             val target = CompanionManager.getAssociatedMac(this) ?: return@schedule
-            submitConnect(target)
-            // If this attempt doesn't bring the link up, the next disconnect callback re-arms; but
-            // a connect that times out without ever connecting won't fire that callback, so also
-            // re-arm here after a grace window if still down.
-            reconnectScheduler.schedule({
-                if (!forgetting.get() && !isLinkUp()) scheduleReconnect(target)
-            }, RECONNECT_RECHECK_MS, TimeUnit.MILLISECONDS)
-        }, delay, TimeUnit.MILLISECONDS)
+            armAutoReconnect(target)
+        }, AUTO_RECONNECT_FALLBACK_MS, TimeUnit.MILLISECONDS)
         pendingReconnect.getAndSet(future)?.cancel(false)
     }
 
-    /** Cancel any pending self-reconnect and reset the backoff (link is up / being torn down). */
+    /**
+     * Cancel the background auto-connect keep-alive: tear down its pending GATT (so the controller
+     * does NOT silently reconnect — BluetoothGatt.disconnect()+close() cancels a pending
+     * autoConnect=true), cancel the fallback timer, and clear the armed flag. Called on link-up
+     * (the foreground connect took over), on intentional disconnect, and on forget/onDestroy.
+     */
     private fun cancelReconnect() {
         pendingReconnect.getAndSet(null)?.cancel(false)
-        reconnectAttempt.set(0)
+        autoReconnectArmed.set(false)
+        autoReconnectController.getAndSet(null)?.let { runCatching { it.disconnect() } }
+    }
+
+    /**
+     * Wire the connection / auth / activity callbacks onto a freshly-built [controller]/[transport].
+     * Shared by BOTH the foreground (autoConnect=false, [connectAndInit]) and background
+     * (autoConnect=true, [armAutoReconnect]) paths so the on-link-up + on-drop handling is identical.
+     *
+     * On DROP: reflect Disconnected, drop the dead controller refs, and (unless forgetting) re-arm
+     * CDM presence + a fresh OS BLE auto-connect keep-alive.
+     *
+     * On LINK-UP: only matters for the AUTO path. The foreground blocking connect() returns true and
+     * runs init + on-link-up INLINE in [connectAndInit], so its accept(true) here is a no-op for
+     * that path. For the auto path the link establishes asynchronously (possibly long after
+     * connect(...) returned), so accept(true) is what drives init + the pending work — marshalled
+     * onto [worker] (the transport is blocking; the callback arrives on the ble-gatt thread).
+     */
+    private fun wireConnectionCallbacks(
+        controller: FossilController,
+        transport: AndroidBleTransport,
+        mac: String,
+        auto: Boolean,
+    ) {
+        transport.setConnectionCallback { up ->
+            if (up) {
+                if (auto) onAutoConnectLinkUp(controller, transport, mac)
+                return@setConnectionCallback
+            }
+            // up == false: unexpected drop OR intentional disconnect.
+            publish(
+                WatchState.LinkState.DISCONNECTED,
+                message = "Disconnected",
+                clearDeviceInfo = true,
+            )
+            // Drop the dead controller reference so isLinkUp()/controllerRef reflect the loss
+            // (otherwise a stale controller lingers and a queued Save/connect thinks the link is
+            // still being managed). Covers BOTH the foreground and the auto-reconnect controllers.
+            controllerRef.compareAndSet(controller, null)
+            autoReconnectController.compareAndSet(controller, null)
+            if (auto) autoReconnectArmed.set(false)
+            // WP-ONBOARD: do NOT re-arm auto-reconnect while removing a watch (Remove watch),
+            // otherwise the just-removed watch immediately reconnects and appears un-removed.
+            if (!forgetting.get()) {
+                CompanionManager.getAssociatedMac(this)?.let { assocMac ->
+                    // Event-driven reconnect (CDM presence wakes us when the watch reappears) — the
+                    // complementary OS-level mechanism, kept alongside the auto-connect.
+                    CompanionManager.startObserving(this, assocMac)
+                    // HYBRID-AUTOCONNECT: hand the keep-alive to the OS BLE controller via
+                    // connect(mac, autoConnect=true) instead of an app-level backoff loop (see
+                    // [armAutoReconnect]). Idempotent + a no-op if the link is already back up.
+                    armAutoReconnect(assocMac)
+                }
+            }
+        }
+        controller.onAuthRequired {
+            publish(
+                WatchState.LinkState.AUTH_REQUIRED,
+                message = "Authorization requested — hold the TOP button (30s)",
+            )
+        }
+        controller.onConfigSynced { Log.i(TAG, "Config synced") }
+        // WP-ACTIVITY: parse + publish the activity file as soon as the watch delivers it
+        // (same callback the CLI `activity` command uses).
+        controller.onActivityData { bytes -> onActivityBytes(bytes) }
+    }
+
+    /**
+     * HYBRID-AUTOCONNECT — the deferred background auto-connect link came UP. Promote this
+     * controller to the foreground [controllerRef], run init, then the shared on-link-up work
+     * ([runOnLinkUp]) — the SAME init + pending-sync/buzz/play + activity + calendar refresh the
+     * foreground path runs. The transport's connection callback arrives on the ble-gatt thread, so
+     * we marshal everything onto the single-thread [worker] (the transport is blocking).
+     */
+    private fun onAutoConnectLinkUp(
+        controller: FossilController,
+        transport: AndroidBleTransport,
+        mac: String,
+    ) {
+        worker.execute {
+            Log.i(TAG, "auto-connect link up for $mac — promoting + initializing")
+            controllerRef.getAndSet(controller)?.let { prev ->
+                if (prev !== controller) runCatching { prev.disconnect() }
+            }
+            transportRef.set(transport)
+            autoReconnectController.compareAndSet(controller, null)
+            autoReconnectArmed.set(false)
+            try {
+                publish(WatchState.LinkState.INITIALIZING, mac = mac, message = "Connected. Initializing…")
+                controller.init(false)
+                if (controller.isFossilProtocol()) {
+                    if (!controller.waitForInit(INIT_TIMEOUT_MS)) {
+                        Log.w(TAG, "auto-connect init may not have completed fully")
+                    }
+                }
+                runOnLinkUp(controller, mac)
+            } catch (e: Exception) {
+                Log.e(TAG, "auto-connect init failed", e)
+                publish(
+                    WatchState.LinkState.DISCONNECTED,
+                    message = "Error: ${e.message}",
+                    clearDeviceInfo = true,
+                )
+                failPendingSync("Could not sync: ${e.message ?: e.javaClass.simpleName}")
+                runCatching { controller.disconnect() }
+                controllerRef.compareAndSet(controller, null)
+            }
+        }
     }
 
     private fun connectAndInit(mac: String) {
@@ -613,51 +777,13 @@ class WatchConnectionService : Service() {
         controllerRef.getAndSet(controller)?.let { runCatching { it.disconnect() } }
         transportRef.set(transport)
 
-        transport.setConnectionCallback { up ->
-            if (!up) {
-                // Unexpected drop OR intentional disconnect. Reflect Disconnected and
-                // re-arm presence so we auto-reconnect when the watch reappears.
-                publish(
-                    WatchState.LinkState.DISCONNECTED,
-                    message = "Disconnected",
-                    clearDeviceInfo = true,
-                )
-                // Drop the dead controller reference so isLinkUp()/controllerRef reflect the loss
-                // (otherwise a stale controller lingers and a queued Save/connect thinks the link
-                // is still being managed).
-                controllerRef.compareAndSet(controller, null)
-                // WP-ONBOARD: do NOT re-arm auto-reconnect while removing a watch (Remove watch),
-                // otherwise the just-removed watch immediately reconnects and appears un-removed.
-                if (!forgetting.get()) {
-                    CompanionManager.getAssociatedMac(this)?.let { assocMac ->
-                        // Event-driven reconnect (CDM presence wakes us when the watch reappears).
-                        CompanionManager.startObserving(this, assocMac)
-                        // LINK-SURVIVAL: also ACTIVELY re-arm a reconnect attempt. The watch only
-                        // directed-advertises to its bond and cannot itself ask the phone to
-                        // reconnect, so a watch-initiated event (music control / find-phone) has no
-                        // live control channel after a drop. CDM presence is not always prompt for a
-                        // directed-advertising watch, so we also schedule a self-reconnect (deferred
-                        // briefly so the GATT teardown settles). submitConnect is idempotent (guarded
-                        // by `connecting`) and a no-op if the link is already back up.
-                        scheduleReconnect(assocMac)
-                    }
-                }
-            }
-        }
-        controller.onAuthRequired {
-            publish(
-                WatchState.LinkState.AUTH_REQUIRED,
-                message = "Authorization requested — hold the TOP button (30s)",
-            )
-        }
-        controller.onConfigSynced { Log.i(TAG, "Config synced") }
-        // WP-ACTIVITY: parse + publish the activity file as soon as the watch delivers it
-        // (same callback the CLI `activity` command uses). The fetch is triggered by
-        // ACTION_REQUEST_ACTIVITY or the on-connect poke below; this only handles the result.
-        controller.onActivityData { bytes -> onActivityBytes(bytes) }
+        // HYBRID-AUTOCONNECT: user-initiated / first connects use the FAST bounded (autoConnect=false)
+        // path — an unreachable watch fails honestly + quickly. The background keep-alive after a
+        // drop uses autoConnect=true (see [armAutoReconnect]).
+        wireConnectionCallbacks(controller, transport, mac, auto = false)
 
         try {
-            if (!controller.connect(mac)) {
+            if (!controller.connect(mac, /*autoConnect=*/ false)) {
                 publish(
                     WatchState.LinkState.DISCONNECTED,
                     message = "Failed to connect (out of range / BT off / phone still bonded?)",
@@ -667,12 +793,14 @@ class WatchConnectionService : Service() {
                 // when the watch is unreachable — surface an honest sync error instead.
                 failPendingSync("Watch not reachable (out of range / Bluetooth off?)")
                 controllerRef.compareAndSet(controller, null)
-                // LINK-SURVIVAL: a connect that TIMED OUT never fires the disconnect callback, so
-                // re-arm the active self-reconnect here (backoff) — the watch may simply be asleep /
-                // briefly out of range and will accept a directed connect when it wakes. Suppressed
-                // while removing a watch.
+                // HYBRID-AUTOCONNECT: a fast (autoConnect=false) connect that TIMED OUT never fires
+                // the drop callback, so arm the background OS auto-connect keep-alive here — the
+                // watch may simply be asleep / briefly out of range and will accept the directed
+                // connect when it wakes (so a save while the watch was asleep still eventually
+                // lands). The immediate honest error was already reported to any pending save above.
+                // Suppressed while removing a watch.
                 if (!forgetting.get()) {
-                    CompanionManager.getAssociatedMac(this)?.let { scheduleReconnect(it) }
+                    CompanionManager.getAssociatedMac(this)?.let { armAutoReconnect(it) }
                 }
                 return
             }
@@ -684,10 +812,43 @@ class WatchConnectionService : Service() {
                     Log.w(TAG, "init may not have completed fully")
                 }
             }
+            runOnLinkUp(controller, mac)
+        } catch (e: Exception) {
+            Log.e(TAG, "connect/init failed", e)
+            publish(
+                WatchState.LinkState.DISCONNECTED,
+                message = "Error: ${e.message}",
+                clearDeviceInfo = true,
+            )
+            // WP-SYNCFIX: surface the connect/init failure to a pending Save-to-watch.
+            failPendingSync("Could not sync: ${e.message ?: e.javaClass.simpleName}")
+            // WP-ONBOARD: if we were mid-provisioning a brand-new watch, the connect dropped before
+            // it could finish — report FAILED so the add-watch modal resolves (watch NOT added).
+            if (qhybrid.android.onboard.ProvisioningState.status.value.isProvisioning) {
+                qhybrid.android.onboard.ProvisioningState.publish(
+                    qhybrid.android.onboard.ProvisioningState.Phase.FAILED,
+                    errorMessage = "Lost connection while setting up. Move the watch closer and try again.",
+                    nowMillis = System.currentTimeMillis(),
+                )
+            }
+            runCatching { controller.disconnect() }
+            controllerRef.compareAndSet(controller, null)
+        }
+    }
 
+    /**
+     * Shared on-LINK-UP work, run for BOTH the foreground ([connectAndInit]) and background
+     * ([onAutoConnectLinkUp]) paths once the link is established + init has run. Always on [worker].
+     *
+     * Publishes INITIALIZED, then runs the [ConnectSyncDecider] (provisioning / pending user sync),
+     * any pending connect-then-buzz / connect-then-play, the on-connect activity fetch, and the
+     * calendar refresh — and cancels the auto-connect keep-alive (the link is up now).
+     */
+    private fun runOnLinkUp(controller: FossilController, mac: String) {
             val initialized = controller.isFossilProtocol()
             if (initialized) {
-                // LINK-SURVIVAL: link is up — cancel any pending self-reconnect + reset the backoff.
+                // HYBRID-AUTOCONNECT: link is up — tear down any pending auto-connect keep-alive
+                // (a foreground connect or the auto-connect itself took over).
                 cancelReconnect()
                 publish(
                     WatchState.LinkState.INITIALIZED,
@@ -809,27 +970,6 @@ class WatchConnectionService : Service() {
                 // Save-to-watch spinning; report it honestly.
                 failPendingSync("Connected, but this watch isn't a Fossil Q Hybrid 2.x.")
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "connect/init failed", e)
-            publish(
-                WatchState.LinkState.DISCONNECTED,
-                message = "Error: ${e.message}",
-                clearDeviceInfo = true,
-            )
-            // WP-SYNCFIX: surface the connect/init failure to a pending Save-to-watch.
-            failPendingSync("Could not sync: ${e.message ?: e.javaClass.simpleName}")
-            // WP-ONBOARD: if we were mid-provisioning a brand-new watch, the connect dropped before
-            // it could finish — report FAILED so the add-watch modal resolves (watch NOT added).
-            if (qhybrid.android.onboard.ProvisioningState.status.value.isProvisioning) {
-                qhybrid.android.onboard.ProvisioningState.publish(
-                    qhybrid.android.onboard.ProvisioningState.Phase.FAILED,
-                    errorMessage = "Lost connection while setting up. Move the watch closer and try again.",
-                    nowMillis = System.currentTimeMillis(),
-                )
-            }
-            runCatching { controller.disconnect() }
-            controllerRef.compareAndSet(controller, null)
-        }
     }
 
     /**
@@ -1403,7 +1543,10 @@ class WatchConnectionService : Service() {
     }
 
     private fun submitDisconnect(stopAfter: Boolean) {
-        // LINK-SURVIVAL: an INTENTIONAL disconnect must not be fought by the active self-reconnect.
+        // HYBRID-AUTOCONNECT: an INTENTIONAL disconnect / ACTION_STOP / Remove-watch must not be
+        // fought by the background auto-connect. cancelReconnect() tears down the pending
+        // autoConnect=true GATT (disconnect()+close() cancels it) so the controller won't silently
+        // re-establish the link, and cancels the fallback timer.
         cancelReconnect()
         worker.execute {
             runCatching { controllerRef.getAndSet(null)?.disconnect() }

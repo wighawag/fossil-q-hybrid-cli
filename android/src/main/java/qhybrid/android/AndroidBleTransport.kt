@@ -145,6 +145,27 @@ class AndroidBleTransport(private val context: Context) : BleTransport {
     private var connectionCallback: Consumer<Boolean>? = null
     private var mtuCallback: Consumer<Int>? = null
 
+    // HYBRID-AUTOCONNECT: true while this transport was registered with autoConnect=true (a
+    // controller-managed background reconnect that does NOT block 15s and may establish at ANY
+    // later time when the watch reappears). For such a connect, onConnectionStateChange(CONNECTED)
+    // is what drives the post-connect sequence (discover → MTU → notifications → accept(true)),
+    // since there is no blocking connect() call awaiting connectLatch to do it inline.
+    @Volatile private var autoConnectMode: Boolean = false
+    // The mac we registered an auto-connect for (used to label the deferred post-connect work).
+    @Volatile private var autoConnectMac: String? = null
+    // Guards the post-connect sequence so it runs exactly once per established link (the blocking
+    // path runs it inline; the auto path runs it from the CONNECTED callback). Reset on each
+    // connect()/disconnect().
+    private val postConnectDone = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    // HYBRID-AUTOCONNECT: a single-thread executor on which the DEFERRED post-connect sequence runs
+    // for the auto path. It MUST NOT run on the gatt HandlerThread: runPostConnectSequence() blocks
+    // on latches that are released by GATT callbacks (onServicesDiscovered/onDescriptorWrite/
+    // onMtuChanged) which are themselves delivered on the gatt HandlerThread — running it there
+    // would deadlock. (The blocking connect() path avoids this by blocking on the ble-worker.) Lazy
+    // + scoped to one link; shut down in disconnect().
+    @Volatile private var autoConnectWorker: java.util.concurrent.ExecutorService? = null
+
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
             Log.d(TAG, "onConnectionStateChange status=$status newState=$newState")
@@ -152,6 +173,19 @@ class AndroidBleTransport(private val context: Context) : BleTransport {
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 connectedMac = g.device.address
                 connectLatch?.countDown()
+                // HYBRID-AUTOCONNECT: an autoConnect=true link can come up at ANY time (deferred),
+                // with no blocking connect() awaiting connectLatch to run the post-connect sequence.
+                // Drive discover → MTU → notifications → accept(true) HERE (on the gatt handler
+                // thread). The blocking path leaves autoConnectMode=false and runs it inline, so we
+                // skip it here to keep that path's behavior identical.
+                if (autoConnectMode) {
+                    // Run the (blocking) post-connect sequence OFF the gatt handler thread — it
+                    // awaits latches released BY this thread's callbacks, so running it here would
+                    // deadlock. Hand it to the dedicated auto-connect worker.
+                    val mac = autoConnectMac ?: g.device.address
+                    val ex = ensureAutoConnectWorker()
+                    runCatching { ex.execute { runPostConnectSequence(mac) } }
+                }
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 val wasConnected = connectedMac != null
                 connectedMac = null
@@ -244,7 +278,26 @@ class AndroidBleTransport(private val context: Context) : BleTransport {
         }
     }
 
-    override fun connect(macAddress: String): Boolean = synchronized(opLock) {
+    override fun connect(macAddress: String): Boolean = connect(macAddress, false)
+
+    /**
+     * HYBRID-AUTOCONNECT — connect with an explicit platform BLE auto-connect preference.
+     *
+     * - [autoConnect] = false (the [connect] default): the FAST, BLOCKING path used for
+     *   user-initiated / first connects. {@code connectGatt(autoConnect=false)} is a directly
+     *   initiated connect; we await STATE_CONNECTED for [CONNECT_STATE_TIMEOUT_MS], then run the
+     *   post-connect sequence (discover → MTU → notifications → accept(true)) INLINE and return
+     *   true/false. An unreachable watch fails honestly and quickly — behavior is unchanged.
+     *
+     * - [autoConnect] = true: the controller-managed BACKGROUND path used for keep-alive reconnect
+     *   after a drop. {@code connectGatt(autoConnect=true)} does NOT time out — it returns
+     *   immediately and the OS BLE controller maintains the pending connect until the (directed-
+     *   advertising) watch reappears, then fires STATE_CONNECTED. We therefore register the GATT and
+     *   return WITHOUT blocking; the post-connect sequence + accept(true) are driven from
+     *   [onConnectionStateChange] when the link actually establishes (possibly much later). The
+     *   boolean return here only reports whether the connect was successfully REGISTERED.
+     */
+    override fun connect(macAddress: String, autoConnect: Boolean): Boolean = synchronized(opLock) {
         val mgr = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
         val adapter: BluetoothAdapter = mgr?.adapter ?: run { Log.e(TAG, "No BluetoothAdapter"); return false }
         if (!adapter.isEnabled) { Log.e(TAG, "Bluetooth is off"); return false }
@@ -255,13 +308,34 @@ class AndroidBleTransport(private val context: Context) : BleTransport {
             Log.e(TAG, "Bad MAC: $macAddress", e); return false
         }
 
-        // Step 1: GATT connect — wait for STATE_CONNECTED.
-        connectLatch = CountDownLatch(1)
+        // Per-link state: the post-connect sequence must run exactly once for this connect.
+        postConnectDone.set(false)
+        autoConnectMode = autoConnect
+        autoConnectMac = macAddress
+
         // Deliver every GATT callback on a dedicated background thread (NOT the main
         // thread) so that onCharacteristicChanged → the synchronous protocol layer can't
         // saturate the UI thread during the notification burst (ANR fix). The 6-arg
         // overload that accepts a Handler is API 26+ (== our minSdk).
         val handler = ensureGattHandler()
+
+        if (autoConnect) {
+            // BACKGROUND path: register a non-timing-out auto-connect and return immediately. The
+            // link-up + post-connect sequence are handled in onConnectionStateChange(CONNECTED).
+            // No connectLatch is armed (we are NOT blocking on it here).
+            gatt = device.connectGatt(
+                context, true, gattCallback, TRANSPORT_LE,
+                BluetoothDevice.PHY_LE_1M_MASK, handler,
+            )
+            val registered = gatt != null
+            Log.i(TAG, "auto-connect registered=$registered for $macAddress (link-up deferred)")
+            return registered
+        }
+
+        // BLOCKING path (autoConnect=false): wait for STATE_CONNECTED, then run the post-connect
+        // sequence inline. autoConnectMode=false means onConnectionStateChange(CONNECTED) does NOT
+        // run the sequence — we own it here.
+        connectLatch = CountDownLatch(1)
         gatt = device.connectGatt(
             context, false, gattCallback, TRANSPORT_LE,
             BluetoothDevice.PHY_LE_1M_MASK, handler,
@@ -271,6 +345,29 @@ class AndroidBleTransport(private val context: Context) : BleTransport {
         if (!connected || connectedMac == null) {
             Log.e(TAG, "GATT connect timed out for $macAddress")
             disconnect()
+            return false
+        }
+        return runPostConnectSequence(macAddress)
+    }
+
+    /**
+     * The post-link-up GATT sequence: discover services (with retry/refresh) → request MTU →
+     * enable notifications → report connected. Runs UNDER [opLock] (reentrant from the blocking
+     * connect() path; grabbed fresh from the auto-connect callback). Idempotent per link via
+     * [postConnectDone]. Returns true if the Fossil characteristics were resolved and the link is
+     * usable; false (after disconnect()) otherwise.
+     *
+     * For the auto-connect path this is invoked from onConnectionStateChange(CONNECTED), so a
+     * deferred link establishes exactly as a blocking connect would have — service-discovery and
+     * notification-enable still complete BEFORE accept(true) is delivered to the protocol layer.
+     */
+    private fun runPostConnectSequence(macAddress: String): Boolean = synchronized(opLock) {
+        if (!postConnectDone.compareAndSet(false, true)) {
+            // Already ran for this link (e.g. a duplicate CONNECTED callback) — no-op.
+            return true
+        }
+        if (connectedMac == null) {
+            Log.w(TAG, "post-connect: link already gone for $macAddress")
             return false
         }
 
@@ -317,6 +414,9 @@ class AndroidBleTransport(private val context: Context) : BleTransport {
         }
         Log.i(TAG, "Connected to $macAddress (mtu=$mtu), notifications enabled on ${FOSSIL_NOTIFY_UUIDS.size} chars")
 
+        // Report connected LAST (after discovery + notifications). For the auto path this fires
+        // whenever the deferred link establishes — service-discovery and notification-enable have
+        // completed BEFORE accept(true), exactly as the blocking path's inline return does.
         connectionCallback?.accept(true)
         return true
     }
@@ -381,6 +481,15 @@ class AndroidBleTransport(private val context: Context) : BleTransport {
             writeLatch?.countDown()
             mtuLatch?.countDown()
             if (wasConnected) connectionCallback?.accept(false)
+            // HYBRID-AUTOCONNECT: a non-blocking auto-connect pending GATT is cancelled by
+            // disconnect()+close() above — so an intentional disconnect()/forget never lets the
+            // controller silently re-establish the link. Tear down the deferred-work worker too.
+            // shutdown() (not shutdownNow) so an in-flight post-connect task drains — disconnect()
+            // can be called FROM that task (discovery failure), where interrupting itself is moot.
+            autoConnectMode = false
+            autoConnectMac = null
+            runCatching { autoConnectWorker?.shutdown() }
+            autoConnectWorker = null
             // Tear down the GATT callback thread (a fresh transport is built per connect).
             // quitSafely() lets already-queued callbacks drain first.
             gattThread?.quitSafely()
@@ -397,6 +506,19 @@ class AndroidBleTransport(private val context: Context) : BleTransport {
         gattThread = thread
         gattHandler = handler
         return handler
+    }
+
+    /**
+     * Lazily create (or reuse) the single-thread executor that runs the DEFERRED post-connect
+     * sequence for the auto-connect path (off the gatt handler thread — see [autoConnectWorker]).
+     */
+    private fun ensureAutoConnectWorker(): java.util.concurrent.ExecutorService {
+        autoConnectWorker?.let { return it }
+        val ex = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+            Thread(r, "ble-autoconnect")
+        }
+        autoConnectWorker = ex
+        return ex
     }
 
     override fun isConnected(): Boolean = connectedMac != null

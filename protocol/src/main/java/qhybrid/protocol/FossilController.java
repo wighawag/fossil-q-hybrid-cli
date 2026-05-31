@@ -58,6 +58,17 @@ public class FossilController {
         return transport.connect(mac);
     }
 
+    /**
+     * Connect the transport to the given MAC with an explicit BLE auto-connect preference
+     * (a connection-management hint — see {@link BleTransport#connect(String, boolean)}). With
+     * {@code autoConnect=false} this is the fast bounded connect used for user-initiated/first
+     * connects; with {@code autoConnect=true} it requests a controller-managed background connect
+     * whose link-up is reported via the connection callback. Adds NO new wire behavior.
+     */
+    public boolean connect(String mac, boolean autoConnect) {
+        return transport.connect(mac, autoConnect);
+    }
+
     public void disconnect() {
         transport.disconnect();
     }
