@@ -9,7 +9,11 @@ import android.media.session.PlaybackState
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import java.util.concurrent.Executors
+import qhybrid.android.music.lyrion.HttpLyrionClient
+import qhybrid.android.music.lyrion.LyrionMusicSessionDispatcher
 import qhybrid.android.notifications.FossilNotificationListenerService
+import qhybrid.android.settings.SettingsVocabulary
 import qhybrid.android.settings.SharedPreferencesSettingsPrefs
 
 /**
@@ -67,6 +71,23 @@ class ServiceMusicDispatch(context: Context) {
         dispatcher = SystemMusicSessionDispatcher(),
     )
 
+    // L5 — the Lyrion (LMS) backend. Network I/O must NOT touch the main thread, so the Lyrion path
+    // runs on a single-thread IO executor (separate from the phone media path's main-looper Handler).
+    private val lyrionIo = Executors.newSingleThreadExecutor()
+    private val lyrionDispatcher = LyrionMusicSessionDispatcher(HttpLyrionClient()) {
+        val s = SharedPreferencesSettingsPrefs(appContext).get()
+        LyrionMusicSessionDispatcher.Config(
+            host = s.lyrionServerHost,
+            port = s.lyrionServerPort,
+            playerId = s.lyrionPlayerId,
+            emptyQueueFallback = s.lyrionEmptyQueueFallback,
+            favoriteId = s.lyrionFavoriteId,
+        )
+    }
+
+    /** L5 — the current active multi-function mode (read fresh per event). */
+    private fun activeMode(): String = SharedPreferencesSettingsPrefs(appContext).get().activeMode
+
     /**
      * Feed one watch `onEventJson` line into the music pipeline. Marshals the decide+dispatch onto
      * the main looper (media calls want the main thread; the callback arrives on the ble-gatt
@@ -76,6 +97,17 @@ class ServiceMusicDispatch(context: Context) {
         // Parse cheaply on the calling thread; only post if it IS a music event we handle.
         val action = MusicController.parse(json) ?: return
         Log.i(TAG, "music gesture: $action")
+        // L5 — route to the backend selected by the active multi-function mode. The phone backend
+        // marshals onto the main looper (media calls want the main thread); the Lyrion backend runs
+        // on the IO executor (network must NOT touch the main thread). The two MUSIC modes both
+        // arrive here (EventRouter maps both to Route.Music); the mode picks which backend dispatches.
+        if (activeMode() == SettingsVocabulary.MODE_MUSIC_LYRION) {
+            lyrionIo.execute {
+                runCatching { lyrionDispatcher.dispatch(action) }
+                    .onFailure { Log.w(TAG, "Lyrion dispatch failed", it) }
+            }
+            return
+        }
         mainHandler.post {
             runCatching {
                 val decision = dispatcher.onEventJson(json)
