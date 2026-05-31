@@ -36,9 +36,22 @@ public final class BuzzPatterns {
     /** Distinct useful vibration patterns that get a reserved entry (silent 0/9 + 4≡3 skipped). */
     public static final int[] RESERVED_PATTERNS = {1, 2, 3, 5, 6, 7, 8};
 
-    /** Neutral hand position used by the reserved entries (3 o'clock). */
-    public static final short NEUTRAL_HOUR_DEG = 90;
-    public static final short NEUTRAL_MIN_DEG = 90;
+    /**
+     * Per-pattern hand position: each reserved pattern points the hands to a DISTINCT clock
+     * position so a buzz is visually identifiable too (not just felt). Pattern {@code N} points to
+     * the {@code N} o'clock mark: the hour hand to {@code N}h and the minute hand to {@code N*5}
+     * minutes ({@code N} on the dial). Both map to {@code N * 30} degrees (12 marks * 30 = 360),
+     * e.g. {@code buzz1 -> 30 (1h / 5m)}, {@code buzz2 -> 60 (2h / 10m)}, ...,
+     * {@code buzz8 -> 240 (8h / 40m)}. Replaces the former single neutral 3-o'clock position.
+     */
+    public static short hourDegForPattern(int pattern) {
+        return (short) (((pattern % 12) * 30 + 360) % 360);
+    }
+
+    /** Minute-hand degrees for the reserved pattern (same {@code N*30} mark as the hour). */
+    public static short minDegForPattern(int pattern) {
+        return hourDegForPattern(pattern);
+    }
 
     /** The reserved package name for a given vibration pattern, e.g. {@code 5 -> qhybrid.linux.buzz5}. */
     public static String packageNameForPattern(int pattern) {
@@ -67,7 +80,7 @@ public final class BuzzPatterns {
         List<NotificationFilterEntry> entries = new ArrayList<>(RESERVED_PATTERNS.length);
         for (int p : RESERVED_PATTERNS) {
             entries.add(new NotificationFilterEntry(
-                    packageNameForPattern(p), (byte) p, NEUTRAL_HOUR_DEG, NEUTRAL_MIN_DEG));
+                    packageNameForPattern(p), (byte) p, hourDegForPattern(p), minDegForPattern(p)));
         }
         return entries;
     }
