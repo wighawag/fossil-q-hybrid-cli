@@ -83,6 +83,18 @@ class SettingsViewModelTest : DbTestBase() {
                 multiFunctionRole = SettingsVocabulary.normalizeMultiFunctionRole(role),
             )
         }
+        override fun setMultiFunctionRotation(modes: List<String>?) {
+            current = current.copy(
+                multiFunctionRotation = SettingsVocabulary.normalizeRotation(modes),
+                multiFunctionActiveIndex = 0,
+            )
+        }
+        override fun setMultiFunctionActiveIndex(index: Int) {
+            current = current.copy(
+                multiFunctionActiveIndex =
+                    SettingsVocabulary.clampIndex(current.multiFunctionRotation, index),
+            )
+        }
         override fun setRingDurationSeconds(seconds: Int) {
             current = current.copy(
                 ringDurationSeconds = SettingsVocabulary.normalizeRingDuration(seconds),

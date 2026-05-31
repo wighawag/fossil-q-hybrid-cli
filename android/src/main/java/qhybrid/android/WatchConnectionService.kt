@@ -772,12 +772,13 @@ class WatchConnectionService : Service() {
      */
     private fun routeEventJson(json: String?) {
         runCatching {
-            // The role is read fresh per event (a single pref read). Uses the SAME pure rule the
-            // unit tests assert ([qhybrid.android.tracker.EventRouter]) so they cannot drift.
-            val role = if (trackerDispatch.isTrackerRole())
-                qhybrid.android.settings.SettingsVocabulary.MULTI_FUNCTION_ROLE_TRACKER
-            else qhybrid.android.settings.SettingsVocabulary.MULTI_FUNCTION_ROLE_MUSIC
-            when (qhybrid.android.tracker.EventRouter.route(json, role)) {
+            // L0: the active MODE (configurable rotation's live entry) is read fresh per event (a
+            // single pref read). Uses the SAME pure rule the unit tests assert
+            // ([qhybrid.android.tracker.EventRouter.routeForMode]) so they cannot drift. The two
+            // music modes both yield Route.Music; the music dispatcher then picks phone vs Lyrion.
+            val activeMode = qhybrid.android.settings.SharedPreferencesSettingsPrefs(applicationContext)
+                .get().activeMode
+            when (qhybrid.android.tracker.EventRouter.routeForMode(json, activeMode)) {
                 qhybrid.android.tracker.EventRouter.Route.Music -> musicDispatch.onEventJson(json)
                 qhybrid.android.tracker.EventRouter.Route.Tracker -> trackerDispatch.onMusicEventJson(json)
                 qhybrid.android.tracker.EventRouter.Route.ButtonPath2 -> trackerDispatch.onButtonEventJson(json)

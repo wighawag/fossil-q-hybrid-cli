@@ -78,11 +78,116 @@ second implementation that talks to LMS instead of the local media stack, and a
 
 ---
 
+## 2b. Two orthogonal concepts — BACKEND vs MULTI-FUNCTION MODE
+
+Lyrion control touches **two different axes** that must not be conflated:
+
+1. **Music BACKEND** (`LOCAL` vs `LYRION`) — *where* a music command is sent: the phone's
+   own media session, or an LMS player on the network. This is a sub-setting of the
+   MUSIC role: when a gesture is interpreted as "music", the backend decides the target.
+
+2. **Multi-function MODE** (currently `MUSIC` ⇄ `TRACKER`) — *what the gesture means*:
+   a media command, or a GPS-tracker action. This is the GLOBAL role that the
+   `SWITCH_MULTI_FUNCTION_MODE` button cycles, because the 0x05 gesture stream is
+   button-blind (carries no button id), so the active meaning must be one global value.
+
+There are **two valid ways** to expose "control my Lyrion speaker" — pick one (see §2c):
+
+- **(A) Lyrion as a BACKEND of the MUSIC mode** *(original plan)*: the rotation stays
+  `MUSIC ⇄ TRACKER`; whether MUSIC hits the phone or the speaker is a separate pref.
+  Simpler, but you can't switch phone↔speaker with the button — only in Settings.
+- **(B) Lyrion as a first-class MODE in a configurable rotation** *(your suggestion)*:
+  the rotation becomes a user-defined, ordered list, e.g.
+  `[MUSIC_PHONE, MUSIC_LYRION, TRACKER]`, and the button **iterates** through it. One
+  press jumps you from controlling the phone to controlling the kitchen speaker. The
+  first entry is the default when the button is first assigned. More powerful, and it
+  generalises the hardcoded 2-way flip.
+
+**Recommendation: do (B).** It directly answers your ask ("define what it toggles from
+and what the default is", "first entry decides what is first, then switch iterates"),
+and it makes Lyrion reachable from the watch, not just Settings. (A)'s backend pref
+still exists underneath — `MUSIC_PHONE` and `MUSIC_LYRION` are just two modes that both
+use the music pipeline with a different `MusicSessionDispatcher`.
+
+---
+
+## 2c. Configurable multi-function rotation (Mode B)
+
+Replace the fixed `multiFunctionRole` (single value, 2-way flip) with a **configurable
+ordered rotation** plus a pointer to the active entry.
+
+### Modes (the vocabulary the rotation draws from)
+| Mode id | Meaning | Pipeline |
+|---------|---------|----------|
+| `MUSIC_PHONE` | Media control on the phone | music → `SystemMusicSessionDispatcher` |
+| `MUSIC_LYRION` | Media control on the configured LMS player | music → `LyrionMusicSessionDispatcher` |
+| `TRACKER` | GPS waypoint / ring-phone gestures | tracker dispatch |
+
+(Legacy value `MUSIC` normalises to `MUSIC_PHONE` for back-compat.)
+
+### New prefs (replace/extend `multiFunctionRole`)
+- `multiFunctionRotation: List<String>` — ordered, de-duplicated list of enabled modes
+  (e.g. `["MUSIC_PHONE", "MUSIC_LYRION", "TRACKER"]`). **First entry = default/active**
+  when the rotation is (re)configured or the button is first set. Stored as a
+  delimited string (CSV) in SharedPreferences; normalised to known modes, blanks/unknowns
+  dropped, empty → `[MUSIC_PHONE]`.
+- `multiFunctionActiveIndex: Int` — index into the rotation of the currently active mode
+  (clamped to range; resets to 0 when the rotation changes).
+
+Derived helpers in `SettingsVocabulary` (pure, unit-tested):
+- `normalizeRotation(csv): List<String>` — known modes only, de-dup, preserve order,
+  non-empty fallback `[MUSIC_PHONE]`.
+- `activeMode(rotation, index): String` — safe lookup (clamped).
+- `nextIndex(rotation, index): Int` — `(index+1) % size` (the iterate step).
+- `modeLabel(mode): String` — human label for Settings + buzz feedback.
+
+### Button switch behaviour
+`SWITCH_MULTI_FUNCTION_MODE` (in `ServiceTrackerDispatch`) currently calls `flipRole()`.
+Replace with `advanceRotation()`:
+```
+fun advanceRotation(): String {              // returns the NEW active mode
+  val rot  = normalizeRotation(prefs.multiFunctionRotation)
+  val next = nextIndex(rot, prefs.multiFunctionActiveIndex)
+  prefs.setMultiFunctionActiveIndex(next)
+  return rot[next]
+}
+```
+Buzz feedback: instead of the binary now-MUSIC=5 / now-TRACKER=6, buzz a count derived
+from the new active **index** (e.g. index+1 short pulses, capped) OR a distinct pattern
+per mode, so the user feels *which* of N modes they landed on. Keep it simple: N short
+pulses where N = (index+1), clamped to the reserved-pattern range.
+
+### Routing change
+`EventRouter.route` and `WatchConnectionService.routeEventJson` currently branch on the
+binary role. Change to branch on the **active mode**:
+- `MUSIC_PHONE`  → `Route.Music` (phone backend)
+- `MUSIC_LYRION` → `Route.Music` (Lyrion backend) — same route, the *dispatcher* differs
+- `TRACKER`      → `Route.Tracker`
+
+Since both music modes share `Route.Music`, the active mode also selects which
+`MusicSessionDispatcher` `ServiceMusicDispatch` uses (L5). The `0x08` `type:"button"`
+path (`Route.ButtonPath2`) is unchanged.
+
+### Settings UI (rotation editor)
+A section to: (1) toggle which modes are in the rotation, (2) reorder them (the first
+is the default), (3) see/clear the active index. Mirrors the existing role selector but
+as a multi-select + ordered list. The Lyrion server/player config (§3) appears when
+`MUSIC_LYRION` is in the rotation.
+
+### Migration
+On read, if only the legacy `multiFunctionRole` pref exists: map
+`MUSIC→[MUSIC_PHONE]`, `TRACKER→[TRACKER]` (or default `[MUSIC_PHONE]`), index 0. New
+writes use the rotation prefs; the legacy key can be left untouched for rollback safety.
+
+---
+
 ## 3. Design — add an LMS backend behind the existing seam
 
-### 3.1 New preference: music control backend
-Add to `AppSettings` / `SettingsVocabulary` / `SettingsPrefs`:
-- `musicBackend`: `LOCAL` (default, current behaviour) | `LYRION`.
+### 3.1 Lyrion config prefs
+With Mode B (§2c), the phone-vs-Lyrion choice is the **active mode** (`MUSIC_PHONE` vs
+`MUSIC_LYRION`) — there is no separate `musicBackend` pref. The Lyrion *connection*
+config is still its own set of app prefs. Add to `AppSettings` / `SettingsVocabulary` /
+`SettingsPrefs`:
 - `lyrionServerHost` : String (e.g. `192.168.1.10`).
 - `lyrionServerPort` : Int (default `9000`, the HTTP/JSON-RPC port).
 - `lyrionPlayerId`   : String (MAC of chosen player, `""` = unset).
@@ -135,28 +240,29 @@ existing `MusicSessionDispatcher` interface:
   plain `dispatch(action)` (power + play with the same empty-queue fallback). The
   local-only launch-fallback concept doesn't apply.
 
-### 3.5 Backend selection in the service
-In `ServiceMusicDispatch` (or a small new selector), choose which
-`MusicSessionDispatcher` to build based on `musicBackend`:
-- `LOCAL` → existing `SystemMusicSessionDispatcher` (unchanged).
-- `LYRION` → `LyrionMusicSessionDispatcher` (host/port/playerId read fresh from prefs).
+### 3.5 Mode/backend selection in the service
+In `ServiceMusicDispatch`, choose which `MusicSessionDispatcher` to build based on the
+current **active mode** (§2c):
+- `MUSIC_PHONE`  → existing `SystemMusicSessionDispatcher` (unchanged).
+- `MUSIC_LYRION` → `LyrionMusicSessionDispatcher` (host/port/playerId read fresh from prefs).
 
-The `MusicController.decide` step can stay, but for LMS "hasActiveSession" is less
-meaningful — simplest is: when backend == LYRION, route straight to the LMS dispatcher
-(skip the active-session/launch-fallback decision, which is Android-media-specific).
-Cleanest implementation: pick the dispatcher up front; keep the pure decide for LOCAL,
-and for LYRION use a trivial "always dispatch" decision.
+Read the active mode fresh per event (cheap pref read), matching how the role is read
+today. The `MusicController.decide` step stays for `MUSIC_PHONE`; for `MUSIC_LYRION`,
+"hasActiveSession" is Android-media-specific and not meaningful, so route straight to
+the LMS dispatcher (a trivial "always dispatch" decision).
 
 ### 3.6 Settings UI
-In `SettingsScreen.kt` / `SettingsViewModel.kt`, add a **"Music control" section**:
-1. Backend selector (radio/segmented): *Phone media* vs *Lyrion server*.
-2. When *Lyrion server* selected, show:
+In `SettingsScreen.kt` / `SettingsViewModel.kt`:
+1. **Multi-function rotation editor** (§2c): multi-select which modes are active +
+   reorder (first = default); shows the active-index indicator.
+2. When `MUSIC_LYRION` is in the rotation, show the **Lyrion server section**:
    - Server host + port fields.
    - "Test connection / load players" button → calls `players` query on a worker
      thread, populates a dropdown of discovered players (name + model).
    - Player dropdown → stores `lyrionPlayerId` + `lyrionPlayerName`.
+   - Empty-queue fallback selector (FAVORITE/RANDOM/NONE) + favourite picker.
    - (Optional) "Now playing" readout via `status`.
-Mirror the existing `preferredMusicApp` dropdown pattern for the player picker.
+Mirror the existing `preferredMusicApp` dropdown pattern for the player/favourite pickers.
 
 ---
 
@@ -164,15 +270,18 @@ Mirror the existing `preferredMusicApp` dropdown pattern for the player picker.
 
 | WP | Scope | Deliverable | Tests |
 |----|-------|-------------|-------|
-| **L1** | Prefs | `musicBackend`, `lyrionServerHost/Port`, `lyrionPlayerId/Name` in `SettingsVocabulary` + `AppSettings` + `SettingsPrefs` | round-trip + normalization unit tests |
+| **L0** | Configurable rotation | Replace `multiFunctionRole` 2-way flip with `multiFunctionRotation` (ordered modes) + `multiFunctionActiveIndex`; modes `MUSIC_PHONE`/`MUSIC_LYRION`/`TRACKER`; `normalizeRotation`/`activeMode`/`nextIndex`/`modeLabel`; `advanceRotation()` in `ServiceTrackerDispatch`; `EventRouter`/`routeEventJson` branch on active mode; legacy `MUSIC`→`MUSIC_PHONE` migration | pure rotation/route unit tests + migration test |
+| **L1** | Lyrion prefs | `lyrionServerHost/Port`, `lyrionPlayerId/Name`, `lyrionEmptyQueueFallback`, `lyrionFavoriteId` in `SettingsVocabulary` + `AppSettings` + `SettingsPrefs` | round-trip + normalization unit tests |
 | **L2** | Pure commands | `LyrionCommands` (request builder, action map, players/status queries, player + favourites parser, empty-queue fallback selection) | full unit coverage, no I/O |
 | **L3** | Transport seam | `LyrionClient` interface + `HttpLyrionClient` | fake client in tests; manual on-network smoke |
 | **L4** | Dispatcher | `LyrionMusicSessionDispatcher implements MusicSessionDispatcher` (power+play, next/prev, volume) | dispatch decisions via fake `LyrionClient` |
-| **L5** | Backend selection | `ServiceMusicDispatch` chooses LOCAL vs LYRION from prefs | selector unit test |
-| **L6** | Settings UI | backend toggle + server fields + player picker + empty-queue fallback selector (FAVORITE/RANDOM/NONE) + favourite picker (load favourites) | ViewModel state tests |
+| **L5** | Mode selection | `ServiceMusicDispatch` picks `SystemMusicSessionDispatcher` vs `LyrionMusicSessionDispatcher` from the active mode | selector unit test |
+| **L6** | Settings UI | rotation editor (multi-select + reorder) + Lyrion server section (server fields, player picker, fallback selector, favourite picker) | ViewModel state tests |
 | **L7** | Discovery (optional) | UDP 3483 auto-discovery of servers (like Squeezer) | deferred / nice-to-have |
 
-Suggested order: L1 → L2 → L4 (+L3) → L5 → L6, then L7 if wanted.
+Suggested order: **L0** → L1 → L2 → L4 (+L3) → L5 → L6, then L7 if wanted.
+(L0 is independent of Lyrion and can land first as a pure refactor; `MUSIC_LYRION`
+becomes routable once L4/L5 exist.)
 
 ---
 
@@ -190,10 +299,15 @@ Suggested order: L1 → L2 → L4 (+L3) → L5 → L6, then L7 if wanted.
    **`FAVORITE` (default)** plays the configured favourite; **`RANDOM`** does
    `randomplay tracks`; **`NONE`** leaves it passive. `FAVORITE` with no favourite set
    degrades gracefully to `RANDOM`. See §3.4.
-4. **Auth/password-protected servers** *(deferred — later)*: LMS supports a `login`
+4. **Multi-function rotation** *(decided — Mode B, §2c)*: the button cycles a
+   user-defined ordered list of modes (`MUSIC_PHONE`, `MUSIC_LYRION`, `TRACKER`); the
+   first entry is the default/active when (re)configured; the switch iterates with
+   wrap-around. Lyrion is therefore a **first-class mode**, reachable from the watch,
+   not a hidden Settings-only backend.
+5. **Auth/password-protected servers** *(deferred — later)*: LMS supports a `login`
    command / HTTP basic auth. Out of scope for v1 (assume open server on LAN); add in a
    later WP when needed.
-5. **Backend scope**: global app pref (one server, one target player), matching the
+6. **Backend scope**: global app pref (one server, one target player), matching the
    request ("specific maybe one device as player in the settings"). Per-watch is not
    needed.
 

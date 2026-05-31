@@ -138,6 +138,105 @@ class SettingsVocabularyTest {
         assertEquals("Music control", SettingsVocabulary.multiFunctionRoleLabel("BOGUS"))
     }
 
+    // ---- L0: configurable multi-function ROTATION ----------------------------
+
+    @Test
+    fun modeConstantsAndDefaults() {
+        assertEquals("MUSIC_PHONE", SettingsVocabulary.MODE_MUSIC_PHONE)
+        assertEquals("MUSIC_LYRION", SettingsVocabulary.MODE_MUSIC_LYRION)
+        assertEquals("TRACKER", SettingsVocabulary.MODE_TRACKER)
+        assertEquals(
+            listOf("MUSIC_PHONE", "MUSIC_LYRION", "TRACKER"),
+            SettingsVocabulary.MULTI_FUNCTION_MODES,
+        )
+        // Default rotation = phone media only (preserves out-of-box behaviour).
+        assertEquals(
+            listOf(SettingsVocabulary.MODE_MUSIC_PHONE),
+            SettingsVocabulary.MULTI_FUNCTION_ROTATION_DEFAULT,
+        )
+    }
+
+    @Test
+    fun normalizeMode_foldsUnknownAndLegacyToPhone() {
+        assertEquals(SettingsVocabulary.MODE_MUSIC_PHONE, SettingsVocabulary.normalizeMode(null))
+        assertEquals(SettingsVocabulary.MODE_MUSIC_PHONE, SettingsVocabulary.normalizeMode("  "))
+        assertEquals(SettingsVocabulary.MODE_MUSIC_PHONE, SettingsVocabulary.normalizeMode("BOGUS"))
+        // Legacy single-role "MUSIC" maps to the phone backend.
+        assertEquals(SettingsVocabulary.MODE_MUSIC_PHONE, SettingsVocabulary.normalizeMode("MUSIC"))
+        // Known modes round-trip; case-insensitive + trimmed.
+        assertEquals(SettingsVocabulary.MODE_MUSIC_LYRION, SettingsVocabulary.normalizeMode(" music_lyrion "))
+        assertEquals(SettingsVocabulary.MODE_TRACKER, SettingsVocabulary.normalizeMode("tracker"))
+    }
+
+    @Test
+    fun normalizeRotation_dedupsPreservesOrderAndFallsBack() {
+        // Order preserved, duplicates dropped.
+        assertEquals(
+            listOf("MUSIC_PHONE", "MUSIC_LYRION", "TRACKER"),
+            SettingsVocabulary.normalizeRotation(
+                listOf("MUSIC_PHONE", "MUSIC_LYRION", "MUSIC_PHONE", "TRACKER")
+            ),
+        )
+        // Null/empty → default.
+        assertEquals(
+            SettingsVocabulary.MULTI_FUNCTION_ROTATION_DEFAULT,
+            SettingsVocabulary.normalizeRotation(null),
+        )
+        assertEquals(
+            SettingsVocabulary.MULTI_FUNCTION_ROTATION_DEFAULT,
+            SettingsVocabulary.normalizeRotation(emptyList()),
+        )
+        // Only-unknown entries collapse (via normalizeMode) to a single phone entry, never empty.
+        assertEquals(
+            listOf(SettingsVocabulary.MODE_MUSIC_PHONE),
+            SettingsVocabulary.normalizeRotation(listOf("???", "   ")),
+        )
+    }
+
+    @Test
+    fun rotationCsvRoundTrips() {
+        val csv = SettingsVocabulary.rotationToCsv(listOf("MUSIC_LYRION", "TRACKER"))
+        assertEquals("MUSIC_LYRION,TRACKER", csv)
+        assertEquals(
+            listOf("MUSIC_LYRION", "TRACKER"),
+            SettingsVocabulary.parseRotation(csv),
+        )
+        // Blank/garbage CSV → default.
+        assertEquals(
+            SettingsVocabulary.MULTI_FUNCTION_ROTATION_DEFAULT,
+            SettingsVocabulary.parseRotation(null),
+        )
+        assertEquals(
+            SettingsVocabulary.MULTI_FUNCTION_ROTATION_DEFAULT,
+            SettingsVocabulary.parseRotation("   "),
+        )
+    }
+
+    @Test
+    fun activeModeAndNextIndex_wrapAround() {
+        val rot = listOf("MUSIC_PHONE", "MUSIC_LYRION", "TRACKER")
+        assertEquals("MUSIC_PHONE", SettingsVocabulary.activeMode(rot, 0))
+        assertEquals("MUSIC_LYRION", SettingsVocabulary.activeMode(rot, 1))
+        assertEquals("TRACKER", SettingsVocabulary.activeMode(rot, 2))
+        // Out-of-range index is clamped, never throws.
+        assertEquals("TRACKER", SettingsVocabulary.activeMode(rot, 99))
+        assertEquals("MUSIC_PHONE", SettingsVocabulary.activeMode(rot, -5))
+        // next iterates with wrap-around.
+        assertEquals(1, SettingsVocabulary.nextIndex(rot, 0))
+        assertEquals(2, SettingsVocabulary.nextIndex(rot, 1))
+        assertEquals(0, SettingsVocabulary.nextIndex(rot, 2)) // wrap
+        // Single-entry rotation always stays at 0.
+        assertEquals(0, SettingsVocabulary.nextIndex(listOf("MUSIC_PHONE"), 0))
+    }
+
+    @Test
+    fun modeLabels() {
+        assertEquals("Music (phone)", SettingsVocabulary.modeLabel("MUSIC_PHONE"))
+        assertEquals("Music (Lyrion player)", SettingsVocabulary.modeLabel("MUSIC_LYRION"))
+        assertEquals("GPS waypoint tracker", SettingsVocabulary.modeLabel("TRACKER"))
+        assertEquals("Music (phone)", SettingsVocabulary.modeLabel("BOGUS"))
+    }
+
     // ---- WP-TRACKER: find-my-phone ring duration -----------------------------
 
     @Test

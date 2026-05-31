@@ -65,4 +65,40 @@ class EventRouterTest {
         assertEquals(Route.Ignore, EventRouter.route(null, MUSIC))
         assertEquals(Route.Ignore, EventRouter.route("   ", MUSIC))
     }
+
+    // ---- L0: mode-aware routing (configurable rotation) ----------------------
+
+    private val PHONE = SettingsVocabulary.MODE_MUSIC_PHONE
+    private val LYRION = SettingsVocabulary.MODE_MUSIC_LYRION
+    private val TRACKER_MODE = SettingsVocabulary.MODE_TRACKER
+
+    @Test
+    fun routeForMode_bothMusicModesYieldMusic() {
+        // Phone vs Lyrion is decided downstream; both route to Music here.
+        assertEquals(Route.Music, EventRouter.routeForMode(music("NEXT"), PHONE))
+        assertEquals(Route.Music, EventRouter.routeForMode(music("NEXT"), LYRION))
+        assertEquals(Route.Music, EventRouter.routeForMode(music("TOGGLE_PLAY_PAUSE"), LYRION))
+    }
+
+    @Test
+    fun routeForMode_trackerModeYieldsTracker() {
+        assertEquals(Route.Tracker, EventRouter.routeForMode(music("NEXT"), TRACKER_MODE))
+        assertEquals(Route.Tracker, EventRouter.routeForMode(music("PREVIOUS"), TRACKER_MODE))
+    }
+
+    @Test
+    fun routeForMode_legacyAndUnknownFoldToMusicPhone() {
+        // Legacy "MUSIC" and any unknown mode behave as a music mode (→ Route.Music).
+        assertEquals(Route.Music, EventRouter.routeForMode(music("NEXT"), "MUSIC"))
+        assertEquals(Route.Music, EventRouter.routeForMode(music("NEXT"), "BOGUS"))
+        assertEquals(Route.Music, EventRouter.routeForMode(music("NEXT"), ""))
+    }
+
+    @Test
+    fun routeForMode_buttonAndMalformedUnaffectedByMode() {
+        assertEquals(Route.ButtonPath2, EventRouter.routeForMode(button("TOP"), PHONE))
+        assertEquals(Route.ButtonPath2, EventRouter.routeForMode(button("BOTTOM"), TRACKER_MODE))
+        assertEquals(Route.Ignore, EventRouter.routeForMode("{not json", LYRION))
+        assertEquals(Route.Ignore, EventRouter.routeForMode(null, LYRION))
+    }
 }

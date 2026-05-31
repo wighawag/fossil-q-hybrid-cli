@@ -68,7 +68,7 @@ class ServiceTrackerDispatch(
 
     /** True iff the GLOBAL multi-function role is currently TRACKER (read fresh per call). */
     fun isTrackerRole(): Boolean =
-        prefs.get().multiFunctionRole == SettingsVocabulary.MULTI_FUNCTION_ROLE_TRACKER
+        prefs.get().activeMode == SettingsVocabulary.MODE_TRACKER
 
     /**
      * Part A \u2014 handle one 0x05 `type:"music"` line as a TRACKER gesture. Cheap parse on the caller's
@@ -110,23 +110,28 @@ class ServiceTrackerDispatch(
                 buzz(action.buzzPattern)
             }
             is Path2Action.SwitchMultiFunctionMode -> {
-                val nowTracker = flipRole()
-                // Distinct buzz per RESULTING mode so the user feels which mode they switched to.
-                buzz(if (nowTracker) VibePatterns.TWO_SHORT else VibePatterns.ONE_SHORT)
+                val (newIndex, newMode) = advanceRotation()
+                // Buzz a count that signals WHICH of the N rotation entries the user landed on:
+                // (index+1) short pulses, clamped to the reserved-pattern range, so even >2-mode
+                // rotations give distinct tactile feedback (1 pulse = first entry, 2 = second, …).
+                buzz(VibePatterns.clamp(VibePatterns.ONE_SHORT + newIndex))
+                Log.i(TAG, "multi-function advanced to [$newIndex] $newMode")
             }
         }
         return action
     }
 
-    /** Flip the GLOBAL multi-function role pref; returns true if the NEW role is TRACKER. */
-    private fun flipRole(): Boolean {
-        val current = prefs.get().multiFunctionRole
-        val next = if (current == SettingsVocabulary.MULTI_FUNCTION_ROLE_TRACKER)
-            SettingsVocabulary.MULTI_FUNCTION_ROLE_MUSIC
-        else SettingsVocabulary.MULTI_FUNCTION_ROLE_TRACKER
-        prefs.setMultiFunctionRole(next)
-        Log.i(TAG, "multi-function role switched: $current -> $next")
-        return next == SettingsVocabulary.MULTI_FUNCTION_ROLE_TRACKER
+    /**
+     * L0 — advance the GLOBAL multi-function rotation by one (wrap-around) and persist the new
+     * active index. Returns the new (index, mode) for buzz feedback + logging. The rotation + its
+     * iteration are configured in Settings; this just steps the live pointer.
+     */
+    private fun advanceRotation(): Pair<Int, String> {
+        val s = prefs.get()
+        val next = SettingsVocabulary.nextIndex(s.multiFunctionRotation, s.multiFunctionActiveIndex)
+        prefs.setMultiFunctionActiveIndex(next)
+        val mode = SettingsVocabulary.activeMode(s.multiFunctionRotation, next)
+        return next to mode
     }
 
     /** Buzz-back via the existing reserved-pattern play path (no new wire bytes). */

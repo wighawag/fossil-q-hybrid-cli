@@ -208,4 +208,96 @@ object SettingsVocabulary {
         MULTI_FUNCTION_ROLE_TRACKER -> "GPS waypoint tracker"
         else -> "Music control"
     }
+
+    // ---- multi-function ROTATION (L0; configurable, ordered, GLOBAL) ----------
+
+    /**
+     * L0 — the configurable multi-function ROTATION generalises the legacy 2-way
+     * [MULTI_FUNCTION_ROLE_MUSIC] ⇄ [MULTI_FUNCTION_ROLE_TRACKER] flip into a user-defined ORDERED
+     * list of MODES that the `SWITCH_MULTI_FUNCTION_MODE` button iterates through (wrap-around).
+     *
+     * **Modes** are a superset of the legacy roles — they split "music" by backend so Lyrion is a
+     * first-class, watch-switchable mode (not a hidden Settings-only backend):
+     *   - [MODE_MUSIC_PHONE]  — media control on the phone (the legacy MUSIC behaviour),
+     *   - [MODE_MUSIC_LYRION] — media control on the configured Lyrion (LMS) player,
+     *   - [MODE_TRACKER]      — GPS waypoint / ring-phone gestures (the legacy TRACKER behaviour).
+     *
+     * **Still necessarily GLOBAL** for the same hardware reason as the legacy role: the 0x05 stream
+     * carries no button id, so the active meaning must be one global value. The rotation is the list
+     * of *candidate* meanings; [multiFunctionActiveIndex] picks the live one; the button advances it.
+     *
+     * **First entry = default/active** when the rotation is (re)configured (the active index resets
+     * to 0). Legacy [MULTI_FUNCTION_ROLE_MUSIC] maps to [MODE_MUSIC_PHONE] for back-compat.
+     */
+    const val MODE_MUSIC_PHONE = "MUSIC_PHONE"
+    const val MODE_MUSIC_LYRION = "MUSIC_LYRION"
+    const val MODE_TRACKER = "TRACKER"
+
+    /** All selectable multi-function modes in canonical display order. */
+    val MULTI_FUNCTION_MODES = listOf(MODE_MUSIC_PHONE, MODE_MUSIC_LYRION, MODE_TRACKER)
+
+    /** Default rotation out of the box — phone media only (preserves WP12 default behaviour). */
+    val MULTI_FUNCTION_ROTATION_DEFAULT = listOf(MODE_MUSIC_PHONE)
+
+    /** Delimiter used to persist the ordered rotation as a single SharedPreferences string. */
+    const val ROTATION_DELIM = ","
+
+    /**
+     * Normalize a stored/raw mode onto the known set (never throws). Blank/unknown → [MODE_MUSIC_PHONE];
+     * the legacy role value `MUSIC` also maps to [MODE_MUSIC_PHONE]. Case-insensitive + trimmed.
+     */
+    fun normalizeMode(mode: String?): String = when (mode?.trim()?.uppercase()) {
+        MODE_MUSIC_LYRION -> MODE_MUSIC_LYRION
+        MODE_TRACKER -> MODE_TRACKER
+        MODE_MUSIC_PHONE -> MODE_MUSIC_PHONE
+        MULTI_FUNCTION_ROLE_MUSIC -> MODE_MUSIC_PHONE // legacy "MUSIC" → phone backend
+        else -> MODE_MUSIC_PHONE
+    }
+
+    /**
+     * Normalize an ordered list of modes (never throws): map each onto the known set, drop
+     * duplicates while preserving first-seen order, and fall back to [MULTI_FUNCTION_ROTATION_DEFAULT]
+     * when the result is empty. Note: because unknown/blank entries fold to [MODE_MUSIC_PHONE], a
+     * list of only-unknown entries collapses to `[MODE_MUSIC_PHONE]` (a safe default), never empty.
+     */
+    fun normalizeRotation(modes: List<String>?): List<String> {
+        if (modes.isNullOrEmpty()) return MULTI_FUNCTION_ROTATION_DEFAULT
+        val out = LinkedHashSet<String>()
+        for (m in modes) out.add(normalizeMode(m))
+        return if (out.isEmpty()) MULTI_FUNCTION_ROTATION_DEFAULT else out.toList()
+    }
+
+    /** Parse a persisted CSV rotation string into a normalized ordered mode list. Never throws. */
+    fun parseRotation(csv: String?): List<String> =
+        normalizeRotation(csv?.split(ROTATION_DELIM)?.map { it.trim() }?.filter { it.isNotEmpty() })
+
+    /** Serialize a rotation to the persisted CSV string (normalized first). */
+    fun rotationToCsv(modes: List<String>?): String =
+        normalizeRotation(modes).joinToString(ROTATION_DELIM)
+
+    /** Clamp an active index into a (normalized) rotation's range; empty-safe (returns 0). */
+    fun clampIndex(rotation: List<String>, index: Int): Int {
+        val rot = normalizeRotation(rotation)
+        return index.coerceIn(0, (rot.size - 1).coerceAtLeast(0))
+    }
+
+    /** The active mode for a rotation + index (clamped). Never throws. */
+    fun activeMode(rotation: List<String>, index: Int): String {
+        val rot = normalizeRotation(rotation)
+        return rot[clampIndex(rot, index)]
+    }
+
+    /** The next index when the switch button advances (wrap-around). Empty-safe. */
+    fun nextIndex(rotation: List<String>, index: Int): Int {
+        val rot = normalizeRotation(rotation)
+        if (rot.size <= 1) return 0
+        return (clampIndex(rot, index) + 1) % rot.size
+    }
+
+    /** Human label for a mode; falls back gracefully. */
+    fun modeLabel(mode: String): String = when (normalizeMode(mode)) {
+        MODE_MUSIC_LYRION -> "Music (Lyrion player)"
+        MODE_TRACKER -> "GPS waypoint tracker"
+        else -> "Music (phone)"
+    }
 }

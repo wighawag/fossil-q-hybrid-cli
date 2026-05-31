@@ -33,6 +33,8 @@ class SyncDataLoaderTest : DbTestBase() {
         override fun setPreferredMusicApp(pkg: String?) {}
         override fun setCalendarAlarmOffset(minutes: Int) {}
         override fun setMultiFunctionRole(role: String?) {}
+        override fun setMultiFunctionRotation(modes: List<String>?) {}
+        override fun setMultiFunctionActiveIndex(index: Int) {}
         override fun setRingDurationSeconds(seconds: Int) {}
     }
 

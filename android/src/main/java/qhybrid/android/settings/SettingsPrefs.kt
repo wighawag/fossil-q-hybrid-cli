@@ -48,12 +48,24 @@ data class AppSettings(
      */
     val multiFunctionRole: String = SettingsVocabulary.MULTI_FUNCTION_ROLE_DEFAULT,
     /**
+     * L0 — the configurable, ORDERED multi-function rotation the switch button iterates through
+     * (see [SettingsVocabulary.normalizeRotation]). First entry = default/active. Default = phone
+     * media only ([SettingsVocabulary.MULTI_FUNCTION_ROTATION_DEFAULT]).
+     */
+    val multiFunctionRotation: List<String> = SettingsVocabulary.MULTI_FUNCTION_ROTATION_DEFAULT,
+    /** L0 — index into [multiFunctionRotation] of the currently-active mode (clamped to range). */
+    val multiFunctionActiveIndex: Int = 0,
+    /**
      * WP-TRACKER — how long (seconds) the loud "find my phone" ring plays before auto-stopping (a
      * pocketed phone can't ring forever). A repeated TRACKER long gesture / RING_PHONE press also
      * stops it early. Phone-side only — never sent to the watch. Default 60s (1 minute).
      */
     val ringDurationSeconds: Int = SettingsVocabulary.RING_DURATION_DEFAULT_SECONDS,
-)
+) {
+    /** The currently-active multi-function mode (clamped; never throws). */
+    val activeMode: String
+        get() = SettingsVocabulary.activeMode(multiFunctionRotation, multiFunctionActiveIndex)
+}
 
 /**
  * WP16g — injectable seam over the app-level Settings prefs (nudge / second timezone / music app)
@@ -75,8 +87,17 @@ interface SettingsPrefs {
     /** WP13 — persist the calendar-alarm ring offset in minutes (normalized 0..120). */
     fun setCalendarAlarmOffset(minutes: Int)
 
-    /** WP-TRACKER — persist the global multi-function role (blank/unknown → default MUSIC). */
+    /** WP-TRACKER — persist the legacy global multi-function role (blank/unknown → default MUSIC). */
     fun setMultiFunctionRole(role: String?)
+
+    /**
+     * L0 — persist the ordered multi-function rotation (normalized). Resets the active index to 0
+     * (first entry = default) since the rotation membership/order changed.
+     */
+    fun setMultiFunctionRotation(modes: List<String>?)
+
+    /** L0 — persist the active-mode index (clamped to the current rotation's range). */
+    fun setMultiFunctionActiveIndex(index: Int)
 
     /** WP-TRACKER — persist the loud-ring auto-stop duration in seconds (normalized 5..300). */
     fun setRingDurationSeconds(seconds: Int)
@@ -115,7 +136,30 @@ class SharedPreferencesSettingsPrefs(context: Context) : SettingsPrefs {
             ringDurationSeconds = SettingsVocabulary.normalizeRingDuration(
                 p.getInt(KEY_RING_DURATION, SettingsVocabulary.RING_DURATION_DEFAULT_SECONDS)
             ),
+            multiFunctionRotation = readRotation(p),
+            multiFunctionActiveIndex = SettingsVocabulary.clampIndex(
+                readRotation(p), p.getInt(KEY_MULTI_FUNCTION_INDEX, 0)
+            ),
         )
+    }
+
+    /**
+     * L0 — read the rotation, migrating from the legacy [KEY_MULTI_FUNCTION_ROLE] when the new
+     * [KEY_MULTI_FUNCTION_ROTATION] key is absent: `MUSIC → [MUSIC_PHONE]`, `TRACKER → [TRACKER]`.
+     * Never writes (migration is read-only so rollback stays safe); the value is persisted only when
+     * the user next changes the rotation via [setMultiFunctionRotation].
+     */
+    private fun readRotation(p: android.content.SharedPreferences): List<String> {
+        val csv = p.getString(KEY_MULTI_FUNCTION_ROTATION, null)
+        if (csv != null) return SettingsVocabulary.parseRotation(csv)
+        // Migrate from the legacy single-role key.
+        val legacy = SettingsVocabulary.normalizeMultiFunctionRole(
+            p.getString(KEY_MULTI_FUNCTION_ROLE, SettingsVocabulary.MULTI_FUNCTION_ROLE_DEFAULT)
+        )
+        val migrated = if (legacy == SettingsVocabulary.MULTI_FUNCTION_ROLE_TRACKER)
+            listOf(SettingsVocabulary.MODE_TRACKER)
+        else listOf(SettingsVocabulary.MODE_MUSIC_PHONE)
+        return SettingsVocabulary.normalizeRotation(migrated)
     }
 
     override fun setNudge(enabled: Boolean, minutes: Int) {
@@ -149,6 +193,21 @@ class SharedPreferencesSettingsPrefs(context: Context) : SettingsPrefs {
             .apply()
     }
 
+    override fun setMultiFunctionRotation(modes: List<String>?) {
+        // Changing the rotation resets the active index to 0 (first entry = default).
+        prefs.edit()
+            .putString(KEY_MULTI_FUNCTION_ROTATION, SettingsVocabulary.rotationToCsv(modes))
+            .putInt(KEY_MULTI_FUNCTION_INDEX, 0)
+            .apply()
+    }
+
+    override fun setMultiFunctionActiveIndex(index: Int) {
+        val rot = readRotation(prefs)
+        prefs.edit()
+            .putInt(KEY_MULTI_FUNCTION_INDEX, SettingsVocabulary.clampIndex(rot, index))
+            .apply()
+    }
+
     override fun setRingDurationSeconds(seconds: Int) {
         prefs.edit()
             .putInt(KEY_RING_DURATION, SettingsVocabulary.normalizeRingDuration(seconds))
@@ -163,6 +222,8 @@ class SharedPreferencesSettingsPrefs(context: Context) : SettingsPrefs {
         const val KEY_MUSIC_APP = "preferred_music_app"
         const val KEY_CAL_OFFSET = "calendar_alarm_offset_minutes"
         const val KEY_MULTI_FUNCTION_ROLE = "multi_function_role"
+        const val KEY_MULTI_FUNCTION_ROTATION = "multi_function_rotation"
+        const val KEY_MULTI_FUNCTION_INDEX = "multi_function_active_index"
         const val KEY_RING_DURATION = "ring_duration_seconds"
     }
 }

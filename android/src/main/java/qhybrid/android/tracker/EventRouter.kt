@@ -22,7 +22,28 @@ object EventRouter {
 
     enum class Route { Music, Tracker, ButtonPath2, Ignore }
 
-    /** Route one event line given the current GLOBAL [multiFunctionRole]. Never throws. */
+    /**
+     * L0 — route one event line given the current GLOBAL active MODE (the configurable rotation's
+     * live entry; see [SettingsVocabulary.activeMode]). Both music modes
+     * ([SettingsVocabulary.MODE_MUSIC_PHONE] / [SettingsVocabulary.MODE_MUSIC_LYRION]) share
+     * [Route.Music] — which music BACKEND runs is decided downstream by the dispatcher selector, not
+     * here. [SettingsVocabulary.MODE_TRACKER] → [Route.Tracker]. Never throws.
+     */
+    fun routeForMode(json: String?, activeMode: String): Route {
+        val type = eventType(json) ?: return Route.Ignore
+        return when (type) {
+            "music" ->
+                if (SettingsVocabulary.normalizeMode(activeMode) == SettingsVocabulary.MODE_TRACKER)
+                    Route.Tracker else Route.Music
+            "button" -> Route.ButtonPath2
+            else -> Route.Ignore
+        }
+    }
+
+    /**
+     * Legacy 2-role router (MUSIC ⇄ TRACKER), kept for back-compat / existing tests. Prefer
+     * [routeForMode] with the configurable rotation's active mode. Never throws.
+     */
     fun route(json: String?, multiFunctionRole: String): Route {
         val type = eventType(json) ?: return Route.Ignore
         return when (type) {
