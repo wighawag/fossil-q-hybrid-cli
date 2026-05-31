@@ -283,13 +283,21 @@ Suggested order: **L0** → L1 → L2 → L4 (+L3) → L5 → L6, then L7 if wan
 (L0 is independent of Lyrion and can land first as a pure refactor; `MUSIC_LYRION`
 becomes routable once L4/L5 exist.)
 
-**STATUS (implemented):** L0–L6 are done and unit-tested. L6 ships the rotation editor
-(checkbox multi-select + active-mode picker) and a Lyrion config card (server host/port,
-player id/name, empty-queue fallback, favourite id) shown when the Lyrion mode is in the
-rotation. **Follow-ups:** (a) "load players / favourites" network pickers (currently the
-player id + favourite id are entered manually) — needs a small VM seam that calls
-`playersQuery`/`favoritesQuery` via `LyrionClient` on a worker thread and exposes the
-results to the UI; (b) L7 UDP server auto-discovery; (c) password/auth.
+**STATUS (implemented):** L0–L7 are done and unit-tested.
+- L6 ships the rotation editor (checkbox multi-select + active-mode picker) and a Lyrion
+  config card shown when the Lyrion mode is in the rotation.
+- **Load players / favourites (done):** a `LyrionDiscovery` seam (`SystemLyrionDiscovery`)
+  calls `playersQuery`/`favoritesQuery` via `LyrionClient` off the main thread; the VM
+  exposes the results (`loadLyrionPlayers` / `loadLyrionFavorites`) and the Settings card
+  has "Load players"/"Load favourites" buttons + dropdowns. Manual id entry still works.
+- **L7 UDP discovery (done):** `LyrionDiscoveryCodec` (pure TLV build/parse) + the socket
+  in `SystemLyrionDiscovery.discoverServers()` broadcast on port 3483; the VM exposes
+  `discoverLyrionServers` and the card has a "Discover servers on network" button +
+  dropdown that fills host/port. Manifest gains `INTERNET` / `ACCESS_NETWORK_STATE` /
+  `CHANGE_WIFI_MULTICAST_STATE` (+ a brief multicast lock during discovery).
+
+**Remaining follow-up:** password/auth for protected servers (deferred — LMS `login` /
+HTTP basic auth).
 
 ---
 

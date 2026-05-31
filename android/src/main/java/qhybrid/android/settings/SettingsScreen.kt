@@ -101,6 +101,9 @@ fun SettingsScreen(
         onSetLyrionPlayer = vm::setLyrionPlayer,
         onSetLyrionFallback = vm::setLyrionEmptyQueueFallback,
         onSetLyrionFavorite = vm::setLyrionFavoriteId,
+        onLoadLyrionPlayers = vm::loadLyrionPlayers,
+        onLoadLyrionFavorites = vm::loadLyrionFavorites,
+        onDiscoverLyrionServers = vm::discoverLyrionServers,
         onSetRingDuration = vm::setRingDurationSeconds,
         onTransfer = vm::transferSettings,
         onRemoveWatch = vm::removeActiveWatch,
@@ -137,6 +140,12 @@ fun SettingsContent(
     onSetLyrionFallback: (String?) -> Unit = {},
     // L1: set the Lyrion favourite id. No-op default.
     onSetLyrionFavorite: (String?) -> Unit = {},
+    // L6: load players from the configured server. No-op default.
+    onLoadLyrionPlayers: () -> Unit = {},
+    // L6: load favourites from the configured server. No-op default.
+    onLoadLyrionFavorites: () -> Unit = {},
+    // L7: discover Lyrion servers on the LAN (UDP). No-op default.
+    onDiscoverLyrionServers: () -> Unit = {},
     // WP-TRACKER: set the loud-ring auto-stop duration (seconds). No-op default for previews/tests.
     onSetRingDuration: (Int) -> Boolean = { false },
     // WP13: set the calendar-alarm ring offset (minutes before the event). No-op default.
@@ -203,6 +212,9 @@ fun SettingsContent(
                     onSetLyrionPlayer,
                     onSetLyrionFallback,
                     onSetLyrionFavorite,
+                    onLoadLyrionPlayers,
+                    onLoadLyrionFavorites,
+                    onDiscoverLyrionServers,
                 ) { note = it }
             }
             RingDurationCard(state, onSetRingDuration) { note = it }
@@ -620,7 +632,8 @@ private fun MultiFunctionRotationCard(
  * host + port, the target player id (MAC), the empty-queue fallback, and a favourite id. Shown only
  * when the Lyrion mode is in the rotation. Pure phone-side state; never sent to the watch.
  *
- * Player/favourite are entered manually for now (auto-discovery "load players" is a follow-up).
+ * L6/L7: "Discover servers" (UDP) fills a server dropdown; "Load players"/"Load favourites" query
+ * the configured server and fill the player/favourite dropdowns. Manual entry stays available.
  */
 @Composable
 private fun LyrionCard(
@@ -629,14 +642,58 @@ private fun LyrionCard(
     onSetLyrionPlayer: (String?, String?) -> Unit,
     onSetLyrionFallback: (String?) -> Unit,
     onSetLyrionFavorite: (String?) -> Unit,
+    onLoadLyrionPlayers: () -> Unit,
+    onLoadLyrionFavorites: () -> Unit,
+    onDiscoverLyrionServers: () -> Unit,
     onNote: (String) -> Unit,
 ) {
     SettingCard("Lyrion music server") {
         Text(
-            "Control a Lyrion (LMS) player over the network. Enter the server address and the " +
-                "target player's id (MAC). A play gesture starts/controls music on that player.",
+            "Control a Lyrion (LMS) player over the network. Discover the server on your LAN (or " +
+                "enter it), then load + pick the target player. A play gesture starts/controls music " +
+                "on that player.",
             style = MaterialTheme.typography.labelSmall,
         )
+
+        // L7 — discover servers on the LAN (UDP); selecting one fills host+port.
+        OutlinedButton(
+            onClick = { onDiscoverLyrionServers(); onNote("Discovering Lyrion servers…") },
+            enabled = !state.lyrionLoading,
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("Discover servers on network") }
+        if (state.lyrionDiscoveredServers.isNotEmpty()) {
+            var srvExpanded by remember { mutableStateOf(false) }
+            ExposedDropdownMenuBox(
+                expanded = srvExpanded,
+                onExpandedChange = { srvExpanded = it },
+            ) {
+                OutlinedTextField(
+                    value = "${state.lyrionDiscoveredServers.size} found — pick one",
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("Discovered servers") },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = srvExpanded) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .menuAnchor(MenuAnchorType.PrimaryNotEditable),
+                )
+                ExposedDropdownMenu(
+                    expanded = srvExpanded,
+                    onDismissRequest = { srvExpanded = false },
+                ) {
+                    state.lyrionDiscoveredServers.forEach { srv ->
+                        DropdownMenuItem(
+                            text = { Text(srv.name) },
+                            onClick = {
+                                srvExpanded = false
+                                onSetLyrionServer(srv.host, srv.jsonPort)
+                                onNote("Selected ${srv.name}")
+                            },
+                        )
+                    }
+                }
+            }
+        }
 
         var host by remember(state.lyrionServerHost) { mutableStateOf(state.lyrionServerHost) }
         var port by remember(state.lyrionServerPort) {
@@ -661,12 +718,53 @@ private fun LyrionCard(
             onNote("Lyrion server saved")
         }) { Text("Save server") }
 
+        // L6 — load + pick a player from the configured server (manual id entry still available).
+        OutlinedButton(
+            onClick = { onLoadLyrionPlayers(); onNote("Loading players…") },
+            enabled = !state.lyrionLoading && state.lyrionServerHost.isNotEmpty(),
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("Load players") }
+        if (state.lyrionPlayers.isNotEmpty()) {
+            var plExpanded by remember { mutableStateOf(false) }
+            val current = state.lyrionPlayers.firstOrNull { it.id == state.lyrionPlayerId }
+            ExposedDropdownMenuBox(
+                expanded = plExpanded,
+                onExpandedChange = { plExpanded = it },
+            ) {
+                OutlinedTextField(
+                    value = current?.name ?: state.lyrionPlayerName.ifEmpty { "Pick a player" },
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("Player") },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = plExpanded) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .menuAnchor(MenuAnchorType.PrimaryNotEditable),
+                )
+                ExposedDropdownMenu(
+                    expanded = plExpanded,
+                    onDismissRequest = { plExpanded = false },
+                ) {
+                    state.lyrionPlayers.forEach { p ->
+                        DropdownMenuItem(
+                            text = { Text("${p.name} (${p.model})") },
+                            onClick = {
+                                plExpanded = false
+                                onSetLyrionPlayer(p.id, p.name)
+                                onNote("Selected ${p.name}")
+                            },
+                        )
+                    }
+                }
+            }
+        }
+
         var playerId by remember(state.lyrionPlayerId) { mutableStateOf(state.lyrionPlayerId) }
         var playerName by remember(state.lyrionPlayerName) { mutableStateOf(state.lyrionPlayerName) }
         OutlinedTextField(
             value = playerId,
             onValueChange = { playerId = it },
-            label = { Text("Player id (MAC)") },
+            label = { Text("Player id (MAC) — or pick above") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
@@ -714,13 +812,52 @@ private fun LyrionCard(
             }
         }
 
-        // Favourite id (used when the fallback is FAVORITE).
+        // Favourite (used when the fallback is FAVORITE): load + pick, or enter the id manually.
         if (state.lyrionEmptyQueueFallback == SettingsVocabulary.LYRION_FALLBACK_FAVORITE) {
+            OutlinedButton(
+                onClick = { onLoadLyrionFavorites(); onNote("Loading favourites…") },
+                enabled = !state.lyrionLoading && state.lyrionServerHost.isNotEmpty(),
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Load favourites") }
+            if (state.lyrionFavorites.isNotEmpty()) {
+                var favExpanded by remember { mutableStateOf(false) }
+                val currentFav = state.lyrionFavorites.firstOrNull { it.id == state.lyrionFavoriteId }
+                ExposedDropdownMenuBox(
+                    expanded = favExpanded,
+                    onExpandedChange = { favExpanded = it },
+                ) {
+                    OutlinedTextField(
+                        value = currentFav?.name ?: "Pick a favourite",
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Favourite") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = favExpanded) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .menuAnchor(MenuAnchorType.PrimaryNotEditable),
+                    )
+                    ExposedDropdownMenu(
+                        expanded = favExpanded,
+                        onDismissRequest = { favExpanded = false },
+                    ) {
+                        state.lyrionFavorites.forEach { f ->
+                            DropdownMenuItem(
+                                text = { Text(f.name) },
+                                onClick = {
+                                    favExpanded = false
+                                    onSetLyrionFavorite(f.id)
+                                    onNote("Selected ${f.name}")
+                                },
+                            )
+                        }
+                    }
+                }
+            }
             var fav by remember(state.lyrionFavoriteId) { mutableStateOf(state.lyrionFavoriteId) }
             OutlinedTextField(
                 value = fav,
                 onValueChange = { fav = it },
-                label = { Text("Favourite id (item_id)") },
+                label = { Text("Favourite id (item_id) — or pick above") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )

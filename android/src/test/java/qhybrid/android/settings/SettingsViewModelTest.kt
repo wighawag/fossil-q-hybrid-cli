@@ -143,6 +143,16 @@ class SettingsViewModelTest : DbTestBase() {
         }
     }
 
+    private class FakeDiscovery(
+        private val players: List<qhybrid.android.music.lyrion.LyrionCommands.LyrionPlayer> = emptyList(),
+        private val favorites: List<qhybrid.android.music.lyrion.LyrionCommands.LyrionFavorite> = emptyList(),
+        private val servers: List<qhybrid.android.music.lyrion.LyrionDiscoveryCodec.DiscoveredServer> = emptyList(),
+    ) : qhybrid.android.music.lyrion.LyrionDiscovery {
+        override fun players(host: String, port: Int) = players
+        override fun favorites(host: String, port: Int) = favorites
+        override fun discoverServers(timeoutMs: Int) = servers
+    }
+
     private class FakeAppsProvider(private val apps: List<InstalledApp>) : InstalledAppsProvider {
         override fun installedApps(): List<InstalledApp> = apps
     }
@@ -183,6 +193,7 @@ class SettingsViewModelTest : DbTestBase() {
         prefs: SettingsPrefs = FakePrefs(),
         sync: SettingsSync = FakeSync(),
         apps: InstalledAppsProvider = FakeAppsProvider(emptyList()),
+        discovery: qhybrid.android.music.lyrion.LyrionDiscovery = FakeDiscovery(),
         syncSource: FakeSyncStateSource = FakeSyncStateSource(),
         vibration: VibrationSync = FakeVibration(),
         fullSync: FullSync = FakeFullSync(),
@@ -195,6 +206,7 @@ class SettingsViewModelTest : DbTestBase() {
         prefs = prefs,
         sync = sync,
         appsProvider = apps,
+        lyrionDiscovery = discovery,
         vibration = vibration,
         fullSync = fullSync,
         watchAdmin = watchAdmin,
@@ -690,6 +702,66 @@ class SettingsViewModelTest : DbTestBase() {
 
         // Pure phone-side — no live watch command ever fires.
         assertEquals(0, sync.vibeCount + sync.nudgeCount + sync.tzCount)
+    }
+
+    // ---- L6/L7: Lyrion network pickers (players / favourites / discovery) -----
+
+    @Test
+    fun loadLyrionPlayersPopulatesPicker() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }
+        val discovery = FakeDiscovery(
+            players = listOf(
+                qhybrid.android.music.lyrion.LyrionCommands.LyrionPlayer("00:04:20:aa:bb:cc", "Kitchen"),
+                qhybrid.android.music.lyrion.LyrionCommands.LyrionPlayer("00:04:20:dd:ee:ff", "Office"),
+            )
+        )
+        val model = vm(discovery = discovery)
+        awaitState(model.uiState) { it.hasActiveWatch }
+        // No host configured yet -> no-op.
+        model.loadLyrionPlayers()
+        assertTrue(model.uiState.value.lyrionPlayers.isEmpty())
+        // With a host, the picker is populated.
+        model.setLyrionServer("192.168.1.10", 9000)
+        awaitState(model.uiState) { it.lyrionServerHost == "192.168.1.10" }
+        model.loadLyrionPlayers()
+        val s = awaitState(model.uiState) { it.lyrionPlayers.size == 2 }
+        assertEquals("Kitchen", s.lyrionPlayers[0].name)
+        assertFalse(s.lyrionLoading)
+    }
+
+    @Test
+    fun loadLyrionFavoritesPopulatesPicker() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }
+        val discovery = FakeDiscovery(
+            favorites = listOf(
+                qhybrid.android.music.lyrion.LyrionCommands.LyrionFavorite("fav.1", "Morning Mix"),
+            )
+        )
+        val model = vm(discovery = discovery)
+        awaitState(model.uiState) { it.hasActiveWatch }
+        model.setLyrionServer("192.168.1.10", 9000)
+        awaitState(model.uiState) { it.lyrionServerHost == "192.168.1.10" }
+        model.loadLyrionFavorites()
+        val s = awaitState(model.uiState) { it.lyrionFavorites.size == 1 }
+        assertEquals("Morning Mix", s.lyrionFavorites[0].name)
+    }
+
+    @Test
+    fun discoverLyrionServersPopulatesList() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }
+        val discovery = FakeDiscovery(
+            servers = listOf(
+                qhybrid.android.music.lyrion.LyrionDiscoveryCodec.DiscoveredServer(
+                    name = "Living Room (192.168.1.10)", jsonPort = 9000, host = "192.168.1.10",
+                ),
+            )
+        )
+        val model = vm(discovery = discovery)
+        awaitState(model.uiState) { it.hasActiveWatch }
+        model.discoverLyrionServers()
+        val s = awaitState(model.uiState) { it.lyrionDiscoveredServers.size == 1 }
+        assertEquals("192.168.1.10", s.lyrionDiscoveredServers[0].host)
+        assertEquals(9000, s.lyrionDiscoveredServers[0].jsonPort)
     }
 
     @Test

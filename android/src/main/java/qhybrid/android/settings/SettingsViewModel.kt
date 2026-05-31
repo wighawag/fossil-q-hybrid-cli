@@ -54,6 +54,15 @@ data class SettingsUiState(
     val appSettings: AppSettings = AppSettings(),
     /** The installed apps the music-app picker offers (loaded lazily via [loadInstalledApps]). */
     val installedApps: List<InstalledApp> = emptyList(),
+    // ---- L6/L7: Lyrion discovery results for the Settings pickers ------------
+    /** Players loaded from the configured server (via [loadLyrionPlayers]). */
+    val lyrionPlayers: List<qhybrid.android.music.lyrion.LyrionCommands.LyrionPlayer> = emptyList(),
+    /** Favourites loaded from the configured server (via [loadLyrionFavorites]). */
+    val lyrionFavorites: List<qhybrid.android.music.lyrion.LyrionCommands.LyrionFavorite> = emptyList(),
+    /** Servers discovered on the LAN via UDP (via [discoverLyrionServers]). */
+    val lyrionDiscoveredServers: List<qhybrid.android.music.lyrion.LyrionDiscoveryCodec.DiscoveredServer> = emptyList(),
+    /** True while any Lyrion network lookup (players / favourites / discovery) is in flight. */
+    val lyrionLoading: Boolean = false,
 ) {
     val activeMac: String? get() = activeWatch?.macAddress
     val hasActiveWatch: Boolean get() = activeWatch != null
@@ -137,6 +146,9 @@ open class SettingsViewModel(
     private val prefs: SettingsPrefs,
     private val sync: SettingsSync,
     private val appsProvider: InstalledAppsProvider,
+    // L6/L7: the Lyrion players/favourites/server discovery seam (fake/no-op in tests).
+    private val lyrionDiscovery: qhybrid.android.music.lyrion.LyrionDiscovery =
+        qhybrid.android.music.lyrion.NoopLyrionDiscovery,
     // WP-BUZZTEST: the manual "vibrate the watch now" test seam (fake in tests).
     private val vibration: VibrationSync = NoopVibrationSync,
     // WP-PULLSYNC: the manual "Sync all" seam (fake in tests).
@@ -173,12 +185,25 @@ open class SettingsViewModel(
     /** Lazily-loaded installed apps for the music picker (kept out of the prefs flow). */
     private val installedApps = MutableStateFlow<List<InstalledApp>>(emptyList())
 
+    /** L6/L7 — the Lyrion discovery results (players / favourites / servers + loading flag). */
+    private data class LyrionDiscoveryState(
+        val players: List<qhybrid.android.music.lyrion.LyrionCommands.LyrionPlayer> = emptyList(),
+        val favorites: List<qhybrid.android.music.lyrion.LyrionCommands.LyrionFavorite> = emptyList(),
+        val servers: List<qhybrid.android.music.lyrion.LyrionDiscoveryCodec.DiscoveredServer> = emptyList(),
+        val loading: Boolean = false,
+    )
+    private val lyrionState = MutableStateFlow(LyrionDiscoveryState())
+
     val uiState: StateFlow<SettingsUiState> =
-        combine(repo.observeActiveWatch(), appSettings, installedApps) { active, settings, apps ->
+        combine(repo.observeActiveWatch(), appSettings, installedApps, lyrionState) { active, settings, apps, lyrion ->
             SettingsUiState(
                 activeWatch = active,
                 appSettings = settings,
                 installedApps = apps,
+                lyrionPlayers = lyrion.players,
+                lyrionFavorites = lyrion.favorites,
+                lyrionDiscoveredServers = lyrion.servers,
+                lyrionLoading = lyrion.loading,
             )
         }.stateIn(
             coroutineScope,
@@ -470,6 +495,52 @@ open class SettingsViewModel(
         }
     }
 
+    // ---- L6/L7: Lyrion network pickers (players / favourites / discovery) -----
+
+    /**
+     * L6 — load the players from the configured Lyrion server into [SettingsUiState.lyrionPlayers]
+     * (HTTP off the main thread). No-op when no host is configured. Sets/clears the loading flag.
+     */
+    fun loadLyrionPlayers() {
+        val s = appSettings.value
+        val host = SettingsVocabulary.normalizeLyrionHost(s.lyrionServerHost)
+        if (host.isEmpty()) return
+        val port = SettingsVocabulary.normalizeLyrionPort(s.lyrionServerPort)
+        coroutineScope.launch {
+            lyrionState.value = lyrionState.value.copy(loading = true)
+            val players = withContext(Dispatchers.IO) { lyrionDiscovery.players(host, port) }
+            lyrionState.value = lyrionState.value.copy(players = players, loading = false)
+        }
+    }
+
+    /**
+     * L6 — load the favourites from the configured Lyrion server into
+     * [SettingsUiState.lyrionFavorites] (HTTP off the main thread). No-op when no host is configured.
+     */
+    fun loadLyrionFavorites() {
+        val s = appSettings.value
+        val host = SettingsVocabulary.normalizeLyrionHost(s.lyrionServerHost)
+        if (host.isEmpty()) return
+        val port = SettingsVocabulary.normalizeLyrionPort(s.lyrionServerPort)
+        coroutineScope.launch {
+            lyrionState.value = lyrionState.value.copy(loading = true)
+            val favs = withContext(Dispatchers.IO) { lyrionDiscovery.favorites(host, port) }
+            lyrionState.value = lyrionState.value.copy(favorites = favs, loading = false)
+        }
+    }
+
+    /**
+     * L7 — discover Lyrion servers on the LAN (UDP broadcast, off the main thread) into
+     * [SettingsUiState.lyrionDiscoveredServers]. Selecting one calls [setLyrionServer].
+     */
+    fun discoverLyrionServers() {
+        coroutineScope.launch {
+            lyrionState.value = lyrionState.value.copy(loading = true)
+            val servers = withContext(Dispatchers.IO) { lyrionDiscovery.discoverServers() }
+            lyrionState.value = lyrionState.value.copy(servers = servers, loading = false)
+        }
+    }
+
     // ---- settings transfer (WP4 — reuse, do NOT reinvent) --------------------
 
     /**
@@ -500,6 +571,7 @@ open class SettingsViewModel(
                         sync = ServiceSettingsSync(appContext),
                         appsProvider =
                             qhybrid.android.notifications.SystemInstalledAppsProvider(appContext),
+                        lyrionDiscovery = qhybrid.android.music.lyrion.SystemLyrionDiscovery(context = appContext),
                         vibration = ServiceVibrationSync(appContext),
                         fullSync = ServiceFullSync(appContext),
                         watchAdmin = ServiceWatchAdminSync(

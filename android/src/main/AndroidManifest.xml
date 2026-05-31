@@ -24,6 +24,15 @@
          so the system shows the Precise/Approximate toggle correctly. -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
+    <!-- L1–L7 (Lyrion music control): network access for the LMS JSON-RPC HTTP calls + the UDP
+         server-discovery broadcast on port 3483. Only used by the optional "Music (Lyrion player)"
+         mode; no data leaves the LAN unless the user configures a server. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- L7: receiving the UDP broadcast discovery REPLY needs a multicast/broadcast lock on some
+         devices. Held only for the brief discovery window. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+
     <!-- WP3: foreground service keeping the watch link alive in the background. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
