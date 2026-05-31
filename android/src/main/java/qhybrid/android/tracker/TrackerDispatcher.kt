@@ -51,8 +51,9 @@ class TrackerDispatcher(
  * rings the phone, and buzzes the watch via the existing buzz path; tests inject a fake so all the
  * routing logic above is verified without GPS / Room / BLE.
  *
- * The real GPS + ring effects are **on-device-pending** (they need a live FusedLocationProvider +
- * audio stack), but they are cleanly seam-injected so the decision path is fully unit-tested.
+ * The real GPS + ring effects are wired ([SystemLocationSource] / [SystemPhoneRinger], zero Google
+ * Play Services); they need a live device + granted location permission. They are cleanly
+ * seam-injected so the decision path is fully unit-tested.
  */
 interface TrackerEffects {
     /** Capture the current GPS fix and persist it as a [kind] waypoint (best-effort). */
@@ -67,10 +68,11 @@ interface TrackerEffects {
     companion object {
         /**
          * WP-TRACKER: whether the on-device tracker effects are FULLY wired. The buzz-back + Room
-         * write are wired; the live GPS fix + the loud phone ring are on-device-pending behind the
-         * location/audio seams, so this stays false until verified on hardware.
+         * write, the live GPS fix ([SystemLocationSource]) and the loud phone ring
+         * ([SystemPhoneRinger]) are all wired behind the location/audio seams (zero Google Play
+         * Services); pending only the on-device hardware sign-off in WP-TRACKER-GPS-WIRING-PLAN.md.
          */
-        const val TRACKER_EFFECTS_WIRED = false
+        const val TRACKER_EFFECTS_WIRED = true
     }
 }
 

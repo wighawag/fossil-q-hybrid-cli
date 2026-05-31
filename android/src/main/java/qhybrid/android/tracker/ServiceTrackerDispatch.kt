@@ -40,15 +40,16 @@ import qhybrid.android.tracker.TrackerController.WaypointKind
  * buzz-back reuses [WatchConnectionService.buzzNow] (which marshals onto its own ble-worker). Never
  * throws on the caller's thread.
  *
- * **GPS wired; loud ring on-device-pending.** The live GPS fix ([SystemLocationSource], platform
- * LocationManager, zero Google Play Services) is wired; only the loud phone ring remains
- * on-device-pending. The Room write + buzz-back + ALL routing are unit-tested off-device via the
- * pure [TrackerController] / [TrackerDispatcher] / [ButtonPressParser] / [ButtonActionRouter] with
- * fakes. Adds NO new wire bytes.
+ * **GPS + loud ring wired (zero Google Play Services).** The live GPS fix ([SystemLocationSource],
+ * platform LocationManager) and the loud phone ring ([SystemPhoneRinger], alarm-stream ringtone +
+ * vibrate) are both wired. The Room write + buzz-back + ALL routing are unit-tested off-device via
+ * the pure [TrackerController] / [TrackerDispatcher] / [ButtonPressParser] / [ButtonActionRouter]
+ * with fakes, and the ring path via a fake [PhoneRinger]. Adds NO new wire bytes.
  */
 class ServiceTrackerDispatch(
     context: Context,
     location: LocationSource? = null,
+    ringer: PhoneRinger? = null,
     // The IO scope used for the GPS fix + Room write; injectable for tests.
     private val io: CoroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
 ) {
@@ -56,6 +57,9 @@ class ServiceTrackerDispatch(
     // Default to the live platform-LocationManager source (zero Google Play Services); tests inject
     // a fake [LocationSource]. NoopLocationSource is no longer the default now that GPS is wired.
     private val location: LocationSource = location ?: SystemLocationSource(appContext)
+    // Default to the live loud-ring effect (alarm-stream ringtone + vibrate, zero GMS); tests inject
+    // a fake [PhoneRinger]. NoopPhoneRinger is no longer the default now that the ring is wired.
+    private val ringer: PhoneRinger = ringer ?: SystemPhoneRinger(appContext)
     private val repo = WatchRepository(appContext)
     private val prefs = SharedPreferencesSettingsPrefs(appContext)
 
@@ -130,12 +134,14 @@ class ServiceTrackerDispatch(
         WatchConnectionService.buzzNow(appContext, VibePatterns.clamp(pattern))
 
     /**
-     * Ring/find the phone. On-device-pending: the loud-tone-on-alarm-stream + DND bypass is wired in
-     * a follow-up (Gadgetbridge GBDeviceEventFindPhone reference). For now this logs the intent so
-     * the LONG-gesture / RING_PHONE-button flow is exercised end-to-end behind the seam.
+     * Ring/find the phone: a loud, looping ringtone on the alarm stream at max volume + a waveform
+     * vibration (modelled on Gadgetbridge `FindPhoneActivity`), via the injected [PhoneRinger] seam.
+     * Auto-stops after [RingPolicy.AUTO_STOP_MS] so a pocketed phone can't ring forever. Triggered
+     * by a TRACKER-role LONG gesture / a RING_PHONE button. Never throws on the caller's thread.
      */
     private fun ringPhone() {
-        Log.i(TAG, "ringPhone() requested (loud-tone ring on-device-pending)")
+        runCatching { ringer.start() }
+            .onFailure { Log.w(TAG, "ringPhone() failed", it) }
     }
 
     /** Capture a GPS fix + persist it as a [kind] waypoint (best-effort; never throws). */

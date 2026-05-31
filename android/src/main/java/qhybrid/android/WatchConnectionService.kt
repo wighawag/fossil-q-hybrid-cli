@@ -299,7 +299,8 @@ class WatchConnectionService : Service() {
     // here only when the GLOBAL multi-function role is TRACKER) and the button-aware 0x08 Path-2
     // single-press actions (LOG_WAYPOINT / RING_PHONE / SWITCH_MULTI_FUNCTION_MODE). Pure logic is
     // unit-tested (TrackerController/TrackerDispatcher/ButtonPressParser/ButtonActionRouter); the
-    // live GPS fix + loud ring are on-device-pending behind seams. NO new wire bytes.
+    // live GPS fix (SystemLocationSource) + loud ring (SystemPhoneRinger) are wired behind seams
+    // (zero Google Play Services). NO new wire bytes.
     private val trackerDispatch by lazy { qhybrid.android.tracker.ServiceTrackerDispatch(applicationContext) }
 
     private val controllerRef = AtomicReference<FossilController?>(null)

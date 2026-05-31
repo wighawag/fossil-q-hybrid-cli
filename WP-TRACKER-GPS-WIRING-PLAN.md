@@ -5,8 +5,9 @@ Status: **IMPLEMENTED (code) / on-device verification pending.** §1–§3 are w
 `LOCATION_WIRED = true`, `ServiceTrackerDispatch` defaults to it, the manifest uncaps
 `ACCESS_COARSE_LOCATION`, and `MainActivity` (Setup) drives the two-step foreground+background
 location runtime flow via `TrackerLocationAccess` (with the Play disclosure copy). §4 (loud phone
-ring) is still outstanding. Pure helpers are unit-tested (`SystemLocationSourceTest`,
-`TrackerLocationAccessTest`); the actual `LocationManager` call needs the on-device checklist below.
+ring) is also done: `SystemPhoneRinger` + the `PhoneRinger` seam + the pure `RingPolicy`. Pure
+helpers are unit-tested (`SystemLocationSourceTest`, `TrackerLocationAccessTest`, `RingPolicyTest`);
+the actual `LocationManager` / `MediaPlayer` calls need the on-device checklist below.
 
 The waypoint feature originally shipped with the GPS behind a seam (`LocationSource`,
 `LOCATION_WIRED = false`); it now uses the real fix via the **platform `LocationManager`** — **no
@@ -113,12 +114,22 @@ BLE — it does **not** cover the tracker's needs on 31+. Two grants are needed,
     app is foregrounded, and drop the `ACCESS_BACKGROUND_LOCATION` + the background half of the FGS
     location justification. (Simpler Play review; weaker feature — pocketed logging won't fire.)
 
-### 4. Loud phone ring (separate on-device-pending item, tracked here for convenience)
+### 4. Loud phone ring — IMPLEMENTED
 
-Not GPS, but the other on-device-pending tracker bit. `ServiceTrackerDispatch.ringPhone()` currently
-just logs. Wire a loud tone on the ring/alarm stream with DND bypass where feasible — reference
-`tmp/Gadgetbridge/.../deviceevents/GBDeviceEventFindPhone.java` (see ANDROID-WORK-BREAKDOWN.md
-~line 103/106). No new wire bytes; buzz-back already works.
+`ServiceTrackerDispatch.ringPhone()` now drives a real loud ring via a new injectable `PhoneRinger`
+seam:
+- `SystemPhoneRinger` (modelled on Gadgetbridge `FindPhoneActivity`): a looping default ringtone on
+  `STREAM_ALARM` at **max volume** (restored on stop) + a looping waveform vibration, both with
+  `AudioAttributes.USAGE_ALARM` so they ride the alarm path (DND-bypass where the OS allows alarms).
+  Auto-stops after `RingPolicy.AUTO_STOP_MS` (30s) so a pocketed phone can't ring forever. Zero GMS
+  (AOSP `MediaPlayer`/`AudioManager`/`Vibrator` only).
+- `RingPolicy` (pure: max-volume + finite-auto-stop + looping-waveform) is unit-tested
+  (`RingPolicyTest`); the dispatch ring path is exercised via the fake-`PhoneRinger` seam.
+- Manifest: added `VIBRATE` (phone-side vibration; the watch buzz-back over BLE needs no permission).
+- `TrackerEffects.TRACKER_EFFECTS_WIRED` flipped to `true`.
+
+No new wire bytes; buzz-back already works. Remaining: a UI affordance to STOP the ring early (today
+it's the 30s auto-stop or another long gesture) — optional, on-device-iterative.
 
 ---
 

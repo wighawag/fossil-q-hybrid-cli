@@ -50,6 +50,11 @@
     <!-- WP3: show the persistent foreground-service notification on Android 13+. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- WP-TRACKER (§4): vibrate the PHONE during the loud "find my phone" ring (a TRACKER-role long
+         gesture / a RING_PHONE button). The watch buzz-back goes over BLE and needs no permission;
+         this is for the phone-side Vibrator in SystemPhoneRinger. A normal (non-runtime) permission. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
     <!-- WP13: read the user's calendar to mirror upcoming events into the watch's calendar alarm
          slots (16..31). A normal runtime permission (requested via the permissions API from
          Setup); the read is app-only (CalendarContract.Instances) — no wire bytes change. -->
