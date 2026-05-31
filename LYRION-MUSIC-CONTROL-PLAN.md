@@ -276,12 +276,20 @@ Mirror the existing `preferredMusicApp` dropdown pattern for the player/favourit
 | **L3** | Transport seam | `LyrionClient` interface + `HttpLyrionClient` | fake client in tests; manual on-network smoke |
 | **L4** | Dispatcher | `LyrionMusicSessionDispatcher implements MusicSessionDispatcher` (power+play, next/prev, volume) | dispatch decisions via fake `LyrionClient` |
 | **L5** | Mode selection | `ServiceMusicDispatch` picks `SystemMusicSessionDispatcher` vs `LyrionMusicSessionDispatcher` from the active mode | selector unit test |
-| **L6** | Settings UI | rotation editor (multi-select + reorder) + Lyrion server section (server fields, player picker, fallback selector, favourite picker) | ViewModel state tests |
+| **L6** | Settings UI | rotation editor (multi-select + active-mode picker) + Lyrion server section (server fields, player id, fallback selector, favourite id) | ViewModel state tests |
 | **L7** | Discovery (optional) | UDP 3483 auto-discovery of servers (like Squeezer) | deferred / nice-to-have |
 
 Suggested order: **L0** → L1 → L2 → L4 (+L3) → L5 → L6, then L7 if wanted.
 (L0 is independent of Lyrion and can land first as a pure refactor; `MUSIC_LYRION`
 becomes routable once L4/L5 exist.)
+
+**STATUS (implemented):** L0–L6 are done and unit-tested. L6 ships the rotation editor
+(checkbox multi-select + active-mode picker) and a Lyrion config card (server host/port,
+player id/name, empty-queue fallback, favourite id) shown when the Lyrion mode is in the
+rotation. **Follow-ups:** (a) "load players / favourites" network pickers (currently the
+player id + favourite id are entered manually) — needs a small VM seam that calls
+`playersQuery`/`favoritesQuery` via `LyrionClient` on a worker thread and exposes the
+results to the UI; (b) L7 UDP server auto-discovery; (c) password/auth.
 
 ---
 

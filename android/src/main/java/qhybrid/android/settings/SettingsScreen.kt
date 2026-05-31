@@ -13,6 +13,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
@@ -32,6 +33,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -93,6 +95,12 @@ fun SettingsScreen(
         onResyncCalendar = vm::resyncCalendar,
         onSetMusicApp = vm::setPreferredMusicApp,
         onSetMultiFunctionRole = vm::setMultiFunctionRole,
+        onToggleMode = vm::toggleMultiFunctionMode,
+        onSetActiveModeIndex = vm::setMultiFunctionActiveIndex,
+        onSetLyrionServer = vm::setLyrionServer,
+        onSetLyrionPlayer = vm::setLyrionPlayer,
+        onSetLyrionFallback = vm::setLyrionEmptyQueueFallback,
+        onSetLyrionFavorite = vm::setLyrionFavoriteId,
         onSetRingDuration = vm::setRingDurationSeconds,
         onTransfer = vm::transferSettings,
         onRemoveWatch = vm::removeActiveWatch,
@@ -117,6 +125,18 @@ fun SettingsContent(
     onSetMusicApp: (String?) -> Unit,
     // WP-TRACKER: set the GLOBAL multi-function role (MUSIC ⇄ TRACKER). No-op default.
     onSetMultiFunctionRole: (String) -> Unit = {},
+    // L0: toggle a mode in/out of the configurable rotation. No-op default.
+    onToggleMode: (String) -> Unit = {},
+    // L0: set the active mode index in the rotation. No-op default.
+    onSetActiveModeIndex: (Int) -> Unit = {},
+    // L1: set the Lyrion server host + port. No-op default.
+    onSetLyrionServer: (String?, Int) -> Unit = { _, _ -> },
+    // L1: set the target Lyrion player id + display name. No-op default.
+    onSetLyrionPlayer: (String?, String?) -> Unit = { _, _ -> },
+    // L1: set the Lyrion empty-queue fallback. No-op default.
+    onSetLyrionFallback: (String?) -> Unit = {},
+    // L1: set the Lyrion favourite id. No-op default.
+    onSetLyrionFavorite: (String?) -> Unit = {},
     // WP-TRACKER: set the loud-ring auto-stop duration (seconds). No-op default for previews/tests.
     onSetRingDuration: (Int) -> Boolean = { false },
     // WP13: set the calendar-alarm ring offset (minutes before the event). No-op default.
@@ -175,7 +195,16 @@ fun SettingsContent(
             TimezoneCard(state, onSetTimezone) { note = it }
             CalendarOffsetCard(state, onSetCalendarOffset, onResyncCalendar) { note = it }
             MusicAppCard(state, onSetMusicApp)
-            MultiFunctionRoleCard(state, onSetMultiFunctionRole)
+            MultiFunctionRotationCard(state, onToggleMode, onSetActiveModeIndex)
+            if (state.lyrionInRotation) {
+                LyrionCard(
+                    state,
+                    onSetLyrionServer,
+                    onSetLyrionPlayer,
+                    onSetLyrionFallback,
+                    onSetLyrionFavorite,
+                ) { note = it }
+            }
             RingDurationCard(state, onSetRingDuration) { note = it }
             WaypointsEntryCard(onOpenWaypoints)
             HorizontalDivider()
@@ -523,36 +552,46 @@ private fun MusicAppCard(
 }
 
 /**
- * WP-TRACKER — choose the GLOBAL multi-function role (MUSIC ⇄ TRACKER). This decides how the watch's
- * multi-function (`01 06 12 00`) gesture stream is interpreted: MUSIC = control phone media (WP12);
- * TRACKER = log GPS waypoints (short=minor, double=major) + ring the phone on a long press, each
- * with a distinct buzz-back. The control documents WHY this is global: that gesture stream is
- * button-blind (carries no button id), so the role can't be set per-button — it applies to EVERY
- * multi-function button at once. Pure phone-side state; never sent to the watch.
+ * L0 — configure the GLOBAL multi-function ROTATION: which modes the switch button cycles, in what
+ * order (first = default/active), plus a picker for the live active mode. Generalises the old 2-way
+ * role flip. Modes: Music (phone) / Music (Lyrion player) / GPS waypoint tracker. GLOBAL because the
+ * watch's gesture stream is button-blind. Pure phone-side state; never sent to the watch.
  */
 @Composable
-private fun MultiFunctionRoleCard(
+private fun MultiFunctionRotationCard(
     state: SettingsUiState,
-    onSetMultiFunctionRole: (String) -> Unit,
+    onToggleMode: (String) -> Unit,
+    onSetActiveModeIndex: (Int) -> Unit,
 ) {
-    SettingCard("Multi-function button role") {
+    SettingCard("Multi-function button modes") {
         Text(
-            "What a multi-function button's short / double / long press does. GLOBAL — applies to " +
-                "every multi-function button at once (the watch's gesture signal carries no button " +
-                "id, so this can't be per-button). Phone-side only — never sent to the watch.",
+            "Which modes the multi-function button cycles through (press the SWITCH button to " +
+                "advance). The first enabled mode is the default. GLOBAL — applies to every " +
+                "multi-function button at once. Phone-side only — never sent to the watch.",
             style = MaterialTheme.typography.labelSmall,
         )
+        // Enable/disable each mode (checkbox). The rotation can never be emptied (last stays on).
+        SettingsVocabulary.MULTI_FUNCTION_MODES.forEach { mode ->
+            val enabled = state.multiFunctionRotation.contains(mode)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(checked = enabled, onCheckedChange = { onToggleMode(mode) })
+                Text(SettingsVocabulary.modeLabel(mode))
+            }
+        }
+
+        // Active-mode picker (the live entry the button currently points at).
         var expanded by remember { mutableStateOf(false) }
-        val selectedLabel = SettingsVocabulary.multiFunctionRoleLabel(state.multiFunctionRole)
+        val rotation = state.multiFunctionRotation
+        val activeLabel = SettingsVocabulary.modeLabel(state.activeMode)
         ExposedDropdownMenuBox(
             expanded = expanded,
             onExpandedChange = { expanded = it },
         ) {
             OutlinedTextField(
-                value = selectedLabel,
+                value = activeLabel,
                 onValueChange = {},
                 readOnly = true,
-                label = { Text("Role") },
+                label = { Text("Active mode") },
                 trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
                 modifier = Modifier
                     .fillMaxWidth()
@@ -562,16 +601,133 @@ private fun MultiFunctionRoleCard(
                 expanded = expanded,
                 onDismissRequest = { expanded = false },
             ) {
-                SettingsVocabulary.MULTI_FUNCTION_ROLES.forEach { role ->
+                rotation.forEachIndexed { index, mode ->
                     DropdownMenuItem(
-                        text = { Text(SettingsVocabulary.multiFunctionRoleLabel(role)) },
+                        text = { Text(SettingsVocabulary.modeLabel(mode)) },
                         onClick = {
                             expanded = false
-                            onSetMultiFunctionRole(role)
+                            onSetActiveModeIndex(index)
                         },
                     )
                 }
             }
+        }
+    }
+}
+
+/**
+ * L1 — configure the Lyrion (LMS) music backend used by the "Music (Lyrion player)" mode: server
+ * host + port, the target player id (MAC), the empty-queue fallback, and a favourite id. Shown only
+ * when the Lyrion mode is in the rotation. Pure phone-side state; never sent to the watch.
+ *
+ * Player/favourite are entered manually for now (auto-discovery "load players" is a follow-up).
+ */
+@Composable
+private fun LyrionCard(
+    state: SettingsUiState,
+    onSetLyrionServer: (String?, Int) -> Unit,
+    onSetLyrionPlayer: (String?, String?) -> Unit,
+    onSetLyrionFallback: (String?) -> Unit,
+    onSetLyrionFavorite: (String?) -> Unit,
+    onNote: (String) -> Unit,
+) {
+    SettingCard("Lyrion music server") {
+        Text(
+            "Control a Lyrion (LMS) player over the network. Enter the server address and the " +
+                "target player's id (MAC). A play gesture starts/controls music on that player.",
+            style = MaterialTheme.typography.labelSmall,
+        )
+
+        var host by remember(state.lyrionServerHost) { mutableStateOf(state.lyrionServerHost) }
+        var port by remember(state.lyrionServerPort) {
+            mutableStateOf(state.lyrionServerPort.toString())
+        }
+        OutlinedTextField(
+            value = host,
+            onValueChange = { host = it },
+            label = { Text("Server host / IP") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+            value = port,
+            onValueChange = { port = it.filter { c -> c.isDigit() } },
+            label = { Text("Port (default 9000)") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedButton(onClick = {
+            onSetLyrionServer(host, port.toIntOrNull() ?: SettingsVocabulary.LYRION_PORT_DEFAULT)
+            onNote("Lyrion server saved")
+        }) { Text("Save server") }
+
+        var playerId by remember(state.lyrionPlayerId) { mutableStateOf(state.lyrionPlayerId) }
+        var playerName by remember(state.lyrionPlayerName) { mutableStateOf(state.lyrionPlayerName) }
+        OutlinedTextField(
+            value = playerId,
+            onValueChange = { playerId = it },
+            label = { Text("Player id (MAC)") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+            value = playerName,
+            onValueChange = { playerName = it },
+            label = { Text("Player name (optional)") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedButton(onClick = {
+            onSetLyrionPlayer(playerId, playerName)
+            onNote("Lyrion player saved")
+        }) { Text("Save player") }
+
+        // Empty-queue fallback (what a play gesture starts when the queue is empty).
+        var fbExpanded by remember { mutableStateOf(false) }
+        ExposedDropdownMenuBox(
+            expanded = fbExpanded,
+            onExpandedChange = { fbExpanded = it },
+        ) {
+            OutlinedTextField(
+                value = SettingsVocabulary.lyrionFallbackLabel(state.lyrionEmptyQueueFallback),
+                onValueChange = {},
+                readOnly = true,
+                label = { Text("When queue is empty") },
+                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = fbExpanded) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .menuAnchor(MenuAnchorType.PrimaryNotEditable),
+            )
+            ExposedDropdownMenu(
+                expanded = fbExpanded,
+                onDismissRequest = { fbExpanded = false },
+            ) {
+                SettingsVocabulary.LYRION_FALLBACKS.forEach { fb ->
+                    DropdownMenuItem(
+                        text = { Text(SettingsVocabulary.lyrionFallbackLabel(fb)) },
+                        onClick = {
+                            fbExpanded = false
+                            onSetLyrionFallback(fb)
+                        },
+                    )
+                }
+            }
+        }
+
+        // Favourite id (used when the fallback is FAVORITE).
+        if (state.lyrionEmptyQueueFallback == SettingsVocabulary.LYRION_FALLBACK_FAVORITE) {
+            var fav by remember(state.lyrionFavoriteId) { mutableStateOf(state.lyrionFavoriteId) }
+            OutlinedTextField(
+                value = fav,
+                onValueChange = { fav = it },
+                label = { Text("Favourite id (item_id)") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedButton(onClick = {
+                onSetLyrionFavorite(fav)
+                onNote("Lyrion favourite saved")
+            }) { Text("Save favourite") }
         }
     }
 }

@@ -607,6 +607,91 @@ class SettingsViewModelTest : DbTestBase() {
         assertEquals(SettingsVocabulary.MULTI_FUNCTION_ROLE_MUSIC, back.multiFunctionRole)
     }
 
+    // ---- L0: configurable multi-function rotation ----------------------------
+
+    @Test
+    fun rotationSetToggleAndActiveIndex() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }
+        val model = vm()
+        awaitState(model.uiState) { it.hasActiveWatch }
+        // Default rotation = phone media only.
+        assertEquals(
+            listOf(SettingsVocabulary.MODE_MUSIC_PHONE),
+            model.uiState.value.multiFunctionRotation,
+        )
+
+        // Set a full rotation; first entry is active.
+        model.setMultiFunctionRotation(
+            listOf(
+                SettingsVocabulary.MODE_MUSIC_LYRION,
+                SettingsVocabulary.MODE_MUSIC_PHONE,
+                SettingsVocabulary.MODE_TRACKER,
+            )
+        )
+        val s = awaitState(model.uiState) { it.multiFunctionRotation.size == 3 }
+        assertEquals(SettingsVocabulary.MODE_MUSIC_LYRION, s.activeMode)
+        assertEquals(0, s.multiFunctionActiveIndex)
+        assertTrue(s.lyrionInRotation)
+
+        // Advancing the active index moves through the rotation.
+        model.setMultiFunctionActiveIndex(2)
+        val t = awaitState(model.uiState) { it.multiFunctionActiveIndex == 2 }
+        assertEquals(SettingsVocabulary.MODE_TRACKER, t.activeMode)
+
+        // Toggling a present mode removes it (and resets index to 0).
+        model.toggleMultiFunctionMode(SettingsVocabulary.MODE_TRACKER)
+        val u = awaitState(model.uiState) { !it.multiFunctionRotation.contains(SettingsVocabulary.MODE_TRACKER) }
+        assertEquals(2, u.multiFunctionRotation.size)
+        assertEquals(0, u.multiFunctionActiveIndex)
+    }
+
+    @Test
+    fun rotationNeverEmpty() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }
+        val model = vm()
+        awaitState(model.uiState) { it.hasActiveWatch }
+        // Start from a single mode; toggling it off is refused (can't empty the rotation).
+        model.setMultiFunctionRotation(listOf(SettingsVocabulary.MODE_MUSIC_PHONE))
+        awaitState(model.uiState) { it.multiFunctionRotation.size == 1 }
+        model.toggleMultiFunctionMode(SettingsVocabulary.MODE_MUSIC_PHONE)
+        assertEquals(
+            listOf(SettingsVocabulary.MODE_MUSIC_PHONE),
+            model.uiState.value.multiFunctionRotation,
+        )
+    }
+
+    // ---- L1: Lyrion config round-trips (pure app-side) -----------------------
+
+    @Test
+    fun lyrionConfigRoundTrips() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }
+        val sync = FakeSync()
+        val model = vm(sync = sync)
+        awaitState(model.uiState) { it.hasActiveWatch }
+
+        model.setLyrionServer(" 192.168.1.10 ", 9090)
+        val s1 = awaitState(model.uiState) { it.lyrionServerHost == "192.168.1.10" }
+        assertEquals(9090, s1.lyrionServerPort)
+
+        model.setLyrionPlayer(" 00:04:20:aa:bb:cc ", " Kitchen ")
+        val s2 = awaitState(model.uiState) { it.hasLyrionPlayer }
+        assertEquals("00:04:20:aa:bb:cc", s2.lyrionPlayerId)
+        assertEquals("Kitchen", s2.lyrionPlayerName)
+
+        model.setLyrionEmptyQueueFallback("random")
+        val s3 = awaitState(model.uiState) {
+            it.lyrionEmptyQueueFallback == SettingsVocabulary.LYRION_FALLBACK_RANDOM
+        }
+        assertEquals(SettingsVocabulary.LYRION_FALLBACK_RANDOM, s3.lyrionEmptyQueueFallback)
+
+        model.setLyrionFavoriteId(" fav42 ")
+        val s4 = awaitState(model.uiState) { it.lyrionFavoriteId == "fav42" }
+        assertEquals("fav42", s4.lyrionFavoriteId)
+
+        // Pure phone-side — no live watch command ever fires.
+        assertEquals(0, sync.vibeCount + sync.nudgeCount + sync.tzCount)
+    }
+
     @Test
     fun loadInstalledAppsReusesProvider() {
         runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }

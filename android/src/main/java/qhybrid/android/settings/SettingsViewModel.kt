@@ -83,6 +83,38 @@ data class SettingsUiState(
     val multiFunctionRole: String
         get() = SettingsVocabulary.normalizeMultiFunctionRole(appSettings.multiFunctionRole)
 
+    /** L0 — the configurable, ordered multi-function rotation (first entry = default/active). */
+    val multiFunctionRotation: List<String>
+        get() = SettingsVocabulary.normalizeRotation(appSettings.multiFunctionRotation)
+
+    /** L0 — index of the currently-active mode within [multiFunctionRotation]. */
+    val multiFunctionActiveIndex: Int
+        get() = SettingsVocabulary.clampIndex(multiFunctionRotation, appSettings.multiFunctionActiveIndex)
+
+    /** L0 — the currently-active multi-function mode. */
+    val activeMode: String get() = appSettings.activeMode
+
+    // ---- L1: Lyrion (LMS) music backend config -------------------------------
+    val lyrionServerHost: String
+        get() = SettingsVocabulary.normalizeLyrionHost(appSettings.lyrionServerHost)
+    val lyrionServerPort: Int
+        get() = SettingsVocabulary.normalizeLyrionPort(appSettings.lyrionServerPort)
+    val lyrionPlayerId: String
+        get() = SettingsVocabulary.normalizeLyrionPlayerId(appSettings.lyrionPlayerId)
+    val lyrionPlayerName: String get() = appSettings.lyrionPlayerName
+    val lyrionEmptyQueueFallback: String
+        get() = SettingsVocabulary.normalizeLyrionFallback(appSettings.lyrionEmptyQueueFallback)
+    val lyrionFavoriteId: String
+        get() = SettingsVocabulary.normalizeLyrionFavoriteId(appSettings.lyrionFavoriteId)
+
+    /** True when the Lyrion mode is part of the rotation (so its config section is relevant). */
+    val lyrionInRotation: Boolean
+        get() = multiFunctionRotation.contains(SettingsVocabulary.MODE_MUSIC_LYRION)
+
+    /** True when a target Lyrion player is selected. */
+    val hasLyrionPlayer: Boolean
+        get() = lyrionPlayerId != SettingsVocabulary.LYRION_PLAYER_NONE
+
     /** WP-TRACKER — the loud "find my phone" ring auto-stop duration in seconds (default 60s). */
     val ringDurationSeconds: Int
         get() = SettingsVocabulary.normalizeRingDuration(appSettings.ringDurationSeconds)
@@ -307,6 +339,76 @@ open class SettingsViewModel(
         val normalized = SettingsVocabulary.normalizeMultiFunctionRole(role)
         prefs.setMultiFunctionRole(normalized)
         appSettings.value = appSettings.value.copy(multiFunctionRole = normalized)
+    }
+
+    // ---- L0/L1: configurable rotation + Lyrion backend config (APP PREFS) ----
+
+    /**
+     * L0 — set the ordered multi-function rotation (the modes the switch button iterates). The first
+     * entry is the default/active; persisting resets the active index to 0. Pure app-side; no wire
+     * bytes. An empty/blank list falls back to the default rotation.
+     */
+    fun setMultiFunctionRotation(modes: List<String>?) {
+        val normalized = SettingsVocabulary.normalizeRotation(modes)
+        prefs.setMultiFunctionRotation(normalized)
+        appSettings.value = appSettings.value.copy(
+            multiFunctionRotation = normalized,
+            multiFunctionActiveIndex = 0,
+        )
+    }
+
+    /**
+     * L0 — toggle a mode's membership in the rotation (add if absent, remove if present), preserving
+     * order. Refuses to remove the last remaining mode (the rotation can never be empty).
+     */
+    fun toggleMultiFunctionMode(mode: String) {
+        val m = SettingsVocabulary.normalizeMode(mode)
+        val current = SettingsVocabulary.normalizeRotation(appSettings.value.multiFunctionRotation)
+        val next = if (current.contains(m)) {
+            if (current.size <= 1) current else current.filterNot { it == m }
+        } else {
+            current + m
+        }
+        setMultiFunctionRotation(next)
+    }
+
+    /** L0 — set the active mode index directly (clamped). Used by a Settings preview / picker. */
+    fun setMultiFunctionActiveIndex(index: Int) {
+        val clamped = SettingsVocabulary.clampIndex(
+            SettingsVocabulary.normalizeRotation(appSettings.value.multiFunctionRotation), index
+        )
+        prefs.setMultiFunctionActiveIndex(clamped)
+        appSettings.value = appSettings.value.copy(multiFunctionActiveIndex = clamped)
+    }
+
+    /** L1 — persist the Lyrion server host + port (normalized). Pure app-side; no wire bytes. */
+    fun setLyrionServer(host: String?, port: Int) {
+        val h = SettingsVocabulary.normalizeLyrionHost(host)
+        val p = SettingsVocabulary.normalizeLyrionPort(port)
+        prefs.setLyrionServer(h, p)
+        appSettings.value = appSettings.value.copy(lyrionServerHost = h, lyrionServerPort = p)
+    }
+
+    /** L1 — persist the target Lyrion player id + cached display name. */
+    fun setLyrionPlayer(id: String?, name: String?) {
+        val pid = SettingsVocabulary.normalizeLyrionPlayerId(id)
+        val nm = name?.trim().orEmpty()
+        prefs.setLyrionPlayer(pid, nm)
+        appSettings.value = appSettings.value.copy(lyrionPlayerId = pid, lyrionPlayerName = nm)
+    }
+
+    /** L1 — persist the empty-queue fallback (FAVORITE/RANDOM/NONE). */
+    fun setLyrionEmptyQueueFallback(fallback: String?) {
+        val f = SettingsVocabulary.normalizeLyrionFallback(fallback)
+        prefs.setLyrionEmptyQueueFallback(f)
+        appSettings.value = appSettings.value.copy(lyrionEmptyQueueFallback = f)
+    }
+
+    /** L1 — persist the favourite id used by the FAVORITE fallback. */
+    fun setLyrionFavoriteId(id: String?) {
+        val f = SettingsVocabulary.normalizeLyrionFavoriteId(id)
+        prefs.setLyrionFavoriteId(f)
+        appSettings.value = appSettings.value.copy(lyrionFavoriteId = f)
     }
 
     /**
