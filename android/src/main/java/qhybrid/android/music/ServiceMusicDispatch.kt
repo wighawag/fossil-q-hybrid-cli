@@ -5,6 +5,7 @@ import android.content.Context
 import android.media.AudioManager
 import android.media.session.MediaController
 import android.media.session.MediaSessionManager
+import android.media.session.PlaybackState
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -14,7 +15,11 @@ import qhybrid.android.settings.SharedPreferencesSettingsPrefs
 /**
  * WP12 — the production Android shell that turns the watch's music gestures into media-stack
  * actions. It builds a [MusicDispatcher] over the live Android stack:
- *   - `hasActiveSession` — does [MediaSessionManager.getActiveSessions] return any session?
+ *   - `hasActiveSession` — does [MediaSessionManager.getActiveSessions] return a session that is
+ *     actually USABLE (a live [PlaybackState], not STOPPED/NONE)? A closed player often leaves a
+ *     stale stopped session published, so "any session present" is too loose — we'd silently
+ *     control a dead session and never launch the preferred app. We therefore gate on the playback
+ *     state (PLAYING/PAUSED/BUFFERING/… = usable; STOPPED/NONE/ERROR / no session = not active).
  *   - `preferredMusicApp` — the existing [SharedPreferencesSettingsPrefs] pref (WP16g), used as the
  *     launch-fallback target when nothing is currently playing,
  *   - a [SystemMusicSessionDispatcher] that issues [MediaController.TransportControls] calls (play/
@@ -53,7 +58,9 @@ class ServiceMusicDispatch(context: Context) {
         ComponentName(appContext, FossilNotificationListenerService::class.java)
 
     private val dispatcher = MusicDispatcher(
-        hasActiveSession = { activeSessions().isNotEmpty() },
+        // A session counts as "active" only if it is in a USABLE playback state — a closed player
+        // can leave a stale STOPPED/NONE session around, which must NOT swallow the launch fallback.
+        hasActiveSession = { usableSession() != null },
         preferredMusicApp = {
             SharedPreferencesSettingsPrefs(appContext).get().preferredMusicApp
         },
@@ -67,10 +74,13 @@ class ServiceMusicDispatch(context: Context) {
      */
     fun onEventJson(json: String?) {
         // Parse cheaply on the calling thread; only post if it IS a music event we handle.
-        if (MusicController.parse(json) == null) return
+        val action = MusicController.parse(json) ?: return
+        Log.i(TAG, "music gesture: $action")
         mainHandler.post {
-            runCatching { dispatcher.onEventJson(json) }
-                .onFailure { Log.w(TAG, "music dispatch failed", it) }
+            runCatching {
+                val decision = dispatcher.onEventJson(json)
+                Log.i(TAG, "music decision: $decision")
+            }.onFailure { Log.w(TAG, "music dispatch failed", it) }
         }
     }
 
@@ -82,6 +92,35 @@ class ServiceMusicDispatch(context: Context) {
                 Log.d(TAG, "getActiveSessions unavailable: ${e.message}")
                 emptyList()
             }
+
+    /**
+     * The best session to control RIGHT NOW, or null if none is usable. Prefers a PLAYING session,
+     * then any session whose [PlaybackState] is "usable" (it can accept transport commands). A
+     * session with state STOPPED / NONE / ERROR or no playback state at all is treated as NOT usable
+     * — a closed app frequently leaves such a stale session published, and we must fall through to
+     * the launch fallback rather than poke a dead session.
+     */
+    private fun usableSession(): MediaController? {
+        val sessions = activeSessions()
+        // Prefer one that is actually playing.
+        sessions.firstOrNull { it.playbackState?.state == PlaybackState.STATE_PLAYING }?.let { return it }
+        // Otherwise the first session that is in a usable (controllable) state.
+        return sessions.firstOrNull { isUsable(it.playbackState?.state) }
+    }
+
+    /** True if [state] is a live/controllable playback state (NOT stopped/none/error). */
+    private fun isUsable(state: Int?): Boolean = when (state) {
+        PlaybackState.STATE_PLAYING,
+        PlaybackState.STATE_PAUSED,
+        PlaybackState.STATE_BUFFERING,
+        PlaybackState.STATE_CONNECTING,
+        PlaybackState.STATE_FAST_FORWARDING,
+        PlaybackState.STATE_REWINDING,
+        PlaybackState.STATE_SKIPPING_TO_NEXT,
+        PlaybackState.STATE_SKIPPING_TO_PREVIOUS,
+        PlaybackState.STATE_SKIPPING_TO_QUEUE_ITEM -> true
+        else -> false // STATE_STOPPED / STATE_NONE / STATE_ERROR / null → not active
+    }
 
     /**
      * Production [MusicSessionDispatcher] over the live media stack. Transport controls go to the
@@ -104,26 +143,38 @@ class ServiceMusicDispatch(context: Context) {
         }
 
         override fun launchThenDispatch(packageName: String, action: MusicController.MusicAction) {
+            Log.i(TAG, "no active session — launching preferred music app: $packageName")
             // Launch the preferred app so it grabs audio focus / publishes a session.
-            runCatching {
-                appContext.packageManager.getLaunchIntentForPackage(packageName)?.let { intent ->
+            val launched = runCatching {
+                val intent = appContext.packageManager.getLaunchIntentForPackage(packageName)
+                if (intent == null) {
+                    Log.w(TAG, "no launch intent for $packageName (not installed / no launcher activity)")
+                    false
+                } else {
                     intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
                     appContext.startActivity(intent)
+                    true
                 }
-            }.onFailure { Log.w(TAG, "launch of $packageName failed", it) }
-            // Best-effort immediate control (the just-launched app may not have a session yet; the
-            // user's next gesture then finds an active session and dispatches directly).
+            }.getOrElse { Log.w(TAG, "launch of $packageName failed", it); false }
+            // Best-effort immediate control. A just-launched app almost never has a session in the
+            // SAME instant, so for the play-ish gestures we ALSO send a generic PLAY media key (via
+            // AudioManager.dispatchMediaKeyEvent) to nudge the foreground app into playing. The
+            // user's next gesture then finds the now-active session and dispatches directly.
+            if (launched && (action == MusicController.MusicAction.TOGGLE_PLAY_PAUSE ||
+                    action == MusicController.MusicAction.PLAY)) {
+                dispatchMediaKey(android.view.KeyEvent.KEYCODE_MEDIA_PLAY)
+            }
             controlTopSession(action)
         }
 
-        /** Apply a transport [action] to the top active session, if any. */
+        /** Apply a transport [action] to the best usable session, if any. */
         private fun controlTopSession(action: MusicController.MusicAction) {
-            val controls = activeSessions().firstOrNull()?.transportControls ?: return
+            val session = usableSession() ?: return
+            val controls = session.transportControls
             when (action) {
                 MusicController.MusicAction.TOGGLE_PLAY_PAUSE -> {
-                    // Toggle off the current playback state of the top session.
-                    val playing = activeSessions().firstOrNull()?.playbackState?.state ==
-                        android.media.session.PlaybackState.STATE_PLAYING
+                    // Toggle off the current playback state of the chosen session.
+                    val playing = session.playbackState?.state == PlaybackState.STATE_PLAYING
                     if (playing) controls.pause() else controls.play()
                 }
                 MusicController.MusicAction.PLAY -> controls.play()
@@ -134,6 +185,17 @@ class ServiceMusicDispatch(context: Context) {
                 MusicController.MusicAction.VOLUME_UP,
                 MusicController.MusicAction.VOLUME_DOWN -> { /* unreachable */ }
             }
+        }
+
+        /** Send a generic media key (down+up) to whatever app currently holds media-button focus. */
+        private fun dispatchMediaKey(keyCode: Int) {
+            val am = audioManager ?: return
+            runCatching {
+                am.dispatchMediaKeyEvent(
+                    android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, keyCode))
+                am.dispatchMediaKeyEvent(
+                    android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, keyCode))
+            }.onFailure { Log.w(TAG, "dispatchMediaKeyEvent($keyCode) failed", it) }
         }
     }
 
