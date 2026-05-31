@@ -68,6 +68,7 @@ import qhybrid.protocol.requests.fossil.notification.BuzzPatterns
 fun SettingsScreen(
     onOpenLogs: () -> Unit,
     onOpenDefaults: () -> Unit = {},
+    onOpenWaypoints: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -96,6 +97,7 @@ fun SettingsScreen(
         onRemoveWatch = vm::removeActiveWatch,
         onOpenLogs = onOpenLogs,
         onOpenDefaults = onOpenDefaults,
+        onOpenWaypoints = onOpenWaypoints,
         modifier = modifier,
     )
 }
@@ -121,6 +123,8 @@ fun SettingsContent(
     onTransfer: (String, String) -> Boolean,
     onOpenLogs: () -> Unit,
     onOpenDefaults: () -> Unit = {},
+    // WP-TRACKER: open the GPS-waypoint viewer (list + Save/Share GPX). No-op default for previews.
+    onOpenWaypoints: () -> Unit = {},
     modifier: Modifier = Modifier,
     progress: SyncProgressUi = SyncProgressUi.IDLE,
     // WP-BUZZTEST: manual "vibrate the watch now" test buttons (pattern byte). No-op default so
@@ -169,6 +173,7 @@ fun SettingsContent(
             CalendarOffsetCard(state, onSetCalendarOffset, onResyncCalendar) { note = it }
             MusicAppCard(state, onSetMusicApp)
             MultiFunctionRoleCard(state, onSetMultiFunctionRole)
+            WaypointsEntryCard(onOpenWaypoints)
             HorizontalDivider()
             SyncAllCard(state, progress, onSyncAll) { note = it }
             HorizontalDivider()
@@ -599,6 +604,23 @@ private fun SyncAllCard(
             enabled = progress.saveEnabled(state.hasActiveWatch),
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Sync all") }
+    }
+}
+
+// ---- GPS waypoints entry (WP-TRACKER) --------------------------------------
+
+/** WP-TRACKER — a card that opens the GPS-waypoint viewer (list + Save/Share GPX). */
+@Composable
+private fun WaypointsEntryCard(onOpenWaypoints: () -> Unit) {
+    SettingCard("GPS waypoints") {
+        Text(
+            "View the GPS waypoints logged by TRACKER-role gestures / the \"Log GPS waypoint\" " +
+                "button, and save or share them as a GPX file.",
+            style = MaterialTheme.typography.labelSmall,
+        )
+        OutlinedButton(onClick = onOpenWaypoints, modifier = Modifier.fillMaxWidth()) {
+            Text("View GPS waypoints")
+        }
     }
 }
 

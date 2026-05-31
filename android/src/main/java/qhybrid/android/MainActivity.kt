@@ -133,10 +133,13 @@ class MainActivity : ComponentActivity() {
         // WP-DEFAULTS: the Settings tab has a "Defaults for new watches" entry that opens the
         // app-level defaults editor as an overlay surface (same overlay pattern as the log viewer).
         var showDefaults by remember { mutableStateOf(false) }
+        // WP-TRACKER: the Settings tab has a "View GPS waypoints" entry that opens the waypoint
+        // viewer (list + Save/Share GPX) as an overlay surface (same overlay pattern as above).
+        var showWaypoints by remember { mutableStateOf(false) }
         // WP16b: bottom-nav between the Dashboard and the Alarms screen. The Setup/Debug
         // gears overlay on top of whichever home tab is selected.
         var tab by remember { mutableStateOf(HomeTab.DASHBOARD) }
-        val onHome = !showDebug && !showSetup && !showLogs && !showDefaults
+        val onHome = !showDebug && !showSetup && !showLogs && !showDefaults && !showWaypoints
         // WP-SYNCSTATUS (Step 3, approach a): ONE shared guard the active editable screen
         // (Alarms/Notifications/Buttons) publishes its pending-to-watch count + Save action into.
         // The host consults it before navigating away (tab switch OR system back) and, when there
@@ -205,9 +208,11 @@ class MainActivity : ComponentActivity() {
         val addWatchShowAll: () -> Unit = {
             startAssociate(null, associateLauncher::launch, CompanionManager.ScanMode.ALL)
         }
-        val openSetupForMac: () -> Unit = { showSetup = true; showDebug = false; showLogs = false; showDefaults = false }
+        val openSetupForMac: () -> Unit = { showSetup = true; showDebug = false; showLogs = false; showDefaults = false; showWaypoints = false }
         // WP-DEFAULTS: system-back closes the defaults editor / log overlays back to the home tabs.
         androidx.activity.compose.BackHandler(enabled = showDefaults) { showDefaults = false }
+        // WP-TRACKER: system-back closes the waypoint viewer overlay back to the home tabs.
+        androidx.activity.compose.BackHandler(enabled = showWaypoints) { showWaypoints = false }
         // WP-SYNCSTATUS (Step 3): system-back on an editable tab WITH unsaved-to-watch changes
         // prompts (Save / Leave / Cancel) instead of leaving silently. We defer the back action
         // (go to the Dashboard tab) until the user resolves the prompt. Enabled only when the guard
@@ -239,6 +244,7 @@ class MainActivity : ComponentActivity() {
             showSetup -> "Setup"
             showLogs -> "Logs"
             showDefaults -> "Defaults for new watches"
+            showWaypoints -> "GPS waypoints"
             tab == HomeTab.ALARMS -> "Alarms"
             tab == HomeTab.NOTIFICATIONS -> "Notifications"
             tab == HomeTab.BUTTONS -> "Buttons"
@@ -252,11 +258,11 @@ class MainActivity : ComponentActivity() {
                 TopAppBar(
                     title = { Text(title) },
                     actions = {
-                        IconButton(onClick = { showSetup = !showSetup; showDebug = false; showLogs = false; showDefaults = false }) {
+                        IconButton(onClick = { showSetup = !showSetup; showDebug = false; showLogs = false; showDefaults = false; showWaypoints = false }) {
                             Icon(Icons.Filled.Settings, contentDescription = "Setup")
                         }
                         if (DebugMenu.isEnabled()) {
-                            IconButton(onClick = { showDebug = !showDebug; showSetup = false; showLogs = false; showDefaults = false }) {
+                            IconButton(onClick = { showDebug = !showDebug; showSetup = false; showLogs = false; showDefaults = false; showWaypoints = false }) {
                                 Icon(Icons.Filled.Build, contentDescription = "Debug menu")
                             }
                         }
@@ -319,6 +325,7 @@ class MainActivity : ComponentActivity() {
                     showSetup -> HomeScreen()
                     showLogs -> LogConsole()
                     showDefaults -> qhybrid.android.defaults.DefaultsScreen()
+                    showWaypoints -> qhybrid.android.tracker.WaypointsScreen()
                     tab == HomeTab.ALARMS -> AlarmsScreen(leaveGuard = leaveGuard)
                     tab == HomeTab.NOTIFICATIONS -> NotificationsScreen(leaveGuard = leaveGuard)
                     tab == HomeTab.BUTTONS -> ButtonsScreen(leaveGuard = leaveGuard)
@@ -327,6 +334,7 @@ class MainActivity : ComponentActivity() {
                     tab == HomeTab.SETTINGS -> SettingsScreen(
                         onOpenLogs = { showLogs = true },
                         onOpenDefaults = { showDefaults = true },
+                        onOpenWaypoints = { showWaypoints = true },
                     )
                     else -> DashboardScreen(
                         onAddWatch = addWatchByScan,

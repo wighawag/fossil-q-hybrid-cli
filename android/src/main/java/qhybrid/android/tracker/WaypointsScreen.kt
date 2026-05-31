@@ -4,6 +4,8 @@ package qhybrid.android.tracker
 
 import android.content.Intent
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -47,6 +49,19 @@ fun WaypointsScreen(modifier: Modifier = Modifier) {
     val state by vm.uiState.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
 
+    // SAF "create document" launcher: the user picks WHERE the .gpx file lands (Downloads, a
+    // folder, Drive, …) and we write the GPX bytes into the chosen URI. This is the "export the
+    // file" flow (save-to-disk), complementing the share-sheet "Export GPX" (send-to-app) below.
+    val saveLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument(WaypointsViewModel.MIME_TYPE)
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult // user cancelled the picker
+        scope.launch {
+            val gpx = vm.buildGpx()
+            saveGpxToUri(context, uri, gpx)
+        }
+    }
+
     WaypointsContent(
         state = state,
         onExport = {
@@ -55,10 +70,24 @@ fun WaypointsScreen(modifier: Modifier = Modifier) {
                 exportGpx(context, gpx)
             }
         },
+        onSaveFile = { saveLauncher.launch(WaypointsViewModel.EXPORT_FILENAME) },
         onClear = vm::clearAll,
         onDelete = vm::delete,
         modifier = modifier,
     )
+}
+
+/** Write the GPX string to the user-chosen [uri] (Storage Access Framework). Best-effort + toast. */
+private fun saveGpxToUri(context: android.content.Context, uri: android.net.Uri, gpx: String) {
+    runCatching {
+        context.contentResolver.openOutputStream(uri)?.use { out ->
+            out.write(gpx.toByteArray(Charsets.UTF_8))
+        } ?: error("could not open the chosen location for writing")
+    }.onSuccess {
+        Toast.makeText(context, "Saved GPX file", Toast.LENGTH_SHORT).show()
+    }.onFailure {
+        Toast.makeText(context, "Save failed: ${it.message}", Toast.LENGTH_LONG).show()
+    }
 }
 
 /** Export the GPX string to a cache file + open the share-sheet via the app's FileProvider. */
@@ -86,6 +115,7 @@ private fun exportGpx(context: android.content.Context, gpx: String) {
 fun WaypointsContent(
     state: WaypointsUiState,
     onExport: () -> Unit,
+    onSaveFile: () -> Unit,
     onClear: () -> Unit,
     onDelete: (Long) -> Unit,
     modifier: Modifier = Modifier,
@@ -100,7 +130,8 @@ fun WaypointsContent(
         ) {
             Text("GPS waypoints", style = MaterialTheme.typography.titleLarge)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = onExport, enabled = !state.isEmpty) { Text("Export GPX") }
+                Button(onClick = onSaveFile, enabled = !state.isEmpty) { Text("Save GPX file") }
+                OutlinedButton(onClick = onExport, enabled = !state.isEmpty) { Text("Share GPX") }
                 OutlinedButton(onClick = onClear, enabled = !state.isEmpty) { Text("Clear all") }
             }
             if (state.isEmpty) {
