@@ -19,9 +19,10 @@
          GPS fix for waypoint logging), so the legacy maxSdkVersion=30 cap (it was only for BLE
          scans on API <= 30) is removed. -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-    <uses-permission
-        android:name="android.permission.ACCESS_COARSE_LOCATION"
-        android:maxSdkVersion="30" />
+    <!-- WP-TRACKER: ACCESS_COARSE_LOCATION is now uncapped (was maxSdkVersion=30, BLE-scan-only). On
+         API 31+ a runtime ACCESS_FINE_LOCATION request must be paired with ACCESS_COARSE_LOCATION
+         so the system shows the Precise/Approximate toggle correctly. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
     <!-- WP3: foreground service keeping the watch link alive in the background. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />

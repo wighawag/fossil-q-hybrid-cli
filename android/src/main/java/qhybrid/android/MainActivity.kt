@@ -567,6 +567,83 @@ class MainActivity : ComponentActivity() {
                 else "Calendar access: NOT granted — calendar events won't sync to the watch",
                 style = MaterialTheme.typography.bodySmall
             )
+
+            // WP-TRACKER — location access for the GPS-waypoint tracker. Two-step flow: (1) request
+            // foreground location (FINE [+ COARSE on 31+]) via the runtime permissions API; (2)
+            // AFTER foreground is granted, request background location (ACCESS_BACKGROUND_LOCATION,
+            // a separate OS-enforced step) so a gesture can log a fix while the phone is pocketed.
+            // The background step shows a prominent disclosure first (Google Play requirement). The
+            // live fix uses the platform LocationManager — zero Google Play Services.
+            var trackerFg by remember {
+                mutableStateOf(qhybrid.android.tracker.TrackerLocationAccess.isForegroundGranted(this@MainActivity))
+            }
+            var trackerBg by remember {
+                mutableStateOf(qhybrid.android.tracker.TrackerLocationAccess.isBackgroundGranted(this@MainActivity))
+            }
+            var showBgDisclosure by remember { mutableStateOf(false) }
+            val bgLocationLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.RequestPermission()
+            ) { granted ->
+                trackerBg = qhybrid.android.tracker.TrackerLocationAccess.isBackgroundGranted(granted)
+            }
+            val fgLocationLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.RequestMultiplePermissions()
+            ) { result ->
+                trackerFg = qhybrid.android.tracker.TrackerLocationAccess.isForegroundGranted(result)
+                // Background can ONLY be requested after foreground is granted; surface the
+                // disclosure once foreground lands so the two-step flow is obvious to the user.
+                if (trackerFg && !trackerBg) showBgDisclosure = true
+            }
+            Button(
+                onClick = {
+                    if (!trackerFg) {
+                        fgLocationLauncher.launch(
+                            qhybrid.android.tracker.TrackerLocationAccess.foregroundPermissions()
+                        )
+                    } else if (!trackerBg) {
+                        showBgDisclosure = true
+                    }
+                },
+                enabled = !trackerFg || !trackerBg,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    when {
+                        !trackerFg -> "Grant location for waypoint tracker"
+                        !trackerBg -> "Allow background location (pocketed logging)"
+                        else -> "Tracker location: granted"
+                    }
+                )
+            }
+            Text(
+                when {
+                    trackerFg && trackerBg ->
+                        "Tracker location: granted ✅ — waypoints log even while pocketed (platform GPS, no Google)"
+                    trackerFg ->
+                        "Tracker location: foreground only — gestures log while the app is open; allow background for pocketed logging"
+                    else ->
+                        "Tracker location: NOT granted — TRACKER gestures / 'Log GPS waypoint' record nothing"
+                },
+                style = MaterialTheme.typography.bodySmall
+            )
+            if (showBgDisclosure) {
+                AlertDialog(
+                    onDismissRequest = { showBgDisclosure = false },
+                    title = { Text("Background location") },
+                    text = { Text(qhybrid.android.tracker.TrackerLocationAccess.BACKGROUND_DISCLOSURE) },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            showBgDisclosure = false
+                            bgLocationLauncher.launch(
+                                qhybrid.android.tracker.TrackerLocationAccess.BACKGROUND_PERMISSION
+                            )
+                        }) { Text("Allow") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showBgDisclosure = false }) { Text("Not now") }
+                    },
+                )
+            }
         }
     }
 

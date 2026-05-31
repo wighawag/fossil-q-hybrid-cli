@@ -40,18 +40,22 @@ import qhybrid.android.tracker.TrackerController.WaypointKind
  * buzz-back reuses [WatchConnectionService.buzzNow] (which marshals onto its own ble-worker). Never
  * throws on the caller's thread.
  *
- * **On-device-pending.** The live GPS fix ([SystemLocationSource]) + the loud phone ring are
- * verified on-device; the Room write + buzz-back + ALL routing are unit-tested off-device via the
+ * **GPS wired; loud ring on-device-pending.** The live GPS fix ([SystemLocationSource], platform
+ * LocationManager, zero Google Play Services) is wired; only the loud phone ring remains
+ * on-device-pending. The Room write + buzz-back + ALL routing are unit-tested off-device via the
  * pure [TrackerController] / [TrackerDispatcher] / [ButtonPressParser] / [ButtonActionRouter] with
  * fakes. Adds NO new wire bytes.
  */
 class ServiceTrackerDispatch(
     context: Context,
-    private val location: LocationSource = NoopLocationSource,
+    location: LocationSource? = null,
     // The IO scope used for the GPS fix + Room write; injectable for tests.
     private val io: CoroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
 ) {
     private val appContext = context.applicationContext
+    // Default to the live platform-LocationManager source (zero Google Play Services); tests inject
+    // a fake [LocationSource]. NoopLocationSource is no longer the default now that GPS is wired.
+    private val location: LocationSource = location ?: SystemLocationSource(appContext)
     private val repo = WatchRepository(appContext)
     private val prefs = SharedPreferencesSettingsPrefs(appContext)
 
@@ -139,7 +143,7 @@ class ServiceTrackerDispatch(
         runCatching {
             val fix = location.currentFix()
             if (fix == null) {
-                Log.w(TAG, "recordWaypoint($kind): no GPS fix (location on-device-pending)")
+                Log.w(TAG, "recordWaypoint($kind): no GPS fix (no permission / no fix / timeout)")
                 return
             }
             val mac = repo.getActiveWatch()?.macAddress

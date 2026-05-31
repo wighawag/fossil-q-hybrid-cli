@@ -2,13 +2,13 @@ package qhybrid.android.tracker
 
 /**
  * WP-TRACKER \u2014 narrow, injectable seam over the device GPS so the tracker logic stays testable with
- * a fake fix. The production impl ([ServiceTrackerDispatch.SystemLocationSource]) reads the
- * platform fused location (last-known + a single high-accuracy update with a timeout); tests inject
- * a fake that returns a canned [Fix] (or null) so [ServiceTrackerDispatch] / the dispatcher path is
- * verified without GPS.
+ * a fake fix. The production impl ([SystemLocationSource]) reads the platform `LocationManager`
+ * (last-known + a single high-accuracy update with a timeout; zero Google Play Services); tests
+ * inject a fake that returns a canned [Fix] (or null) so [ServiceTrackerDispatch] / the dispatcher
+ * path is verified without GPS.
  *
- * The live fused provider is **on-device-pending** (it needs ACCESS_FINE_LOCATION granted + a real
- * device); the seam keeps everything above it unit-tested.
+ * The live provider is wired ([SystemLocationSource]); it needs `ACCESS_FINE_LOCATION` granted + a
+ * real device. The seam keeps everything above it unit-tested.
  */
 interface LocationSource {
     /** A captured GPS fix. */
@@ -22,8 +22,8 @@ interface LocationSource {
     fun currentFix(): Fix?
 
     companion object {
-        /** WP-TRACKER: whether the live fused-location source is wired (on-device-pending). */
-        const val LOCATION_WIRED = false
+        /** WP-TRACKER: whether the live (platform-LocationManager) location source is wired. */
+        const val LOCATION_WIRED = true
     }
 }
 

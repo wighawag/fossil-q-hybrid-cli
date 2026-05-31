@@ -1,10 +1,17 @@
 # WP-TRACKER — GPS wiring plan (zero Google Play Services)
 
-Status: **PLANNED / not started.** The waypoint feature shipped with the GPS behind a seam
-(`LocationSource`, `LOCATION_WIRED = false`); a tracker gesture / `LOG_WAYPOINT` button currently
-records nothing and logs `"no GPS fix (location on-device-pending)"`. This document is the plan to
-wire the real fix using the **platform `LocationManager`** — **no `play-services-location`, no GMS
-dependency**, so it works on de-Googled phones (GrapheneOS / e/OS / non-GMS ROMs).
+Status: **IMPLEMENTED (code) / on-device verification pending.** §1–§3 are wired:
+`SystemLocationSource` (platform `LocationManager`, zero GMS) is the production `LocationSource`,
+`LOCATION_WIRED = true`, `ServiceTrackerDispatch` defaults to it, the manifest uncaps
+`ACCESS_COARSE_LOCATION`, and `MainActivity` (Setup) drives the two-step foreground+background
+location runtime flow via `TrackerLocationAccess` (with the Play disclosure copy). §4 (loud phone
+ring) is still outstanding. Pure helpers are unit-tested (`SystemLocationSourceTest`,
+`TrackerLocationAccessTest`); the actual `LocationManager` call needs the on-device checklist below.
+
+The waypoint feature originally shipped with the GPS behind a seam (`LocationSource`,
+`LOCATION_WIRED = false`); it now uses the real fix via the **platform `LocationManager`** — **no
+`play-services-location`, no GMS dependency**, so it works on de-Googled phones (GrapheneOS / e/OS /
+non-GMS ROMs).
 
 Everything here is on-device work: a real location call cannot be meaningfully unit-tested on the
 JVM/Robolectric, which is exactly why it was seam-isolated. The pure routing/decision logic
