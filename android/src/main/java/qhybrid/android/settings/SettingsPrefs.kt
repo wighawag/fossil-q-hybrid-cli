@@ -41,6 +41,12 @@ data class AppSettings(
      * Applied by [qhybrid.android.calendar.CalendarRefresher] before the pure WP9 mapper. Default 1.
      */
     val calendarAlarmOffsetMinutes: Int = SettingsVocabulary.CAL_OFFSET_DEFAULT_MINUTES,
+    /**
+     * WP-TRACKER — the GLOBAL multi-function role (MUSIC ⇄ TRACKER) that decides how the watch's
+     * button-blind 0x05 gesture stream is interpreted. Necessarily global (the 0x05 path carries no
+     * button id — see [SettingsVocabulary.MULTI_FUNCTION_ROLE_MUSIC]). Default MUSIC (WP12 behaviour).
+     */
+    val multiFunctionRole: String = SettingsVocabulary.MULTI_FUNCTION_ROLE_DEFAULT,
 )
 
 /**
@@ -62,6 +68,9 @@ interface SettingsPrefs {
 
     /** WP13 — persist the calendar-alarm ring offset in minutes (normalized 0..120). */
     fun setCalendarAlarmOffset(minutes: Int)
+
+    /** WP-TRACKER — persist the global multi-function role (blank/unknown → default MUSIC). */
+    fun setMultiFunctionRole(role: String?)
 }
 
 /**
@@ -91,6 +100,9 @@ class SharedPreferencesSettingsPrefs(context: Context) : SettingsPrefs {
             calendarAlarmOffsetMinutes = SettingsVocabulary.normalizeCalendarOffset(
                 p.getInt(KEY_CAL_OFFSET, SettingsVocabulary.CAL_OFFSET_DEFAULT_MINUTES)
             ),
+            multiFunctionRole = SettingsVocabulary.normalizeMultiFunctionRole(
+                p.getString(KEY_MULTI_FUNCTION_ROLE, SettingsVocabulary.MULTI_FUNCTION_ROLE_DEFAULT)
+            ),
         )
     }
 
@@ -119,6 +131,12 @@ class SharedPreferencesSettingsPrefs(context: Context) : SettingsPrefs {
             .apply()
     }
 
+    override fun setMultiFunctionRole(role: String?) {
+        prefs.edit()
+            .putString(KEY_MULTI_FUNCTION_ROLE, SettingsVocabulary.normalizeMultiFunctionRole(role))
+            .apply()
+    }
+
     private companion object {
         const val PREFS = "fossilq_settings"
         const val KEY_NUDGE_ENABLED = "nudge_enabled"
@@ -126,5 +144,6 @@ class SharedPreferencesSettingsPrefs(context: Context) : SettingsPrefs {
         const val KEY_TZ_OFFSET = "second_tz_offset_minutes"
         const val KEY_MUSIC_APP = "preferred_music_app"
         const val KEY_CAL_OFFSET = "calendar_alarm_offset_minutes"
+        const val KEY_MULTI_FUNCTION_ROLE = "multi_function_role"
     }
 }

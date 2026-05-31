@@ -295,6 +295,13 @@ class WatchConnectionService : Service() {
     // ([MusicController]/[MusicDispatcher]); the live media dispatch is on-device-pending.
     private val musicDispatch by lazy { qhybrid.android.music.ServiceMusicDispatch(applicationContext) }
 
+    // WP-TRACKER: the GPS-waypoint tracker shell. Owns BOTH the 0x05 TRACKER-role gestures (routed
+    // here only when the GLOBAL multi-function role is TRACKER) and the button-aware 0x08 Path-2
+    // single-press actions (LOG_WAYPOINT / RING_PHONE / SWITCH_MULTI_FUNCTION_MODE). Pure logic is
+    // unit-tested (TrackerController/TrackerDispatcher/ButtonPressParser/ButtonActionRouter); the
+    // live GPS fix + loud ring are on-device-pending behind seams. NO new wire bytes.
+    private val trackerDispatch by lazy { qhybrid.android.tracker.ServiceTrackerDispatch(applicationContext) }
+
     private val controllerRef = AtomicReference<FossilController?>(null)
     private val transportRef = AtomicReference<AndroidBleTransport?>(null)
 
@@ -743,12 +750,39 @@ class WatchConnectionService : Service() {
         // WP-ACTIVITY: parse + publish the activity file as soon as the watch delivers it
         // (same callback the CLI `activity` command uses).
         controller.onActivityData { bytes -> onActivityBytes(bytes) }
-        // WP12: feed the watch's event JSON (music gestures emitted by a MUSIC_CONTROL button) into
-        // the music dispatcher. Wired for BOTH the foreground and the auto-connect controllers so a
-        // gesture is handled whichever controller owns the live link. The callback arrives on the
-        // ble-gatt thread; [ServiceMusicDispatch] marshals the actual media calls onto the main
-        // looper. NO new wire bytes — the JSON contract is already emitted by the adapter.
-        controller.onEventJson { json -> musicDispatch.onEventJson(json) }
+        // WP12 + WP-TRACKER: feed the watch's event JSON into the right dispatcher. Wired for BOTH
+        // the foreground and the auto-connect controllers so an event is handled whichever
+        // controller owns the live link. The callback arrives on the ble-gatt thread; each shell
+        // marshals its own device work off it. NO new wire bytes — the JSON contract is already
+        // emitted by the adapter. The two event paths are DIFFERENT event types, so we route by
+        // type first, then (for 0x05 music) by the GLOBAL multi-function role:
+        //   - type:"music" (0x05, button-blind)  → MUSIC role → musicDispatch (WP12, unchanged),
+        //                                          TRACKER role → trackerDispatch (Part A).
+        //   - type:"button" (0x08, button-aware) → trackerDispatch Path-2 router (Part B).
+        // The 0x05 role check is a single pref read per event; music keeps working unchanged in the
+        // MUSIC role (the default). NEVER both for one 0x05 event.
+        controller.onEventJson { json -> routeEventJson(json) }
+    }
+
+    /**
+     * WP-TRACKER — the single onEventJson router. Route by event `type` first (the two button paths
+     * are distinct event types), then for the button-blind 0x05 music stream by the GLOBAL
+     * multi-function role. Never throws on the ble-gatt thread.
+     */
+    private fun routeEventJson(json: String?) {
+        runCatching {
+            // The role is read fresh per event (a single pref read). Uses the SAME pure rule the
+            // unit tests assert ([qhybrid.android.tracker.EventRouter]) so they cannot drift.
+            val role = if (trackerDispatch.isTrackerRole())
+                qhybrid.android.settings.SettingsVocabulary.MULTI_FUNCTION_ROLE_TRACKER
+            else qhybrid.android.settings.SettingsVocabulary.MULTI_FUNCTION_ROLE_MUSIC
+            when (qhybrid.android.tracker.EventRouter.route(json, role)) {
+                qhybrid.android.tracker.EventRouter.Route.Music -> musicDispatch.onEventJson(json)
+                qhybrid.android.tracker.EventRouter.Route.Tracker -> trackerDispatch.onMusicEventJson(json)
+                qhybrid.android.tracker.EventRouter.Route.ButtonPath2 -> trackerDispatch.onButtonEventJson(json)
+                qhybrid.android.tracker.EventRouter.Route.Ignore -> { /* other event types unaffected */ }
+            }
+        }.onFailure { Log.w(TAG, "onEventJson routing failed", it) }
     }
 
     /**

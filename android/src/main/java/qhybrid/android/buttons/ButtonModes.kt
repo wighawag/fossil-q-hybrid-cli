@@ -176,6 +176,21 @@ object ButtonActions {
     const val STEP_GOAL_COMPLETION = "STEP_GOAL_COMPLETION"
     const val RING_PHONE = "RING_PHONE"
 
+    // ---- WP-TRACKER: button-aware Path-2 (0x08 RING_PHONE) single-press actions --------------
+    /**
+     * WP-TRACKER — the watch's RING_PHONE (`01 01 0C 00`) micro-app path emits a button-AWARE,
+     * single-press 0x08 `type:"button"` event (it carries the eventId → TOP/MIDDLE/BOTTOM). These
+     * new actions ride that SAME payload (byte-identical to [RING_PHONE] via [payloadName]) but are
+     * distinguished app-side by the pressed button's stored mapping, so multiple Path-2 buttons
+     * coexist. SINGLE-PRESS ONLY — the firmware gives no reliable double/long on this payload
+     * (measured 2026-05-31; FINDINGS). NO new wire bytes.
+     */
+    /** Single press logs a GPS waypoint (MINOR) + buzz-back. Wire-identical to RING_PHONE. */
+    const val LOG_WAYPOINT = "LOG_WAYPOINT"
+    /** Single press toggles the GLOBAL multi-function role (MUSIC⇄TRACKER) + buzz-back per resulting
+     *  mode. Pure app-side state; wire-identical to RING_PHONE. */
+    const val SWITCH_MULTI_FUNCTION_MODE = "SWITCH_MULTI_FUNCTION_MODE"
+
     // ---- retained legacy aliases (NOT shown; kept so old DB rows still decode/compile) --------
     /** @deprecated redundant with [RING_PHONE] (identical wire bytes). Legacy rows only. */
     const val FORWARD_TO_PHONE = "FORWARD_TO_PHONE"
@@ -186,7 +201,16 @@ object ButtonActions {
     /** @deprecated redundant with [MUSIC_CONTROL] (identical wire bytes). Legacy rows only. */
     const val FORWARD_TO_PHONE_MULTI = "FORWARD_TO_PHONE_MULTI"
 
-    /** All SELECTABLE action ids in display order (wire-unique only — WP-BTN / WP12). */
+    /**
+     * All SELECTABLE action ids in display order.
+     *
+     * WP-TRACKER note: [LOG_WAYPOINT] / [SWITCH_MULTI_FUNCTION_MODE] / [RING_PHONE] are NOT
+     * wire-unique — they ALL compile to the same `01 01 0C 00` payload (RING_PHONE) via
+     * [payloadName]. That is deliberate: they are distinguished NOT by the wire bytes but by the
+     * button-AWARE 0x08 `type:"button"` event (which carries the pressed button id) looked up
+     * against the per-button stored mapping. So multiple Path-2 buttons can each do a DIFFERENT
+     * app-side thing while sharing one payload (single-press only — FINDINGS).
+     */
     val ALL = listOf(
         MUSIC_CONTROL,
         STOPWATCH,
@@ -197,7 +221,16 @@ object ButtonActions {
         VOLUME_DOWN,
         STEP_GOAL_COMPLETION,
         RING_PHONE,
+        LOG_WAYPOINT,
+        SWITCH_MULTI_FUNCTION_MODE,
     )
+
+    /**
+     * WP-TRACKER — the Path-2 actions that ride the button-aware 0x08 `type:"button"` RING_PHONE
+     * event (all byte-identical to [RING_PHONE] on the wire). The app routes by the pressed button's
+     * stored action; [qhybrid.android.tracker.ButtonActionRouter] resolves which of these to run.
+     */
+    val PATH2_ACTIONS = setOf(RING_PHONE, LOG_WAYPOINT, SWITCH_MULTI_FUNCTION_MODE)
 
     /** Default action for a brand-new SINGLE_ACTION mapping (WP12: the concrete music control). */
     const val DEFAULT = MUSIC_CONTROL
@@ -236,6 +269,10 @@ object ButtonActions {
     fun payloadName(actionId: String): String = when (actionId) {
         in MUSIC_CONTROL_ALIASES -> FORWARD_TO_PHONE_MULTI
         FORWARD_TO_PHONE -> RING_PHONE
+        // WP-TRACKER: the new button-aware single-press actions compile byte-identically to the
+        // RING_PHONE (`01 01 0C 00`) payload; they are distinguished only by the 0x08 event's button
+        // id + the per-button stored action, NOT by the wire bytes. NO new wire bytes.
+        LOG_WAYPOINT, SWITCH_MULTI_FUNCTION_MODE -> RING_PHONE
         else -> actionId
     }
 
@@ -249,6 +286,8 @@ object ButtonActions {
         VOLUME_DOWN to "Music volume down",
         STEP_GOAL_COMPLETION to "Show step goal completion",
         RING_PHONE to "Ring phone",
+        LOG_WAYPOINT to "Log GPS waypoint",
+        SWITCH_MULTI_FUNCTION_MODE to "Switch multi-function mode",
         // Legacy aliases keep a readable label if an old row surfaces in a summary.
         FORWARD_TO_PHONE to "Ring phone",
         MULTI_FUNCTION to "Music control",

@@ -19,8 +19,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         WatchAlarmEntity::class,
         NotificationRuleEntity::class,
         ButtonMappingEntity::class,
+        WaypointEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -29,6 +30,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun watchAlarmDao(): WatchAlarmDao
     abstract fun notificationRuleDao(): NotificationRuleDao
     abstract fun buttonMappingDao(): ButtonMappingDao
+    abstract fun waypointDao(): WaypointDao
 
     companion object {
         private const val DB_NAME = "fossilq.db"
@@ -62,6 +64,30 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * WP-TRACKER — migration 3→4: add the new `waypoints` table (GPS waypoint log). Purely
+         * additive — a brand-new table, so no existing row is touched and no install is wiped. The
+         * table is NOT foreign-key-bound to `watches` (a waypoint outlives its watch); `watchMac` is
+         * an optional informational column with an index for fast filtering. `id` is
+         * INTEGER PRIMARY KEY AUTOINCREMENT to match Room's autoGenerate id contract.
+         */
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS waypoints (" +
+                        "id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "watchMac TEXT, " +
+                        "kind TEXT NOT NULL, " +
+                        "lat REAL NOT NULL, " +
+                        "lon REAL NOT NULL, " +
+                        "accuracyM REAL, " +
+                        "capturedAt INTEGER NOT NULL, " +
+                        "note TEXT)"
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_waypoints_watchMac ON waypoints(watchMac)")
+            }
+        }
+
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
@@ -72,7 +98,7 @@ abstract class AppDatabase : RoomDatabase() {
                     context.applicationContext,
                     AppDatabase::class.java,
                     DB_NAME,
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build().also { INSTANCE = it }
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build().also { INSTANCE = it }
             }
     }
 }

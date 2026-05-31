@@ -91,6 +91,7 @@ fun SettingsScreen(
         onSetCalendarOffset = vm::setCalendarAlarmOffset,
         onResyncCalendar = vm::resyncCalendar,
         onSetMusicApp = vm::setPreferredMusicApp,
+        onSetMultiFunctionRole = vm::setMultiFunctionRole,
         onTransfer = vm::transferSettings,
         onRemoveWatch = vm::removeActiveWatch,
         onOpenLogs = onOpenLogs,
@@ -111,6 +112,8 @@ fun SettingsContent(
     onSetNudge: (Boolean, Int) -> Boolean,
     onSetTimezone: (Int) -> Boolean,
     onSetMusicApp: (String?) -> Unit,
+    // WP-TRACKER: set the GLOBAL multi-function role (MUSIC ⇄ TRACKER). No-op default.
+    onSetMultiFunctionRole: (String) -> Unit = {},
     // WP13: set the calendar-alarm ring offset (minutes before the event). No-op default.
     onSetCalendarOffset: (Int) -> Boolean = { false },
     // WP13: manually re-read the calendar + re-map/push slots 16–31. No-op default.
@@ -165,6 +168,7 @@ fun SettingsContent(
             TimezoneCard(state, onSetTimezone) { note = it }
             CalendarOffsetCard(state, onSetCalendarOffset, onResyncCalendar) { note = it }
             MusicAppCard(state, onSetMusicApp)
+            MultiFunctionRoleCard(state, onSetMultiFunctionRole)
             HorizontalDivider()
             SyncAllCard(state, progress, onSyncAll) { note = it }
             HorizontalDivider()
@@ -501,6 +505,60 @@ private fun MusicAppCard(
                         onClick = {
                             expanded = false
                             onSetMusicApp(app.packageName)
+                        },
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * WP-TRACKER — choose the GLOBAL multi-function role (MUSIC ⇄ TRACKER). This decides how the watch's
+ * multi-function (`01 06 12 00`) gesture stream is interpreted: MUSIC = control phone media (WP12);
+ * TRACKER = log GPS waypoints (short=minor, double=major) + ring the phone on a long press, each
+ * with a distinct buzz-back. The control documents WHY this is global: that gesture stream is
+ * button-blind (carries no button id), so the role can't be set per-button — it applies to EVERY
+ * multi-function button at once. Pure phone-side state; never sent to the watch.
+ */
+@Composable
+private fun MultiFunctionRoleCard(
+    state: SettingsUiState,
+    onSetMultiFunctionRole: (String) -> Unit,
+) {
+    SettingCard("Multi-function button role") {
+        Text(
+            "What a multi-function button's short / double / long press does. GLOBAL — applies to " +
+                "every multi-function button at once (the watch's gesture signal carries no button " +
+                "id, so this can't be per-button). Phone-side only — never sent to the watch.",
+            style = MaterialTheme.typography.labelSmall,
+        )
+        var expanded by remember { mutableStateOf(false) }
+        val selectedLabel = SettingsVocabulary.multiFunctionRoleLabel(state.multiFunctionRole)
+        ExposedDropdownMenuBox(
+            expanded = expanded,
+            onExpandedChange = { expanded = it },
+        ) {
+            OutlinedTextField(
+                value = selectedLabel,
+                onValueChange = {},
+                readOnly = true,
+                label = { Text("Role") },
+                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .menuAnchor(MenuAnchorType.PrimaryNotEditable),
+            )
+            ExposedDropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false },
+            ) {
+                SettingsVocabulary.MULTI_FUNCTION_ROLES.forEach { role ->
+                    DropdownMenuItem(
+                        text = { Text(SettingsVocabulary.multiFunctionRoleLabel(role)) },
+                        onClick = {
+                            expanded = false
+                            onSetMultiFunctionRole(role)
                         },
                     )
                 }

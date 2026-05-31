@@ -4,4 +4,6 @@
     <cache-path name="logs" path="logs/" />
     <!-- WP-DEFAULTS: exported defaults-profile JSON lives in cache/defaults and is shared via FileProvider. -->
     <cache-path name="defaults" path="defaults/" />
+    <!-- WP-TRACKER: exported waypoint .gpx files live in cache/waypoints and are shared via FileProvider. -->
+    <cache-path name="waypoints" path="waypoints/" />
 </paths>

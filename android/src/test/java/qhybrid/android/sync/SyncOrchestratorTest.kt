@@ -479,6 +479,48 @@ class SyncOrchestratorTest {
     }
 
     @Test
+    fun trackerPath2ActionsCompileByteIdenticalToRingPhone() {
+        // WP-TRACKER: LOG_WAYPOINT + SWITCH_MULTI_FUNCTION_MODE are button-aware single-press actions
+        // that ride the SAME RING_PHONE (`01 01 0C 00`) payload. They must compile byte-for-byte
+        // identically to a plain RING_PHONE button (distinguished app-side by the 0x08 event's
+        // button id, NOT by wire bytes) — proving NO new wire bytes are invented.
+        val expected = ButtonConfigBuilder.build(
+            arrayOf(ButtonConfigBuilder.entryFrom(ConfigPayload.RING_PHONE)),
+            emptyArray(), emptyArray(),
+        )
+        // Baseline: a plain RING_PHONE button.
+        val ring = FakeUploader()
+        SyncOrchestrator.sync(
+            SyncInput(watch = watch(),
+                buttons = listOf(button(ButtonSlots.TOP, ButtonModes.SINGLE_ACTION,
+                    listOf(ButtonActions.RING_PHONE))),
+                settings = SyncSettings()),
+            ring,
+        )
+        assertArrayEquals(expected, ring.buttonBytes)
+        // LOG_WAYPOINT → byte-identical.
+        val log = FakeUploader()
+        SyncOrchestrator.sync(
+            SyncInput(watch = watch(),
+                buttons = listOf(button(ButtonSlots.TOP, ButtonModes.SINGLE_ACTION,
+                    listOf(ButtonActions.LOG_WAYPOINT))),
+                settings = SyncSettings()),
+            log,
+        )
+        assertArrayEquals(expected, log.buttonBytes)
+        // SWITCH_MULTI_FUNCTION_MODE → byte-identical.
+        val switch = FakeUploader()
+        SyncOrchestrator.sync(
+            SyncInput(watch = watch(),
+                buttons = listOf(button(ButtonSlots.TOP, ButtonModes.SINGLE_ACTION,
+                    listOf(ButtonActions.SWITCH_MULTI_FUNCTION_MODE))),
+                settings = SyncSettings()),
+            switch,
+        )
+        assertArrayEquals(expected, switch.buttonBytes)
+    }
+
+    @Test
     fun customToggleMapsDialModesToSequencedEntries() {
         val up = FakeUploader()
         // Tapped non-canonically; the cycle compiles in CANONICAL order

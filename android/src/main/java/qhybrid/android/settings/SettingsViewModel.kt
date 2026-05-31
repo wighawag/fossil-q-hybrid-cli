@@ -76,6 +76,13 @@ data class SettingsUiState(
     /** True when a preferred music app is set. */
     val hasPreferredMusicApp: Boolean get() = preferredMusicApp != SettingsVocabulary.MUSIC_APP_NONE
 
+    /**
+     * WP-TRACKER — the GLOBAL multi-function role (MUSIC ⇄ TRACKER). Necessarily global because the
+     * 0x05 gesture stream that this role re-interprets is button-blind (carries no button id).
+     */
+    val multiFunctionRole: String
+        get() = SettingsVocabulary.normalizeMultiFunctionRole(appSettings.multiFunctionRole)
+
     /** Whether the per-watch (persisted + live) settings controls should be enabled. */
     val canEditWatchSettings: Boolean get() = hasActiveWatch
 }
@@ -282,6 +289,20 @@ open class SettingsViewModel(
         val normalized = SettingsVocabulary.normalizeMusicApp(pkg)
         prefs.setPreferredMusicApp(normalized)
         appSettings.value = appSettings.value.copy(preferredMusicApp = normalized)
+    }
+
+    // ---- multi-function role (WP-TRACKER — PURE GLOBAL APP PREF; never sent to the watch) ----
+
+    /**
+     * WP-TRACKER — persist the GLOBAL multi-function role (MUSIC ⇄ TRACKER). Pure app-side: it only
+     * changes how the watch's button-blind 0x05 gesture stream is interpreted (media vs GPS-tracker
+     * actions); NO wire bytes, NO live watch command. Necessarily global — the 0x05 stream carries
+     * no button id, so the role can't be per-button.
+     */
+    fun setMultiFunctionRole(role: String?) {
+        val normalized = SettingsVocabulary.normalizeMultiFunctionRole(role)
+        prefs.setMultiFunctionRole(normalized)
+        appSettings.value = appSettings.value.copy(multiFunctionRole = normalized)
     }
 
     // ---- calendar alarm ring offset (WP13 — APP PREF, applied in CalendarRefresher) ----

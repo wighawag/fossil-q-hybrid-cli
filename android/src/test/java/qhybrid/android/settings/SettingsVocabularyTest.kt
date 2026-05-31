@@ -86,4 +86,55 @@ class SettingsVocabularyTest {
         assertEquals("com.spotify.music", SettingsVocabulary.normalizeMusicApp("com.spotify.music"))
         assertEquals("com.spotify.music", SettingsVocabulary.normalizeMusicApp("  com.spotify.music  "))
     }
+
+    // ---- multi-function role (WP-TRACKER; GLOBAL app pref) -------------------
+
+    @Test
+    fun multiFunctionRoleConstantsAndDefault() {
+        assertEquals("MUSIC", SettingsVocabulary.MULTI_FUNCTION_ROLE_MUSIC)
+        assertEquals("TRACKER", SettingsVocabulary.MULTI_FUNCTION_ROLE_TRACKER)
+        // Default preserves the WP12 music-control behaviour.
+        assertEquals(
+            SettingsVocabulary.MULTI_FUNCTION_ROLE_MUSIC,
+            SettingsVocabulary.MULTI_FUNCTION_ROLE_DEFAULT,
+        )
+        assertEquals(
+            listOf("MUSIC", "TRACKER"),
+            SettingsVocabulary.MULTI_FUNCTION_ROLES,
+        )
+    }
+
+    @Test
+    fun multiFunctionRoleNormalization() {
+        // Blank/unknown → default MUSIC (never throws).
+        assertEquals(
+            SettingsVocabulary.MULTI_FUNCTION_ROLE_MUSIC,
+            SettingsVocabulary.normalizeMultiFunctionRole(null),
+        )
+        assertEquals(
+            SettingsVocabulary.MULTI_FUNCTION_ROLE_MUSIC,
+            SettingsVocabulary.normalizeMultiFunctionRole("   "),
+        )
+        assertEquals(
+            SettingsVocabulary.MULTI_FUNCTION_ROLE_MUSIC,
+            SettingsVocabulary.normalizeMultiFunctionRole("BOGUS"),
+        )
+        // Known values round-trip; case-insensitive + trimmed.
+        assertEquals(
+            SettingsVocabulary.MULTI_FUNCTION_ROLE_TRACKER,
+            SettingsVocabulary.normalizeMultiFunctionRole("  tracker "),
+        )
+        assertEquals(
+            SettingsVocabulary.MULTI_FUNCTION_ROLE_MUSIC,
+            SettingsVocabulary.normalizeMultiFunctionRole("music"),
+        )
+    }
+
+    @Test
+    fun multiFunctionRoleLabels() {
+        assertEquals("Music control", SettingsVocabulary.multiFunctionRoleLabel("MUSIC"))
+        assertEquals("GPS waypoint tracker", SettingsVocabulary.multiFunctionRoleLabel("TRACKER"))
+        // Unknown role falls back to the default label.
+        assertEquals("Music control", SettingsVocabulary.multiFunctionRoleLabel("BOGUS"))
+    }
 }

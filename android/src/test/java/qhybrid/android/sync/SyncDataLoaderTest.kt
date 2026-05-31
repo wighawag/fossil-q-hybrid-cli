@@ -32,6 +32,7 @@ class SyncDataLoaderTest : DbTestBase() {
         override fun setSecondTimezoneOffset(minutes: Int) {}
         override fun setPreferredMusicApp(pkg: String?) {}
         override fun setCalendarAlarmOffset(minutes: Int) {}
+        override fun setMultiFunctionRole(role: String?) {}
     }
 
     private fun userAlarm(mac: String, slot: Int) =

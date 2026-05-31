@@ -52,6 +52,7 @@ class SettingsViewModelTest : DbTestBase() {
         var tzWrites = 0
         var musicWrites = 0
         var calOffsetWrites = 0
+        var roleWrites = 0
         override fun get(): AppSettings = current
         override fun setNudge(enabled: Boolean, minutes: Int) {
             nudgeWrites++
@@ -74,6 +75,12 @@ class SettingsViewModelTest : DbTestBase() {
             calOffsetWrites++
             current = current.copy(
                 calendarAlarmOffsetMinutes = SettingsVocabulary.normalizeCalendarOffset(minutes),
+            )
+        }
+        override fun setMultiFunctionRole(role: String?) {
+            roleWrites++
+            current = current.copy(
+                multiFunctionRole = SettingsVocabulary.normalizeMultiFunctionRole(role),
             )
         }
     }
@@ -530,6 +537,35 @@ class SettingsViewModelTest : DbTestBase() {
         model.setPreferredMusicApp("  ")
         val cleared = awaitState(model.uiState) { !it.hasPreferredMusicApp }
         assertEquals(SettingsVocabulary.MUSIC_APP_NONE, cleared.preferredMusicApp)
+    }
+
+    // ---- multi-function role: pure GLOBAL app pref (never synced) ------------
+
+    @Test
+    fun multiFunctionRoleRoundTripsAndNeverSyncs() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }
+        val prefs = FakePrefs()
+        val sync = FakeSync()
+        val model = vm(prefs = prefs, sync = sync)
+        awaitState(model.uiState) { it.hasActiveWatch }
+        // Default is MUSIC (preserves WP12).
+        assertEquals(SettingsVocabulary.MULTI_FUNCTION_ROLE_MUSIC, model.uiState.value.multiFunctionRole)
+
+        model.setMultiFunctionRole(SettingsVocabulary.MULTI_FUNCTION_ROLE_TRACKER)
+        assertEquals(1, prefs.roleWrites)
+        val s = awaitState(model.uiState) {
+            it.multiFunctionRole == SettingsVocabulary.MULTI_FUNCTION_ROLE_TRACKER
+        }
+        assertEquals(SettingsVocabulary.MULTI_FUNCTION_ROLE_TRACKER, s.multiFunctionRole)
+        // Pure phone-side — no live watch command ever fires.
+        assertEquals(0, sync.vibeCount + sync.nudgeCount + sync.tzCount)
+
+        // Unknown value folds back to the default MUSIC.
+        model.setMultiFunctionRole("BOGUS")
+        val back = awaitState(model.uiState) {
+            it.multiFunctionRole == SettingsVocabulary.MULTI_FUNCTION_ROLE_MUSIC
+        }
+        assertEquals(SettingsVocabulary.MULTI_FUNCTION_ROLE_MUSIC, back.multiFunctionRole)
     }
 
     @Test

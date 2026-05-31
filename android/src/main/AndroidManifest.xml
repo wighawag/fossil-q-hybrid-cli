@@ -15,9 +15,10 @@
     <uses-permission
         android:name="android.permission.BLUETOOTH_ADMIN"
         android:maxSdkVersion="30" />
-    <uses-permission
-        android:name="android.permission.ACCESS_FINE_LOCATION"
-        android:maxSdkVersion="30" />
+    <!-- WP-TRACKER: ACCESS_FINE_LOCATION is now needed on ALL API levels (the FusedLocationProvider
+         GPS fix for waypoint logging), so the legacy maxSdkVersion=30 cap (it was only for BLE
+         scans on API <= 30) is removed. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission
         android:name="android.permission.ACCESS_COARSE_LOCATION"
         android:maxSdkVersion="30" />
@@ -25,6 +26,18 @@
     <!-- WP3: foreground service keeping the watch link alive in the background. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <!-- WP-TRACKER: the GPS-waypoint tracker captures a fix when a TRACKER-role gesture / a
+         "Log GPS waypoint" button fires. Logging happens while the phone is pocketed under the
+         foreground service, so the FGS gains the `location` type and the runtime location perms
+         below are required. ACCESS_FINE_LOCATION here (NOT maxSdkVersion-capped, unlike the legacy
+         BLE-scan entry) is the runtime grant the FusedLocationProvider needs on all API levels. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <!-- WP-TRACKER: ACCESS_BACKGROUND_LOCATION lets a tracker gesture log a fix while the app is in
+         the background (phone pocketed). PLAY-SENSITIVE: Google Play requires a prominent
+         disclosure + a privacy-policy justification at submission ("log GPS waypoints on a watch
+         button press while the app runs in the background as a foreground service"). Requested at
+         runtime AFTER foreground location is granted (the two-step background-location flow). -->
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
     <!-- WP3: restart the service + reconnect after reboot. -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- WP3: ask the user to exempt us from Doze so the background GATT link survives. -->
@@ -82,7 +95,7 @@
         <service
             android:name=".WatchConnectionService"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice" />
+            android:foregroundServiceType="connectedDevice|location" />
 
         <!-- WP3: CompanionDeviceManager presence callbacks (API 31+). The system binds
              this with BIND_COMPANION_DEVICE_SERVICE and wakes it when the associated

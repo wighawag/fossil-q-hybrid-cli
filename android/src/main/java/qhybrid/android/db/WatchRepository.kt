@@ -20,6 +20,7 @@ class WatchRepository(
     private val alarmDao: WatchAlarmDao = db.watchAlarmDao(),
     private val ruleDao: NotificationRuleDao = db.notificationRuleDao(),
     private val buttonDao: ButtonMappingDao = db.buttonMappingDao(),
+    private val waypointDao: WaypointDao = db.waypointDao(),
     // WP-SYNCSTATUS — the clock used to stamp each child row's `updatedAt` on EVERY write path
     // (single-row upsert + the bulk replace/seed/transfer paths). Injectable so the synced-marker
     // derivation is unit-testable with a fixed clock. Production uses the wall clock.
@@ -195,6 +196,22 @@ class WatchRepository(
             buttonDao.upsertAll(buttons.map { it.copy(watchMac = normalized, updatedAt = ts) })
         }
     }
+
+    // ---- waypoints (WP-TRACKER; NOT per-watch, NOT cascade-deleted) ----------
+
+    /** WP-TRACKER — record a GPS waypoint; returns the new row id. */
+    suspend fun insertWaypoint(waypoint: WaypointEntity): Long = waypointDao.insert(waypoint)
+
+    /** All waypoints, newest first (for the viewer list). */
+    suspend fun getWaypoints(): List<WaypointEntity> = waypointDao.getAll()
+
+    /** All waypoints in capture order (for GPX export). */
+    suspend fun getWaypointsChronological(): List<WaypointEntity> = waypointDao.getAllChronological()
+
+    fun observeWaypoints(): Flow<List<WaypointEntity>> = waypointDao.observeAll()
+    suspend fun waypointCount(): Int = waypointDao.count()
+    suspend fun deleteWaypoint(id: Long) = waypointDao.deleteById(id)
+    suspend fun clearWaypoints() = waypointDao.clear()
 
     // ---- clone / transfer ----------------------------------------------------
 

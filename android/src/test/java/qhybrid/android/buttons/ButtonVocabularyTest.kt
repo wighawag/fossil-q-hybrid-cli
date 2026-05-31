@@ -85,7 +85,9 @@ class ButtonVocabularyTest {
 
     @Test
     fun actionCatalogIsDedupedToWireUniquePayloads() {
-        // WP-BTN: 9 SELECTABLE actions, each resolving (via payloadName) to a real ConfigPayload.
+        // WP-BTN/WP12: 9 wire-unique actions; WP-TRACKER adds 2 button-aware Path-2 actions that
+        // share the RING_PHONE payload (distinguished by the 0x08 event's button id, not the wire).
+        // Every selectable id resolves (via payloadName) to a real ConfigPayload.
         for (id in ButtonActions.ALL) {
             assertEquals(
                 ButtonActions.payloadName(id),
@@ -93,7 +95,12 @@ class ButtonVocabularyTest {
             )
             assertTrue("missing label for $id", ButtonActions.isKnown(id))
         }
-        assertEquals(9, ButtonActions.ALL.size)
+        assertEquals(11, ButtonActions.ALL.size)
+        // WP-TRACKER: the two new button-aware single-press actions are selectable + labelled.
+        assertTrue(ButtonActions.LOG_WAYPOINT in ButtonActions.ALL)
+        assertTrue(ButtonActions.SWITCH_MULTI_FUNCTION_MODE in ButtonActions.ALL)
+        assertEquals("Log GPS waypoint", ButtonActions.label(ButtonActions.LOG_WAYPOINT))
+        assertEquals("Switch multi-function mode", ButtonActions.label(ButtonActions.SWITCH_MULTI_FUNCTION_MODE))
         // WP12: the concrete MUSIC_CONTROL is now the selectable + the default.
         assertEquals(ButtonActions.MUSIC_CONTROL, ButtonActions.DEFAULT)
         assertTrue(ButtonActions.MUSIC_CONTROL in ButtonActions.ALL)
@@ -125,6 +132,11 @@ class ButtonVocabularyTest {
         assertEquals("VOLUME_UP", ButtonActions.payloadName(ButtonActions.VOLUME_UP))
         assertEquals("VOLUME_DOWN", ButtonActions.payloadName(ButtonActions.VOLUME_DOWN))
         assertEquals("STOPWATCH", ButtonActions.payloadName(ButtonActions.STOPWATCH))
+        // WP-TRACKER: the new button-aware Path-2 actions compile byte-identically to RING_PHONE
+        // (`01 01 0C 00`) — same payload, distinguished only by the per-button stored action.
+        assertEquals("RING_PHONE", ButtonActions.payloadName(ButtonActions.RING_PHONE))
+        assertEquals("RING_PHONE", ButtonActions.payloadName(ButtonActions.LOG_WAYPOINT))
+        assertEquals("RING_PHONE", ButtonActions.payloadName(ButtonActions.SWITCH_MULTI_FUNCTION_MODE))
     }
 
     @Test

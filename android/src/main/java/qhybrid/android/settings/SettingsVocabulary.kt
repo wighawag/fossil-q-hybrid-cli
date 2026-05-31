@@ -138,4 +138,44 @@ object SettingsVocabulary {
     /** Normalize a stored package id: blank → [MUSIC_APP_NONE]. Never throws. */
     fun normalizeMusicApp(pkg: String?): String =
         pkg?.trim()?.takeIf { it.isNotEmpty() } ?: MUSIC_APP_NONE
+
+    // ---- multi-function role (WP-TRACKER; app pref, GLOBAL, pure app-side) ----
+
+    /**
+     * WP-TRACKER — how the watch's button-blind multi-function gesture stream (the 0x05
+     * `type:"music"` events emitted by a MUSIC_CONTROL / `01 06 12 00` button) is interpreted.
+     *
+     * **This is necessarily a single GLOBAL app setting, NOT per-button.** Hardware fact
+     * (FINDINGS, measured 2026-05-31): the 0x05 MUSIC_EVENT path carries NO button id — two
+     * such buttons are indistinguishable on the wire (raw frames `01 05 41 02` short /
+     * `01 05 42 03` double / `01 05 43 04` long carry only the firmware-classified gesture).
+     * So the role that decides "is a gesture a media command or a GPS-tracker action?" cannot be
+     * attached to a specific button — it must be one global toggle.
+     */
+    const val MULTI_FUNCTION_ROLE_MUSIC = "MUSIC"
+    const val MULTI_FUNCTION_ROLE_TRACKER = "TRACKER"
+
+    /** Default multi-function role — preserves the WP12 music-control behaviour out of the box. */
+    const val MULTI_FUNCTION_ROLE_DEFAULT = MULTI_FUNCTION_ROLE_MUSIC
+
+    /** All selectable multi-function roles in display order. */
+    val MULTI_FUNCTION_ROLES = listOf(MULTI_FUNCTION_ROLE_MUSIC, MULTI_FUNCTION_ROLE_TRACKER)
+
+    /**
+     * Normalize a stored multi-function role onto the known set (never throws): blank/unknown →
+     * [MULTI_FUNCTION_ROLE_DEFAULT]; case-insensitive + trimmed so a legacy/lower-case value still
+     * resolves.
+     */
+    fun normalizeMultiFunctionRole(role: String?): String =
+        when (role?.trim()?.uppercase()) {
+            MULTI_FUNCTION_ROLE_TRACKER -> MULTI_FUNCTION_ROLE_TRACKER
+            MULTI_FUNCTION_ROLE_MUSIC -> MULTI_FUNCTION_ROLE_MUSIC
+            else -> MULTI_FUNCTION_ROLE_DEFAULT
+        }
+
+    /** Human label for a multi-function role; falls back gracefully. */
+    fun multiFunctionRoleLabel(role: String): String = when (normalizeMultiFunctionRole(role)) {
+        MULTI_FUNCTION_ROLE_TRACKER -> "GPS waypoint tracker"
+        else -> "Music control"
+    }
 }
