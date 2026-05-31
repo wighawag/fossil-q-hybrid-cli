@@ -300,4 +300,71 @@ object SettingsVocabulary {
         MODE_TRACKER -> "GPS waypoint tracker"
         else -> "Music (phone)"
     }
+
+    // ---- L1: Lyrion (LMS) music control (app prefs; pure app-side) -----------
+
+    /**
+     * L1 — connection + target config for the [MODE_MUSIC_LYRION] backend (control a Lyrion / LMS
+     * player over the network). All app-level prefs (never sent to the watch). The transport is
+     * JSON-RPC over HTTP on the LMS web port (default [LYRION_PORT_DEFAULT] = 9000).
+     */
+    const val LYRION_HOST_NONE = ""
+    const val LYRION_PORT_DEFAULT = 9000
+    const val LYRION_PORT_MIN = 1
+    const val LYRION_PORT_MAX = 65535
+    /** Sentinel for "no player chosen" — the dispatcher no-ops until a player is selected. */
+    const val LYRION_PLAYER_NONE = ""
+    /** Sentinel for "no favourite chosen". */
+    const val LYRION_FAVORITE_NONE = ""
+    /** Volume step (percent) applied per VOLUME_UP / VOLUME_DOWN gesture. */
+    const val LYRION_VOLUME_STEP = 5
+
+    /** Trim a host string; blank → [LYRION_HOST_NONE]. Never throws. */
+    fun normalizeLyrionHost(host: String?): String =
+        host?.trim()?.takeIf { it.isNotEmpty() } ?: LYRION_HOST_NONE
+
+    /** Clamp a port onto [LYRION_PORT_MIN]..[LYRION_PORT_MAX]; out-of-range/0 → default. */
+    fun normalizeLyrionPort(port: Int): Int =
+        if (port < LYRION_PORT_MIN || port > LYRION_PORT_MAX) LYRION_PORT_DEFAULT
+        else port
+
+    /** Trim a player id (MAC); blank → [LYRION_PLAYER_NONE]. Never throws. */
+    fun normalizeLyrionPlayerId(id: String?): String =
+        id?.trim()?.takeIf { it.isNotEmpty() } ?: LYRION_PLAYER_NONE
+
+    /** Trim a favourite id; blank → [LYRION_FAVORITE_NONE]. Never throws. */
+    fun normalizeLyrionFavoriteId(id: String?): String =
+        id?.trim()?.takeIf { it.isNotEmpty() } ?: LYRION_FAVORITE_NONE
+
+    /**
+     * L1 — what to start when a PLAY/TOGGLE gesture targets a Lyrion player whose queue is EMPTY
+     * (plain `play` would do nothing). See the plan §5.3.
+     *   - [LYRION_FALLBACK_FAVORITE] (default) — play the configured favourite; if none set, the
+     *     dispatcher degrades to RANDOM.
+     *   - [LYRION_FALLBACK_RANDOM] — `randomplay tracks`.
+     *   - [LYRION_FALLBACK_NONE] — passive `play` (no-op on an empty queue).
+     */
+    const val LYRION_FALLBACK_FAVORITE = "FAVORITE"
+    const val LYRION_FALLBACK_RANDOM = "RANDOM"
+    const val LYRION_FALLBACK_NONE = "NONE"
+
+    const val LYRION_FALLBACK_DEFAULT = LYRION_FALLBACK_FAVORITE
+
+    /** All selectable empty-queue fallbacks in display order. */
+    val LYRION_FALLBACKS = listOf(LYRION_FALLBACK_FAVORITE, LYRION_FALLBACK_RANDOM, LYRION_FALLBACK_NONE)
+
+    /** Normalize a fallback onto the known set (never throws): blank/unknown → default FAVORITE. */
+    fun normalizeLyrionFallback(fallback: String?): String = when (fallback?.trim()?.uppercase()) {
+        LYRION_FALLBACK_RANDOM -> LYRION_FALLBACK_RANDOM
+        LYRION_FALLBACK_NONE -> LYRION_FALLBACK_NONE
+        LYRION_FALLBACK_FAVORITE -> LYRION_FALLBACK_FAVORITE
+        else -> LYRION_FALLBACK_DEFAULT
+    }
+
+    /** Human label for an empty-queue fallback; falls back gracefully. */
+    fun lyrionFallbackLabel(fallback: String): String = when (normalizeLyrionFallback(fallback)) {
+        LYRION_FALLBACK_RANDOM -> "Random tracks"
+        LYRION_FALLBACK_NONE -> "Do nothing"
+        else -> "Favourite"
+    }
 }

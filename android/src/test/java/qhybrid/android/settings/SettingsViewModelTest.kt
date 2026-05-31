@@ -95,6 +95,28 @@ class SettingsViewModelTest : DbTestBase() {
                     SettingsVocabulary.clampIndex(current.multiFunctionRotation, index),
             )
         }
+        override fun setLyrionServer(host: String?, port: Int) {
+            current = current.copy(
+                lyrionServerHost = SettingsVocabulary.normalizeLyrionHost(host),
+                lyrionServerPort = SettingsVocabulary.normalizeLyrionPort(port),
+            )
+        }
+        override fun setLyrionPlayer(id: String?, name: String?) {
+            current = current.copy(
+                lyrionPlayerId = SettingsVocabulary.normalizeLyrionPlayerId(id),
+                lyrionPlayerName = name?.trim().orEmpty(),
+            )
+        }
+        override fun setLyrionEmptyQueueFallback(fallback: String?) {
+            current = current.copy(
+                lyrionEmptyQueueFallback = SettingsVocabulary.normalizeLyrionFallback(fallback),
+            )
+        }
+        override fun setLyrionFavoriteId(id: String?) {
+            current = current.copy(
+                lyrionFavoriteId = SettingsVocabulary.normalizeLyrionFavoriteId(id),
+            )
+        }
         override fun setRingDurationSeconds(seconds: Int) {
             current = current.copy(
                 ringDurationSeconds = SettingsVocabulary.normalizeRingDuration(seconds),

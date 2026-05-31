@@ -55,6 +55,18 @@ data class AppSettings(
     val multiFunctionRotation: List<String> = SettingsVocabulary.MULTI_FUNCTION_ROTATION_DEFAULT,
     /** L0 — index into [multiFunctionRotation] of the currently-active mode (clamped to range). */
     val multiFunctionActiveIndex: Int = 0,
+    /** L1 — Lyrion (LMS) server host/IP for the [SettingsVocabulary.MODE_MUSIC_LYRION] backend. */
+    val lyrionServerHost: String = SettingsVocabulary.LYRION_HOST_NONE,
+    /** L1 — Lyrion server HTTP/JSON-RPC port (default 9000). */
+    val lyrionServerPort: Int = SettingsVocabulary.LYRION_PORT_DEFAULT,
+    /** L1 — target Lyrion player id (MAC), or [SettingsVocabulary.LYRION_PLAYER_NONE] if unset. */
+    val lyrionPlayerId: String = SettingsVocabulary.LYRION_PLAYER_NONE,
+    /** L1 — cached display name of the target Lyrion player (for the Settings UI). */
+    val lyrionPlayerName: String = "",
+    /** L1 — empty-queue fallback for PLAY/TOGGLE (FAVORITE default | RANDOM | NONE). */
+    val lyrionEmptyQueueFallback: String = SettingsVocabulary.LYRION_FALLBACK_DEFAULT,
+    /** L1 — favourite id to start when fallback == FAVORITE (or NONE if unset). */
+    val lyrionFavoriteId: String = SettingsVocabulary.LYRION_FAVORITE_NONE,
     /**
      * WP-TRACKER — how long (seconds) the loud "find my phone" ring plays before auto-stopping (a
      * pocketed phone can't ring forever). A repeated TRACKER long gesture / RING_PHONE press also
@@ -99,6 +111,18 @@ interface SettingsPrefs {
     /** L0 — persist the active-mode index (clamped to the current rotation's range). */
     fun setMultiFunctionActiveIndex(index: Int)
 
+    /** L1 — persist the Lyrion server host (blank/null → NONE) + port (clamped/default). */
+    fun setLyrionServer(host: String?, port: Int)
+
+    /** L1 — persist the target Lyrion player id (blank/null → NONE) + cached display name. */
+    fun setLyrionPlayer(id: String?, name: String?)
+
+    /** L1 — persist the empty-queue fallback (blank/unknown → default FAVORITE). */
+    fun setLyrionEmptyQueueFallback(fallback: String?)
+
+    /** L1 — persist the favourite id used by the FAVORITE fallback (blank/null → NONE). */
+    fun setLyrionFavoriteId(id: String?)
+
     /** WP-TRACKER — persist the loud-ring auto-stop duration in seconds (normalized 5..300). */
     fun setRingDurationSeconds(seconds: Int)
 }
@@ -139,6 +163,22 @@ class SharedPreferencesSettingsPrefs(context: Context) : SettingsPrefs {
             multiFunctionRotation = readRotation(p),
             multiFunctionActiveIndex = SettingsVocabulary.clampIndex(
                 readRotation(p), p.getInt(KEY_MULTI_FUNCTION_INDEX, 0)
+            ),
+            lyrionServerHost = SettingsVocabulary.normalizeLyrionHost(
+                p.getString(KEY_LYRION_HOST, SettingsVocabulary.LYRION_HOST_NONE)
+            ),
+            lyrionServerPort = SettingsVocabulary.normalizeLyrionPort(
+                p.getInt(KEY_LYRION_PORT, SettingsVocabulary.LYRION_PORT_DEFAULT)
+            ),
+            lyrionPlayerId = SettingsVocabulary.normalizeLyrionPlayerId(
+                p.getString(KEY_LYRION_PLAYER_ID, SettingsVocabulary.LYRION_PLAYER_NONE)
+            ),
+            lyrionPlayerName = p.getString(KEY_LYRION_PLAYER_NAME, "").orEmpty(),
+            lyrionEmptyQueueFallback = SettingsVocabulary.normalizeLyrionFallback(
+                p.getString(KEY_LYRION_FALLBACK, SettingsVocabulary.LYRION_FALLBACK_DEFAULT)
+            ),
+            lyrionFavoriteId = SettingsVocabulary.normalizeLyrionFavoriteId(
+                p.getString(KEY_LYRION_FAVORITE_ID, SettingsVocabulary.LYRION_FAVORITE_NONE)
             ),
         )
     }
@@ -208,6 +248,32 @@ class SharedPreferencesSettingsPrefs(context: Context) : SettingsPrefs {
             .apply()
     }
 
+    override fun setLyrionServer(host: String?, port: Int) {
+        prefs.edit()
+            .putString(KEY_LYRION_HOST, SettingsVocabulary.normalizeLyrionHost(host))
+            .putInt(KEY_LYRION_PORT, SettingsVocabulary.normalizeLyrionPort(port))
+            .apply()
+    }
+
+    override fun setLyrionPlayer(id: String?, name: String?) {
+        prefs.edit()
+            .putString(KEY_LYRION_PLAYER_ID, SettingsVocabulary.normalizeLyrionPlayerId(id))
+            .putString(KEY_LYRION_PLAYER_NAME, name?.trim().orEmpty())
+            .apply()
+    }
+
+    override fun setLyrionEmptyQueueFallback(fallback: String?) {
+        prefs.edit()
+            .putString(KEY_LYRION_FALLBACK, SettingsVocabulary.normalizeLyrionFallback(fallback))
+            .apply()
+    }
+
+    override fun setLyrionFavoriteId(id: String?) {
+        prefs.edit()
+            .putString(KEY_LYRION_FAVORITE_ID, SettingsVocabulary.normalizeLyrionFavoriteId(id))
+            .apply()
+    }
+
     override fun setRingDurationSeconds(seconds: Int) {
         prefs.edit()
             .putInt(KEY_RING_DURATION, SettingsVocabulary.normalizeRingDuration(seconds))
@@ -224,6 +290,12 @@ class SharedPreferencesSettingsPrefs(context: Context) : SettingsPrefs {
         const val KEY_MULTI_FUNCTION_ROLE = "multi_function_role"
         const val KEY_MULTI_FUNCTION_ROTATION = "multi_function_rotation"
         const val KEY_MULTI_FUNCTION_INDEX = "multi_function_active_index"
+        const val KEY_LYRION_HOST = "lyrion_server_host"
+        const val KEY_LYRION_PORT = "lyrion_server_port"
+        const val KEY_LYRION_PLAYER_ID = "lyrion_player_id"
+        const val KEY_LYRION_PLAYER_NAME = "lyrion_player_name"
+        const val KEY_LYRION_FALLBACK = "lyrion_empty_queue_fallback"
+        const val KEY_LYRION_FAVORITE_ID = "lyrion_favorite_id"
         const val KEY_RING_DURATION = "ring_duration_seconds"
     }
 }

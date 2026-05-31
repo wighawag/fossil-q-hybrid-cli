@@ -259,4 +259,60 @@ class SettingsVocabularyTest {
         assertEquals("1 min 30 sec", SettingsVocabulary.ringDurationLabel(90))
         assertEquals("5 min", SettingsVocabulary.ringDurationLabel(300))
     }
+
+    // ---- L1: Lyrion (LMS) music control --------------------------------------
+
+    @Test
+    fun lyrionHostNormalization() {
+        assertEquals(SettingsVocabulary.LYRION_HOST_NONE, SettingsVocabulary.normalizeLyrionHost(null))
+        assertEquals(SettingsVocabulary.LYRION_HOST_NONE, SettingsVocabulary.normalizeLyrionHost("  "))
+        assertEquals("192.168.1.10", SettingsVocabulary.normalizeLyrionHost("  192.168.1.10 "))
+    }
+
+    @Test
+    fun lyrionPortNormalization() {
+        assertEquals(9000, SettingsVocabulary.LYRION_PORT_DEFAULT)
+        // Out-of-range / zero / negative → default.
+        assertEquals(9000, SettingsVocabulary.normalizeLyrionPort(0))
+        assertEquals(9000, SettingsVocabulary.normalizeLyrionPort(-5))
+        assertEquals(9000, SettingsVocabulary.normalizeLyrionPort(70_000))
+        // In-range passes through.
+        assertEquals(9090, SettingsVocabulary.normalizeLyrionPort(9090))
+        assertEquals(1, SettingsVocabulary.normalizeLyrionPort(1))
+        assertEquals(65535, SettingsVocabulary.normalizeLyrionPort(65535))
+    }
+
+    @Test
+    fun lyrionPlayerAndFavoriteIdNormalization() {
+        assertEquals(SettingsVocabulary.LYRION_PLAYER_NONE, SettingsVocabulary.normalizeLyrionPlayerId(null))
+        assertEquals(SettingsVocabulary.LYRION_PLAYER_NONE, SettingsVocabulary.normalizeLyrionPlayerId("  "))
+        assertEquals("00:04:20:ab:cd:ef", SettingsVocabulary.normalizeLyrionPlayerId(" 00:04:20:ab:cd:ef "))
+        assertEquals(SettingsVocabulary.LYRION_FAVORITE_NONE, SettingsVocabulary.normalizeLyrionFavoriteId(""))
+        assertEquals("abc123", SettingsVocabulary.normalizeLyrionFavoriteId(" abc123 "))
+    }
+
+    @Test
+    fun lyrionFallbackConstantsAndNormalization() {
+        assertEquals("FAVORITE", SettingsVocabulary.LYRION_FALLBACK_FAVORITE)
+        assertEquals("RANDOM", SettingsVocabulary.LYRION_FALLBACK_RANDOM)
+        assertEquals("NONE", SettingsVocabulary.LYRION_FALLBACK_NONE)
+        assertEquals(SettingsVocabulary.LYRION_FALLBACK_FAVORITE, SettingsVocabulary.LYRION_FALLBACK_DEFAULT)
+        assertEquals(
+            listOf("FAVORITE", "RANDOM", "NONE"),
+            SettingsVocabulary.LYRION_FALLBACKS,
+        )
+        // Blank/unknown → default FAVORITE; known values round-trip (case-insensitive, trimmed).
+        assertEquals(SettingsVocabulary.LYRION_FALLBACK_FAVORITE, SettingsVocabulary.normalizeLyrionFallback(null))
+        assertEquals(SettingsVocabulary.LYRION_FALLBACK_FAVORITE, SettingsVocabulary.normalizeLyrionFallback("BOGUS"))
+        assertEquals(SettingsVocabulary.LYRION_FALLBACK_RANDOM, SettingsVocabulary.normalizeLyrionFallback(" random "))
+        assertEquals(SettingsVocabulary.LYRION_FALLBACK_NONE, SettingsVocabulary.normalizeLyrionFallback("none"))
+    }
+
+    @Test
+    fun lyrionFallbackLabels() {
+        assertEquals("Favourite", SettingsVocabulary.lyrionFallbackLabel("FAVORITE"))
+        assertEquals("Random tracks", SettingsVocabulary.lyrionFallbackLabel("RANDOM"))
+        assertEquals("Do nothing", SettingsVocabulary.lyrionFallbackLabel("NONE"))
+        assertEquals("Favourite", SettingsVocabulary.lyrionFallbackLabel("BOGUS"))
+    }
 }
