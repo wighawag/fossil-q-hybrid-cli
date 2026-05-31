@@ -83,6 +83,11 @@ class SettingsViewModelTest : DbTestBase() {
                 multiFunctionRole = SettingsVocabulary.normalizeMultiFunctionRole(role),
             )
         }
+        override fun setRingDurationSeconds(seconds: Int) {
+            current = current.copy(
+                ringDurationSeconds = SettingsVocabulary.normalizeRingDuration(seconds),
+            )
+        }
     }
 
     private class FakeSync(private val wired: Boolean = false) : SettingsSync {

@@ -20,8 +20,9 @@ import java.util.concurrent.TimeUnit
  * `FindPhoneActivity` (see WP-TRACKER-GPS-WIRING-PLAN.md §4): a looping ringtone on the **alarm
  * stream** at **max volume** plus a waveform vibration, both with alarm `AudioAttributes` so the
  * sound bypasses the ringer-silent / Do-Not-Disturb modes where the OS allows alarms through.
- * Auto-stops after [RingPolicy.AUTO_STOP_MS] so a pocketed phone can't ring forever, and restores
- * the user's prior alarm volume on [stop].
+ * Auto-stops after the user-configured ring duration ([qhybrid.android.settings.AppSettings.
+ * ringDurationSeconds], default 60s) so a pocketed phone can't ring forever, and restores the
+ * user's prior alarm volume on [stop].
  *
  * Zero Google Play Services — uses only AOSP `MediaPlayer` / `AudioManager` / `Vibrator`. The audio
  * itself is on-device-verified; the loud/long decision is the pure [RingPolicy] (unit-tested).
@@ -29,7 +30,14 @@ import java.util.concurrent.TimeUnit
  * **Threading.** [start]/[stop] are synchronized; the auto-stop fires on a small scheduler. Safe to
  * call [start] while already ringing (idempotent) and [stop] when not ringing.
  */
-class SystemPhoneRinger(context: Context) : PhoneRinger {
+class SystemPhoneRinger(
+    context: Context,
+    // The auto-stop duration in seconds, resolved fresh per ring. Defaults to the user pref
+    // (AppSettings.ringDurationSeconds, default 60s); injectable so tests don't touch SharedPrefs.
+    private val ringDurationSecondsProvider: () -> Int = {
+        qhybrid.android.settings.SharedPreferencesSettingsPrefs(context).get().ringDurationSeconds
+    },
+) : PhoneRinger {
 
     private val appContext = context.applicationContext
     private val audioManager: AudioManager? =
@@ -66,9 +74,13 @@ class SystemPhoneRinger(context: Context) : PhoneRinger {
         runCatching { boostAlarmVolume() }.onFailure { Log.w(TAG, "boost volume failed", it) }
         runCatching { startRingtone() }.onFailure { Log.w(TAG, "start ringtone failed", it) }
         runCatching { startVibration() }.onFailure { Log.w(TAG, "start vibration failed", it) }
-        // Auto-stop so a pocketed phone can't ring forever.
+        // Auto-stop so a pocketed phone can't ring forever (user-configurable, default 60s).
+        val autoStopMs = RingPolicy.autoStopMillis(
+            runCatching { ringDurationSecondsProvider() }
+                .getOrDefault(qhybrid.android.settings.SettingsVocabulary.RING_DURATION_DEFAULT_SECONDS)
+        )
         autoStop = runCatching {
-            scheduler.schedule({ stop() }, RingPolicy.AUTO_STOP_MS, TimeUnit.MILLISECONDS)
+            scheduler.schedule({ stop() }, autoStopMs, TimeUnit.MILLISECONDS)
         }.getOrNull()
     }
 

@@ -126,6 +126,36 @@ object SettingsVocabulary {
         return if (o == 0) "At event time" else "$o min before"
     }
 
+    // ---- WP-TRACKER: "find my phone" loud-ring duration (app pref; phone-side only) ----------
+
+    /** Minimum ring duration the stepper allows (5 seconds). */
+    const val RING_DURATION_MIN_SECONDS = 5
+
+    /** Maximum ring duration the stepper allows (5 minutes). */
+    const val RING_DURATION_MAX_SECONDS = 300
+
+    /** Default ring duration: 1 minute (60 seconds). */
+    const val RING_DURATION_DEFAULT_SECONDS = 60
+
+    /** Step size for the ring-duration stepper (5 seconds). */
+    const val RING_DURATION_STEP_SECONDS = 5
+
+    /** Clamp an arbitrary ring duration onto [RING_DURATION_MIN_SECONDS]..[RING_DURATION_MAX_SECONDS]. */
+    fun normalizeRingDuration(seconds: Int): Int =
+        seconds.coerceIn(RING_DURATION_MIN_SECONDS, RING_DURATION_MAX_SECONDS)
+
+    /** Format a ring duration: `30 sec` / `1 min` / `1 min 30 sec` / `2 min`. */
+    fun ringDurationLabel(seconds: Int): String {
+        val s = normalizeRingDuration(seconds)
+        val mins = s / 60
+        val rem = s % 60
+        return when {
+            mins == 0 -> "$rem sec"
+            rem == 0 -> "$mins min"
+            else -> "$mins min $rem sec"
+        }
+    }
+
     // ---- preferred music app (app pref; pure app-side, no live watch command) -
 
     /**

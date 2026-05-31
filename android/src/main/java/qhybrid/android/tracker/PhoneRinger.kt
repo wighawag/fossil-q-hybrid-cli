@@ -49,8 +49,14 @@ object NoopPhoneRinger : PhoneRinger {
  * off-device (the actual MediaPlayer/Vibrator calls cannot be).
  */
 object RingPolicy {
-    /** Auto-stop the ring after this long so a pocketed phone can't ring forever. */
-    const val AUTO_STOP_MS = 30_000L
+    /**
+     * Auto-stop the ring after [seconds] so a pocketed phone can't ring forever. The duration is a
+     * user pref ([qhybrid.android.settings.AppSettings.ringDurationSeconds], default 60s); this
+     * normalizes it to the valid range and converts to millis. Pure so the conversion + clamping is
+     * unit-tested.
+     */
+    fun autoStopMillis(seconds: Int): Long =
+        qhybrid.android.settings.SettingsVocabulary.normalizeRingDuration(seconds) * 1000L
 
     /** Vibration waveform (ms): wait, buzz, gap, buzz… repeated. */
     val VIBRATION_PATTERN = longArrayOf(0, 1000, 1000)

@@ -83,6 +83,10 @@ data class SettingsUiState(
     val multiFunctionRole: String
         get() = SettingsVocabulary.normalizeMultiFunctionRole(appSettings.multiFunctionRole)
 
+    /** WP-TRACKER — the loud "find my phone" ring auto-stop duration in seconds (default 60s). */
+    val ringDurationSeconds: Int
+        get() = SettingsVocabulary.normalizeRingDuration(appSettings.ringDurationSeconds)
+
     /** Whether the per-watch (persisted + live) settings controls should be enabled. */
     val canEditWatchSettings: Boolean get() = hasActiveWatch
 }
@@ -303,6 +307,18 @@ open class SettingsViewModel(
         val normalized = SettingsVocabulary.normalizeMultiFunctionRole(role)
         prefs.setMultiFunctionRole(normalized)
         appSettings.value = appSettings.value.copy(multiFunctionRole = normalized)
+    }
+
+    /**
+     * WP-TRACKER — persist the loud-ring auto-stop duration (seconds, clamped 5..300). Pure
+     * app-side pref read by [qhybrid.android.tracker.SystemPhoneRinger] at ring time; NO wire bytes,
+     * NO live watch command. Returns true (always succeeds — a local pref write).
+     */
+    fun setRingDurationSeconds(seconds: Int): Boolean {
+        val normalized = SettingsVocabulary.normalizeRingDuration(seconds)
+        prefs.setRingDurationSeconds(normalized)
+        appSettings.value = appSettings.value.copy(ringDurationSeconds = normalized)
+        return true
     }
 
     // ---- calendar alarm ring offset (WP13 — APP PREF, applied in CalendarRefresher) ----

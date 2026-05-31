@@ -137,4 +137,27 @@ class SettingsVocabularyTest {
         // Unknown role falls back to the default label.
         assertEquals("Music control", SettingsVocabulary.multiFunctionRoleLabel("BOGUS"))
     }
+
+    // ---- WP-TRACKER: find-my-phone ring duration -----------------------------
+
+    @Test
+    fun ringDurationConstantsAndClamp() {
+        assertEquals(5, SettingsVocabulary.RING_DURATION_MIN_SECONDS)
+        assertEquals(300, SettingsVocabulary.RING_DURATION_MAX_SECONDS)
+        // Default is 1 minute, as requested.
+        assertEquals(60, SettingsVocabulary.RING_DURATION_DEFAULT_SECONDS)
+        // Clamp below min / above max; in-range passes through.
+        assertEquals(5, SettingsVocabulary.normalizeRingDuration(0))
+        assertEquals(5, SettingsVocabulary.normalizeRingDuration(-99))
+        assertEquals(300, SettingsVocabulary.normalizeRingDuration(99_999))
+        assertEquals(90, SettingsVocabulary.normalizeRingDuration(90))
+    }
+
+    @Test
+    fun ringDurationLabels() {
+        assertEquals("30 sec", SettingsVocabulary.ringDurationLabel(30))
+        assertEquals("1 min", SettingsVocabulary.ringDurationLabel(60))
+        assertEquals("1 min 30 sec", SettingsVocabulary.ringDurationLabel(90))
+        assertEquals("5 min", SettingsVocabulary.ringDurationLabel(300))
+    }
 }

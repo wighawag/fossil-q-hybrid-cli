@@ -25,9 +25,20 @@ class RingPolicyTest {
     }
 
     @Test
-    fun `auto-stop is finite so a pocketed phone cannot ring forever`() {
-        assertTrue("auto-stop must be positive", RingPolicy.AUTO_STOP_MS > 0)
-        assertTrue("auto-stop should be bounded (<= 2min)", RingPolicy.AUTO_STOP_MS <= 120_000L)
+    fun `auto-stop converts the configured seconds to millis`() {
+        // Default 1 minute.
+        assertEquals(60_000L, RingPolicy.autoStopMillis(60))
+        assertEquals(5_000L, RingPolicy.autoStopMillis(5))
+        assertEquals(300_000L, RingPolicy.autoStopMillis(300))
+    }
+
+    @Test
+    fun `auto-stop clamps out-of-range durations so a pocketed phone cannot ring forever`() {
+        // Below min (5s) clamps up; above max (300s) clamps down — never 0 / never unbounded.
+        assertEquals(5_000L, RingPolicy.autoStopMillis(0))
+        assertEquals(5_000L, RingPolicy.autoStopMillis(-10))
+        assertEquals(300_000L, RingPolicy.autoStopMillis(99_999))
+        assertTrue(RingPolicy.autoStopMillis(0) > 0)
     }
 
     @Test

@@ -93,6 +93,7 @@ fun SettingsScreen(
         onResyncCalendar = vm::resyncCalendar,
         onSetMusicApp = vm::setPreferredMusicApp,
         onSetMultiFunctionRole = vm::setMultiFunctionRole,
+        onSetRingDuration = vm::setRingDurationSeconds,
         onTransfer = vm::transferSettings,
         onRemoveWatch = vm::removeActiveWatch,
         onOpenLogs = onOpenLogs,
@@ -116,6 +117,8 @@ fun SettingsContent(
     onSetMusicApp: (String?) -> Unit,
     // WP-TRACKER: set the GLOBAL multi-function role (MUSIC ⇄ TRACKER). No-op default.
     onSetMultiFunctionRole: (String) -> Unit = {},
+    // WP-TRACKER: set the loud-ring auto-stop duration (seconds). No-op default for previews/tests.
+    onSetRingDuration: (Int) -> Boolean = { false },
     // WP13: set the calendar-alarm ring offset (minutes before the event). No-op default.
     onSetCalendarOffset: (Int) -> Boolean = { false },
     // WP13: manually re-read the calendar + re-map/push slots 16–31. No-op default.
@@ -173,6 +176,7 @@ fun SettingsContent(
             CalendarOffsetCard(state, onSetCalendarOffset, onResyncCalendar) { note = it }
             MusicAppCard(state, onSetMusicApp)
             MultiFunctionRoleCard(state, onSetMultiFunctionRole)
+            RingDurationCard(state, onSetRingDuration) { note = it }
             WaypointsEntryCard(onOpenWaypoints)
             HorizontalDivider()
             SyncAllCard(state, progress, onSyncAll) { note = it }
@@ -604,6 +608,52 @@ private fun SyncAllCard(
             enabled = progress.saveEnabled(state.hasActiveWatch),
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Sync all") }
+    }
+}
+
+// ---- WP-TRACKER: loud "find my phone" ring duration ------------------------
+
+/**
+ * WP-TRACKER — the auto-stop duration for the loud "find my phone" ring (a TRACKER-role long
+ * gesture / a RING_PHONE button). A repeated trigger also stops it early; this caps how long it
+ * rings if you can't get to it. Phone-side only — never sent to the watch.
+ */
+@Composable
+private fun RingDurationCard(
+    state: SettingsUiState,
+    onSetRingDuration: (Int) -> Boolean,
+    onNote: (String) -> Unit,
+) {
+    SettingCard("Find-my-phone ring") {
+        Text(
+            "How long the phone rings loudly when a TRACKER long-press / RING_PHONE button fires " +
+                "(press again to stop early). Phone-side only — never sent to the watch.",
+            style = MaterialTheme.typography.labelSmall,
+        )
+        Text(
+            "Ring for: ${SettingsVocabulary.ringDurationLabel(state.ringDurationSeconds)}",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = {
+                    val next = SettingsVocabulary.normalizeRingDuration(
+                        state.ringDurationSeconds - SettingsVocabulary.RING_DURATION_STEP_SECONDS
+                    )
+                    onSetRingDuration(next)
+                    onNote("Find-my-phone ring: " + SettingsVocabulary.ringDurationLabel(next))
+                },
+            ) { Text("− ${SettingsVocabulary.RING_DURATION_STEP_SECONDS}s") }
+            OutlinedButton(
+                onClick = {
+                    val next = SettingsVocabulary.normalizeRingDuration(
+                        state.ringDurationSeconds + SettingsVocabulary.RING_DURATION_STEP_SECONDS
+                    )
+                    onSetRingDuration(next)
+                    onNote("Find-my-phone ring: " + SettingsVocabulary.ringDurationLabel(next))
+                },
+            ) { Text("+ ${SettingsVocabulary.RING_DURATION_STEP_SECONDS}s") }
+        }
     }
 }
 

@@ -121,10 +121,13 @@ seam:
 - `SystemPhoneRinger` (modelled on Gadgetbridge `FindPhoneActivity`): a looping default ringtone on
   `STREAM_ALARM` at **max volume** (restored on stop) + a looping waveform vibration, both with
   `AudioAttributes.USAGE_ALARM` so they ride the alarm path (DND-bypass where the OS allows alarms).
-  Auto-stops after `RingPolicy.AUTO_STOP_MS` (30s) so a pocketed phone can't ring forever. Zero GMS
-  (AOSP `MediaPlayer`/`AudioManager`/`Vibrator` only).
-- `RingPolicy` (pure: max-volume + finite-auto-stop + looping-waveform) is unit-tested
-  (`RingPolicyTest`); the dispatch ring path is exercised via the fake-`PhoneRinger` seam.
+  Auto-stops after a **user-configurable** duration (`AppSettings.ringDurationSeconds`, default
+  **60s / 1 min**, range 5s–300s, persisted in `SharedPreferencesSettingsPrefs`, editable from the
+  Settings → "Find-my-phone ring" stepper) so a pocketed phone can't ring forever. Zero GMS (AOSP
+  `MediaPlayer`/`AudioManager`/`Vibrator` only).
+- `RingPolicy.autoStopMillis(seconds)` (pure: clamp + seconds→millis) + max-volume + looping
+  waveform are unit-tested (`RingPolicyTest`, `SettingsVocabularyTest`); the dispatch ring path is
+  exercised via the fake-`PhoneRinger` seam.
 - Manifest: added `VIBRATE` (phone-side vibration; the watch buzz-back over BLE needs no permission).
 - `TrackerEffects.TRACKER_EFFECTS_WIRED` flipped to `true`.
 

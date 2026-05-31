@@ -47,6 +47,12 @@ data class AppSettings(
      * button id — see [SettingsVocabulary.MULTI_FUNCTION_ROLE_MUSIC]). Default MUSIC (WP12 behaviour).
      */
     val multiFunctionRole: String = SettingsVocabulary.MULTI_FUNCTION_ROLE_DEFAULT,
+    /**
+     * WP-TRACKER — how long (seconds) the loud "find my phone" ring plays before auto-stopping (a
+     * pocketed phone can't ring forever). A repeated TRACKER long gesture / RING_PHONE press also
+     * stops it early. Phone-side only — never sent to the watch. Default 60s (1 minute).
+     */
+    val ringDurationSeconds: Int = SettingsVocabulary.RING_DURATION_DEFAULT_SECONDS,
 )
 
 /**
@@ -71,6 +77,9 @@ interface SettingsPrefs {
 
     /** WP-TRACKER — persist the global multi-function role (blank/unknown → default MUSIC). */
     fun setMultiFunctionRole(role: String?)
+
+    /** WP-TRACKER — persist the loud-ring auto-stop duration in seconds (normalized 5..300). */
+    fun setRingDurationSeconds(seconds: Int)
 }
 
 /**
@@ -102,6 +111,9 @@ class SharedPreferencesSettingsPrefs(context: Context) : SettingsPrefs {
             ),
             multiFunctionRole = SettingsVocabulary.normalizeMultiFunctionRole(
                 p.getString(KEY_MULTI_FUNCTION_ROLE, SettingsVocabulary.MULTI_FUNCTION_ROLE_DEFAULT)
+            ),
+            ringDurationSeconds = SettingsVocabulary.normalizeRingDuration(
+                p.getInt(KEY_RING_DURATION, SettingsVocabulary.RING_DURATION_DEFAULT_SECONDS)
             ),
         )
     }
@@ -137,6 +149,12 @@ class SharedPreferencesSettingsPrefs(context: Context) : SettingsPrefs {
             .apply()
     }
 
+    override fun setRingDurationSeconds(seconds: Int) {
+        prefs.edit()
+            .putInt(KEY_RING_DURATION, SettingsVocabulary.normalizeRingDuration(seconds))
+            .apply()
+    }
+
     private companion object {
         const val PREFS = "fossilq_settings"
         const val KEY_NUDGE_ENABLED = "nudge_enabled"
@@ -145,5 +163,6 @@ class SharedPreferencesSettingsPrefs(context: Context) : SettingsPrefs {
         const val KEY_MUSIC_APP = "preferred_music_app"
         const val KEY_CAL_OFFSET = "calendar_alarm_offset_minutes"
         const val KEY_MULTI_FUNCTION_ROLE = "multi_function_role"
+        const val KEY_RING_DURATION = "ring_duration_seconds"
     }
 }
