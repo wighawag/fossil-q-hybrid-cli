@@ -11,17 +11,36 @@ package qhybrid.android.tracker
  * [RingPolicy] (unit-tested). Adds NO new wire bytes — this is a phone-side effect.
  */
 interface PhoneRinger {
-    /** Start ringing (loud, looping) until [stop] or the auto-stop timeout. Idempotent. */
+    /** Start ringing (loud, looping) until [stop], [toggle], or the auto-stop timeout. Idempotent. */
     fun start()
 
     /** Stop ringing + restore the user's prior alarm volume. Idempotent / safe if not ringing. */
     fun stop()
+
+    /** True while the ring is active (between [start] and [stop]/auto-stop). */
+    fun isRinging(): Boolean
+
+    /**
+     * Toggle the ring: [stop] it if it's currently ringing, else [start] it. This is what a repeated
+     * trigger (a second LONG gesture / RING_PHONE press) calls so the SAME gesture both rings and
+     * silences the phone. Returns true if it is ringing AFTER the toggle (i.e. it just started).
+     */
+    fun toggle(): Boolean {
+        return if (isRinging()) {
+            stop()
+            false
+        } else {
+            start()
+            true
+        }
+    }
 }
 
 /** A no-op [PhoneRinger] — the safe default for tests / when no ringer is wired. */
 object NoopPhoneRinger : PhoneRinger {
     override fun start() {}
     override fun stop() {}
+    override fun isRinging(): Boolean = false
 }
 
 /**

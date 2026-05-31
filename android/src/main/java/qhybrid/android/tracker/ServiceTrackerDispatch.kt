@@ -136,12 +136,17 @@ class ServiceTrackerDispatch(
     /**
      * Ring/find the phone: a loud, looping ringtone on the alarm stream at max volume + a waveform
      * vibration (modelled on Gadgetbridge `FindPhoneActivity`), via the injected [PhoneRinger] seam.
-     * Auto-stops after [RingPolicy.AUTO_STOP_MS] so a pocketed phone can't ring forever. Triggered
-     * by a TRACKER-role LONG gesture / a RING_PHONE button. Never throws on the caller's thread.
+     *
+     * **Toggle:** the SAME trigger (a TRACKER-role LONG gesture / a RING_PHONE button) both rings
+     * and silences — if it's already ringing, a second press STOPS it; otherwise it starts. (It
+     * still auto-stops after [RingPolicy.AUTO_STOP_MS] so a pocketed phone can't ring forever.)
+     * Never throws on the caller's thread.
      */
     private fun ringPhone() {
-        runCatching { ringer.start() }
-            .onFailure { Log.w(TAG, "ringPhone() failed", it) }
+        runCatching {
+            val started = ringer.toggle()
+            Log.i(TAG, if (started) "ringPhone(): started" else "ringPhone(): stopped (toggle)")
+        }.onFailure { Log.w(TAG, "ringPhone() failed", it) }
     }
 
     /** Capture a GPS fix + persist it as a [kind] waypoint (best-effort; never throws). */

@@ -36,6 +36,10 @@ class SystemPhoneRinger(context: Context) : PhoneRinger {
         appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
 
     private val lock = Any()
+    // Source of truth for isRinging(): set the moment a ring begins, cleared on stop. Tracked
+    // separately from `player` because the ringtone may fail to load (no URI) while vibration still
+    // runs — a repeated trigger must still be able to STOP that.
+    @Volatile private var ringing = false
     private var player: MediaPlayer? = null
     private var vibrator: Vibrator? = null
     private var priorAlarmVolume: Int? = null
@@ -50,11 +54,14 @@ class SystemPhoneRinger(context: Context) : PhoneRinger {
         }
     }
 
+    override fun isRinging(): Boolean = synchronized(lock) { ringing }
+
     private fun startLocked() {
-        if (player != null) {
+        if (ringing) {
             Log.i(TAG, "ring: already ringing")
             return
         }
+        ringing = true
         Log.i(TAG, "ring: start (loud alarm-stream ringtone + vibrate)")
         runCatching { boostAlarmVolume() }.onFailure { Log.w(TAG, "boost volume failed", it) }
         runCatching { startRingtone() }.onFailure { Log.w(TAG, "start ringtone failed", it) }
@@ -72,6 +79,8 @@ class SystemPhoneRinger(context: Context) : PhoneRinger {
     }
 
     private fun stopLocked() {
+        if (!ringing) return
+        ringing = false
         autoStop?.cancel(false)
         autoStop = null
         runCatching {

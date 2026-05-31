@@ -128,8 +128,9 @@ seam:
 - Manifest: added `VIBRATE` (phone-side vibration; the watch buzz-back over BLE needs no permission).
 - `TrackerEffects.TRACKER_EFFECTS_WIRED` flipped to `true`.
 
-No new wire bytes; buzz-back already works. Remaining: a UI affordance to STOP the ring early (today
-it's the 30s auto-stop or another long gesture) — optional, on-device-iterative.
+No new wire bytes; buzz-back already works. The ring is a **toggle**: a repeated trigger (a second
+LONG gesture / RING_PHONE press) STOPS it (`PhoneRinger.toggle`, unit-tested in
+`PhoneRingerToggleTest`); it also still auto-stops after 30s.
 
 ---
 
