@@ -680,6 +680,29 @@ class SettingsViewModelTest : DbTestBase() {
     }
 
     @Test
+    fun toggleOn_keepsCanonicalOrderRegardlessOfTickOrder() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }
+        val model = vm()
+        // Start from a single mode (TRACKER), then enable TIMER and MUSIC_PHONE out of canonical
+        // order. The rotation must always follow MULTI_FUNCTION_MODES order, not the tick order.
+        model.setMultiFunctionRotation(listOf(SettingsVocabulary.MODE_TRACKER))
+        awaitState(model.uiState) { it.multiFunctionRotation == listOf(SettingsVocabulary.MODE_TRACKER) }
+
+        model.toggleMultiFunctionMode(SettingsVocabulary.MODE_TIMER)   // ticked before phone
+        model.toggleMultiFunctionMode(SettingsVocabulary.MODE_MUSIC_PHONE)
+        val s = awaitState(model.uiState) { it.multiFunctionRotation.size == 3 }
+        // Canonical order = [MUSIC_PHONE, MUSIC_LYRION, TRACKER, TIMER] filtered to enabled.
+        assertEquals(
+            listOf(
+                SettingsVocabulary.MODE_MUSIC_PHONE,
+                SettingsVocabulary.MODE_TRACKER,
+                SettingsVocabulary.MODE_TIMER,
+            ),
+            s.multiFunctionRotation,
+        )
+    }
+
+    @Test
     fun rotationNeverEmpty() {
         runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }
         val model = vm()

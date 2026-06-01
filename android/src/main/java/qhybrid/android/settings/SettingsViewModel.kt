@@ -412,8 +412,11 @@ open class SettingsViewModel(
     }
 
     /**
-     * L0 — toggle a mode's membership in the rotation (add if absent, remove if present), preserving
-     * order. Refuses to remove the last remaining mode (the rotation can never be empty).
+     * L0 — toggle a mode's membership in the rotation (add if absent, remove if present). The
+     * rotation always follows the CANONICAL [SettingsVocabulary.MULTI_FUNCTION_MODES] order (the
+     * fixed top-to-bottom checkbox order), so enabling a mode inserts it at its canonical position
+     * rather than appending — the SWITCH-button cycle order is then exactly what the checkboxes
+     * show. Refuses to remove the last remaining mode (the rotation can never be empty).
      */
     fun toggleMultiFunctionMode(mode: String) {
         val m = SettingsVocabulary.normalizeMode(mode)
@@ -421,7 +424,9 @@ open class SettingsViewModel(
         val next = if (current.contains(m)) {
             if (current.size <= 1) current else current.filterNot { it == m }
         } else {
-            current + m
+            // Insert at canonical position: keep MULTI_FUNCTION_MODES order regardless of tick order.
+            val enabled = (current + m).toSet()
+            SettingsVocabulary.MULTI_FUNCTION_MODES.filter { it in enabled }
         }
         setMultiFunctionRotation(next)
     }

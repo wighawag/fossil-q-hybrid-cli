@@ -595,9 +595,10 @@ private fun MultiFunctionRotationCard(
     SettingCard("Multi-function button modes") {
         Text(
             "Which modes the multi-function button cycles through (press the SWITCH button to " +
-                "advance). The first enabled mode is the default. Each mode has its own buzz so you " +
-                "feel which mode you switched to. GLOBAL — applies to every multi-function button at " +
-                "once. Phone-side only — never sent to the watch.",
+                "advance). Cycles top-to-bottom through the enabled modes, wrapping around; the " +
+                "first enabled mode is the default. Each mode has its own buzz so you feel which " +
+                "mode you switched to. GLOBAL — applies to every multi-function button at once. " +
+                "Phone-side only — never sent to the watch.",
             style = MaterialTheme.typography.labelSmall,
         )
         // Enable/disable each mode (checkbox) + pick its STABLE switch buzz (single/double/triple/
