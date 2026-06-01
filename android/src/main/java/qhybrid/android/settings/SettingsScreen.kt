@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -98,6 +99,8 @@ fun SettingsScreen(
         onSetMultiFunctionRole = vm::setMultiFunctionRole,
         onToggleMode = vm::toggleMultiFunctionMode,
         onSetActiveModeIndex = vm::setMultiFunctionActiveIndex,
+        onSetSwitchBuzz = vm::setMultiFunctionSwitchBuzz,
+        onSetSwitchBuzzDebounce = vm::setMultiFunctionSwitchBuzzDebounceMs,
         onSetLyrionServer = vm::setLyrionServer,
         onSetLyrionPlayer = vm::setLyrionPlayer,
         onSetLyrionFallback = vm::setLyrionEmptyQueueFallback,
@@ -135,6 +138,10 @@ fun SettingsContent(
     onToggleMode: (String) -> Unit = {},
     // L0: set the active mode index in the rotation. No-op default.
     onSetActiveModeIndex: (Int) -> Unit = {},
+    // Set a mode's STABLE switch-buzz pattern (single/double/triple/long). No-op default.
+    onSetSwitchBuzz: (String, Int) -> Unit = { _, _ -> },
+    // Set the switch-mode buzz trailing debounce window (ms). No-op default.
+    onSetSwitchBuzzDebounce: (Int) -> Unit = {},
     // L1: set the Lyrion server host + port. No-op default.
     onSetLyrionServer: (String?, Int) -> Unit = { _, _ -> },
     // L1: set the target Lyrion player id + display name. No-op default.
@@ -211,7 +218,7 @@ fun SettingsContent(
             TimezoneCard(state, onSetTimezone) { note = it }
             CalendarOffsetCard(state, onSetCalendarOffset, onResyncCalendar) { note = it }
             MusicAppCard(state, onSetMusicApp)
-            MultiFunctionRotationCard(state, onToggleMode, onSetActiveModeIndex)
+            MultiFunctionRotationCard(state, onToggleMode, onSetActiveModeIndex, onSetSwitchBuzz, onSetSwitchBuzzDebounce)
             if (state.lyrionInRotation) {
                 LyrionCard(
                     state,
@@ -582,20 +589,28 @@ private fun MultiFunctionRotationCard(
     state: SettingsUiState,
     onToggleMode: (String) -> Unit,
     onSetActiveModeIndex: (Int) -> Unit,
+    onSetSwitchBuzz: (String, Int) -> Unit,
+    onSetSwitchBuzzDebounce: (Int) -> Unit,
 ) {
     SettingCard("Multi-function button modes") {
         Text(
             "Which modes the multi-function button cycles through (press the SWITCH button to " +
-                "advance). The first enabled mode is the default. GLOBAL — applies to every " +
-                "multi-function button at once. Phone-side only — never sent to the watch.",
+                "advance). The first enabled mode is the default. Each mode has its own buzz so you " +
+                "feel which mode you switched to. GLOBAL — applies to every multi-function button at " +
+                "once. Phone-side only — never sent to the watch.",
             style = MaterialTheme.typography.labelSmall,
         )
-        // Enable/disable each mode (checkbox). The rotation can never be emptied (last stays on).
+        // Enable/disable each mode (checkbox) + pick its STABLE switch buzz (single/double/triple/
+        // long). The rotation can never be emptied (last stays on). Duplicate buzzes are allowed.
         SettingsVocabulary.MULTI_FUNCTION_MODES.forEach { mode ->
             val enabled = state.multiFunctionRotation.contains(mode)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(checked = enabled, onCheckedChange = { onToggleMode(mode) })
-                Text(SettingsVocabulary.modeLabel(mode))
+                Text(SettingsVocabulary.modeLabel(mode), modifier = Modifier.weight(1f))
+                SwitchBuzzPicker(
+                    selected = state.switchBuzzFor(mode),
+                    onSelect = { onSetSwitchBuzz(mode, it) },
+                )
             }
         }
 
@@ -630,6 +645,77 @@ private fun MultiFunctionRotationCard(
                         },
                     )
                 }
+            }
+        }
+
+        // Switch-buzz debounce window: rapid presses coalesce to ONE buzz for the final mode (the
+        // watch ignores a buzz mid hand-animation). Configurable so it can be tuned/tested on-device.
+        Text(
+            "Switch buzz delay: ${SettingsVocabulary.switchBuzzDebounceLabel(state.switchBuzzDebounceMs)}",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Text(
+            "Wait this long after your LAST press before buzzing, so quick mode-switches buzz once " +
+                "for where you landed (the watch can't buzz again until its hands settle).",
+            style = MaterialTheme.typography.labelSmall,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = {
+                    val next = SettingsVocabulary.normalizeSwitchBuzzDebounceMs(
+                        state.switchBuzzDebounceMs - SettingsVocabulary.SWITCH_BUZZ_DEBOUNCE_STEP_MS
+                    )
+                    onSetSwitchBuzzDebounce(next)
+                },
+            ) { Text("− ${SettingsVocabulary.SWITCH_BUZZ_DEBOUNCE_STEP_MS}ms") }
+            OutlinedButton(
+                onClick = {
+                    val next = SettingsVocabulary.normalizeSwitchBuzzDebounceMs(
+                        state.switchBuzzDebounceMs + SettingsVocabulary.SWITCH_BUZZ_DEBOUNCE_STEP_MS
+                    )
+                    onSetSwitchBuzzDebounce(next)
+                },
+            ) { Text("+ ${SettingsVocabulary.SWITCH_BUZZ_DEBOUNCE_STEP_MS}ms") }
+        }
+    }
+}
+
+/**
+ * A compact dropdown picking a mode's STABLE switch-buzz pattern (single/double/triple/long).
+ * Duplicate selections across modes are allowed. Used inside [MultiFunctionRotationCard].
+ */
+@Composable
+private fun SwitchBuzzPicker(
+    selected: Int,
+    onSelect: (Int) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = it },
+    ) {
+        OutlinedTextField(
+            value = SettingsVocabulary.switchBuzzLabel(selected),
+            onValueChange = {},
+            readOnly = true,
+            label = { Text("Buzz") },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            modifier = Modifier
+                .width(160.dp)
+                .menuAnchor(MenuAnchorType.PrimaryNotEditable),
+        )
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+        ) {
+            SettingsVocabulary.SWITCH_BUZZ_OPTIONS.forEach { pattern ->
+                DropdownMenuItem(
+                    text = { Text(SettingsVocabulary.switchBuzzLabel(pattern)) },
+                    onClick = {
+                        expanded = false
+                        onSelect(pattern)
+                    },
+                )
             }
         }
     }
@@ -1072,10 +1158,10 @@ private fun ApplyDefaultsCard(
 // ---- clear all alarms (WP-CLEARALARMS) --------------------------------------
 
 /**
- * WP-CLEARALARMS — "Clear all alarms": delete the active watch's standard alarms (slots 0–15) and
- * push the BLANKED alarm file to the watch (force-write, so the watch is actively cleared — a normal
- * save skip-empties an empty alarm set and would leave the watch's alarms in place). Calendar slots
- * (16–31) are left untouched. Gated behind a confirm dialog (mirrors [RemoveWatchCard]) because it
+ * WP-CLEARALARMS — "Clear all alarms": delete the active watch's standard user alarms (slots 0–14)
+ * and push the BLANKED alarm file to the watch (force-write, so the watch is actively cleared — a
+ * normal save skip-empties an empty alarm set and would leave the watch's alarms in place). The
+ * reserved TIMER slot (15) and calendar slots (16–31) are left untouched. Gated behind a confirm dialog (mirrors [RemoveWatchCard]) because it
  * removes ALL the watch's alarms. Disabled while a sync/buzz is in flight and when there is no
  * active watch.
  */

@@ -58,8 +58,8 @@ import qhybrid.android.sync.SyncSavingDialog
 import qhybrid.android.sync.SyncStatusRow
 
 /**
- * WP16b — the Alarms screen (user slots 0–15 only). State comes from [AlarmsViewModel]
- * (WP4 active watch + its alarm rows, filtered to 0–15); intents delegate to the VM, which
+ * WP16b — the Alarms screen (user slots 0–14 only). State comes from [AlarmsViewModel]
+ * (WP4 active watch + its alarm rows, filtered to 0–14); intents delegate to the VM, which
  * persists via [qhybrid.android.db.WatchRepository] (WP4) and pushes via the injectable
  * [AlarmSync] seam.
  *
@@ -165,8 +165,8 @@ fun AlarmsContent(
                     // SYNCING/result note appear automatically when a coalesced save fires.
                     SyncStatusRow(progress = progress)
                     Text(
-                        "Changes save to the watch automatically. Slots 0–15 (user alarms); " +
-                            "calendar slots 16–31 are managed automatically.",
+                        "Changes save to the watch automatically. Slots 0–14 (user alarms); " +
+                            "slot 15 (timer) and calendar slots 16–31 are managed automatically.",
                         style = MaterialTheme.typography.labelSmall,
                     )
 

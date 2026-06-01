@@ -105,6 +105,17 @@ data class SettingsUiState(
     /** L0 — the currently-active multi-function mode. */
     val activeMode: String get() = appSettings.activeMode
 
+    /**
+     * The STABLE per-mode SWITCH buzz the watch plays when the button advances to [mode] (override
+     * → default → single). Used by the Settings per-mode buzz picker.
+     */
+    fun switchBuzzFor(mode: String): Int =
+        SettingsVocabulary.switchBuzzFor(mode, appSettings.multiFunctionSwitchBuzz)
+
+    /** The configurable TRAILING debounce window (ms) for the switch-mode buzz. */
+    val switchBuzzDebounceMs: Int
+        get() = SettingsVocabulary.normalizeSwitchBuzzDebounceMs(appSettings.multiFunctionSwitchBuzzDebounceMs)
+
     // ---- L1: Lyrion (LMS) music backend config -------------------------------
     val lyrionServerHost: String
         get() = SettingsVocabulary.normalizeLyrionHost(appSettings.lyrionServerHost)
@@ -422,6 +433,25 @@ open class SettingsViewModel(
         )
         prefs.setMultiFunctionActiveIndex(clamped)
         appSettings.value = appSettings.value.copy(multiFunctionActiveIndex = clamped)
+    }
+
+    /**
+     * Set the STABLE per-mode SWITCH buzz for [mode] (normalized onto single/double/triple/long).
+     * Duplicates across modes are allowed. Merges into the existing override map.
+     */
+    fun setMultiFunctionSwitchBuzz(mode: String, pattern: Int) {
+        val m = SettingsVocabulary.normalizeMode(mode)
+        val p = SettingsVocabulary.normalizeSwitchBuzz(pattern)
+        prefs.setMultiFunctionSwitchBuzz(m, p)
+        val next = appSettings.value.multiFunctionSwitchBuzz.toMutableMap().apply { put(m, p) }
+        appSettings.value = appSettings.value.copy(multiFunctionSwitchBuzz = next)
+    }
+
+    /** Set the switch-mode buzz TRAILING debounce window in ms (normalized 0..5000). */
+    fun setMultiFunctionSwitchBuzzDebounceMs(ms: Int) {
+        val normalized = SettingsVocabulary.normalizeSwitchBuzzDebounceMs(ms)
+        prefs.setMultiFunctionSwitchBuzzDebounceMs(normalized)
+        appSettings.value = appSettings.value.copy(multiFunctionSwitchBuzzDebounceMs = normalized)
     }
 
     /** L1 — persist the Lyrion server host + port (normalized). Pure app-side; no wire bytes. */

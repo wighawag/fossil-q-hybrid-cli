@@ -25,13 +25,14 @@ import qhybrid.android.sync.SyncStateSource
 
 /**
  * WP16b — the Alarms screen's immutable UI state. A pure function of the WP4 active-watch
- * row + that watch's alarm rows, filtered/sorted to the **standard user slots 0–15 ONLY**
- * (slots 16–31 are calendar-auto, owned by WP9/WP13 — out of scope here).
+ * row + that watch's alarm rows, filtered/sorted to the **standard user slots 0–14 ONLY**
+ * (slot 15 is the reserved TIMER slot; slots 16–31 are calendar-auto, owned by WP9/WP13 — both
+ * out of scope here).
  */
 data class AlarmsUiState(
     /** The WP4 active watch (the one whose alarms we edit), or null if none. */
     val activeWatch: WatchEntity? = null,
-    /** Slot-0–15 alarms for the active watch, sorted by slotId ascending. */
+    /** Slot-0–14 user alarms for the active watch, sorted by slotId ascending. */
     val alarms: List<WatchAlarmEntity> = emptyList(),
     /**
      * WP13 — the calendar-auto alarms (slots 16–31), sorted by slotId. **READ-ONLY** here: they are
@@ -44,10 +45,10 @@ data class AlarmsUiState(
     val activeMac: String? get() = activeWatch?.macAddress
     val hasActiveWatch: Boolean get() = activeWatch != null
 
-    /** True once all 16 user slots are taken (UI disables "Add"). */
+    /** True once all 15 user slots are taken (UI disables "Add"). */
     val isFull: Boolean get() = alarms.size >= USER_SLOT_COUNT
 
-    /** Lowest free slot in 0..15, or null if full. */
+    /** Lowest free slot in 0..14, or null if full. */
     val nextFreeSlot: Int?
         get() {
             val used = alarms.mapTo(HashSet()) { it.slotId }
@@ -60,8 +61,8 @@ data class AlarmsUiState(
     val alarmsSyncedAt: Long get() = activeWatch?.alarmsSyncedAt ?: 0
 
     /**
-     * True iff [slotId]'s alarm has been pushed to the watch since its last edit. Covers both the
-     * user slots (0–15) and the WP13 calendar slots (16–31) — they share the per-watch
+     * True iff [slotId]'s alarm has been pushed to the watch since its last edit. Covers the
+     * user slots (0–14), the TIMER slot (15), and the WP13 calendar slots (16–31) — they share the per-watch
      * `alarmsSyncedAt` marker (the whole 32-slot file is one upload).
      */
     fun isOnWatch(slotId: Int): Boolean {
@@ -74,8 +75,11 @@ data class AlarmsUiState(
 
     companion object {
         const val USER_SLOT_MIN = 0
-        const val USER_SLOT_MAX = 15
-        const val USER_SLOT_COUNT = USER_SLOT_MAX - USER_SLOT_MIN + 1 // 16
+        const val USER_SLOT_MAX = 14
+        const val USER_SLOT_COUNT = USER_SLOT_MAX - USER_SLOT_MIN + 1 // 15
+
+        // TIMER — the reserved "ring in N min" slot (owned by the phone-side timer dispatch).
+        const val TIMER_SLOT = 15
 
         // WP13 — the calendar-auto slot range (read-only on this screen).
         const val CALENDAR_SLOT_MIN = 16
@@ -143,8 +147,8 @@ open class AlarmsViewModel(
     // ---- intents -------------------------------------------------------------
 
     /**
-     * Add a new alarm into the lowest free user slot (0..15). No-op if there is no active
-     * watch or all 16 slots are taken (the 16-slot user cap). Defaults to a sensible
+     * Add a new alarm into the lowest free user slot (0..14). No-op if there is no active
+     * watch or all 15 slots are taken (the 15-slot user cap). Defaults to a sensible
      * enabled, repeating, weekday alarm; callers may override.
      */
     fun addAlarm(
@@ -157,7 +161,7 @@ open class AlarmsViewModel(
     ) {
         val state = uiState.value
         val mac = state.activeMac ?: return
-        val slot = state.nextFreeSlot ?: return // cap at 16
+        val slot = state.nextFreeSlot ?: return // cap at 15 user slots
         coroutineScope.launch {
             repo.upsertAlarm(
                 WatchAlarmEntity(

@@ -9,9 +9,10 @@ package qhybrid.protocol.requests.fossil.alarm;
  * ever depending on Android. This class lives in {@code :protocol} so the byte
  * compilation stays pure and JVM-testable.
  *
- * <p><b>Slot ranges (the 16/16 split):</b>
+ * <p><b>Slot ranges (the 15/1/16 split):</b>
  * <ul>
- *   <li>0..15 — standard user alarms (repeating or one-shot)</li>
+ *   <li>0..14 — standard user alarms (repeating or one-shot)</li>
+ *   <li>15 — reserved TIMER slot (multi-function "ring in N min"; one-shot)</li>
  *   <li>16..31 — calendar-sync slots (non-repeating weekday, owned by WP9/WP13)</li>
  * </ul>
  *

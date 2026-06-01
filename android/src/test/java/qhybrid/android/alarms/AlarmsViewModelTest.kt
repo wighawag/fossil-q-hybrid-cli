@@ -24,8 +24,8 @@ import qhybrid.android.sync.SyncState
 /**
  * WP16b — headless tests for the Alarms state holder. Reuses the WP4 [DbTestBase] in-memory
  * Room harness; "Save to watch" is replaced by a [FakeAlarmSync]. Verifies:
- *   - only slots 0–15 combine into the UiState, sorted by slotId,
- *   - add picks the lowest free slot and enforces the 16-slot user cap,
+ *   - only user slots 0–14 combine into the UiState, sorted by slotId (15 = timer, 16+ = calendar),
+ *   - add picks the lowest free slot and enforces the 15-slot user cap,
  *   - weekday/weekend/everyday shortcuts produce the correct (WP5 1:1) daysMask,
  *   - toggle/delete/update/setDays call the right repo methods,
  *   - save delegates to the fake.
@@ -96,24 +96,26 @@ class AlarmsViewModelTest : DbTestBase() {
     // ---- state combination ----------------------------------------------------
 
     @Test
-    fun combinesOnlySlots0to15SortedIntoUiState() {
+    fun combinesOnlyUserSlots0to14SortedIntoUiState() {
         runBlocking {
             watchDao.upsert(watch("AA:00:00:00:00:01", name = "One", active = true))
-            // Out of order + a calendar slot (16) which must be filtered out.
+            // Out of order + the TIMER slot (15) and a calendar slot (16) which must be filtered out.
             alarmDao.upsert(userAlarm("AA:00:00:00:00:01", slot = 5))
             alarmDao.upsert(userAlarm("AA:00:00:00:00:01", slot = 0))
-            alarmDao.upsert(userAlarm("AA:00:00:00:00:01", slot = 15))
+            alarmDao.upsert(userAlarm("AA:00:00:00:00:01", slot = 14))
+            alarmDao.upsert(userAlarm("AA:00:00:00:00:01", slot = 15)) // TIMER — excluded
             alarmDao.upsert(userAlarm("AA:00:00:00:00:01", slot = 16)) // calendar — excluded
         }
         val model = vm()
         val s = awaitState(model.uiState) { it.alarms.size == 3 }
         assertEquals("AA:00:00:00:00:01", s.activeMac)
-        assertEquals(listOf(0, 5, 15), s.alarms.map { it.slotId })
-        // The calendar slot (16) is NOT in the editable user list.
+        assertEquals(listOf(0, 5, 14), s.alarms.map { it.slotId })
+        // The TIMER slot (15) and calendar slot (16) are NOT in the editable user list.
+        assertTrue(s.alarms.none { it.slotId == 15 })
         assertTrue(s.alarms.none { it.slotId == 16 })
         assertTrue(s.hasActiveWatch)
         assertFalse(s.isFull)
-        assertEquals(1, s.nextFreeSlot) // lowest free after {0,5,15}
+        assertEquals(1, s.nextFreeSlot) // lowest free after {0,5,14}
     }
 
     @Test
@@ -168,20 +170,21 @@ class AlarmsViewModelTest : DbTestBase() {
     }
 
     @Test
-    fun addEnforces16SlotCap() {
+    fun addEnforces15SlotUserCap() {
         runBlocking {
             watchDao.upsert(watch("AA:00:00:00:00:01", active = true))
-            for (slot in 0..15) alarmDao.upsert(userAlarm("AA:00:00:00:00:01", slot = slot))
+            // 15 user slots (0..14); slot 15 is the reserved TIMER slot, not a user slot.
+            for (slot in 0..14) alarmDao.upsert(userAlarm("AA:00:00:00:00:01", slot = slot))
         }
         val model = vm()
-        val full = awaitState(model.uiState) { it.alarms.size == 16 }
+        val full = awaitState(model.uiState) { it.alarms.size == 15 }
         assertTrue(full.isFull)
         assertNull(full.nextFreeSlot)
 
         model.addAlarm() // must be a no-op at the cap
 
-        // Give Room a beat; the count must remain 16.
-        runBlocking { assertEquals(16, repo.getAlarms("AA:00:00:00:00:01").size) }
+        // Give Room a beat; the count must remain 15.
+        runBlocking { assertEquals(15, repo.getAlarms("AA:00:00:00:00:01").size) }
     }
 
     @Test

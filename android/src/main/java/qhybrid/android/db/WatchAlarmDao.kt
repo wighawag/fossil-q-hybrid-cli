@@ -24,12 +24,22 @@ interface WatchAlarmDao {
     suspend fun deleteForWatch(mac: String)
 
     /**
-     * WP-CLEARALARMS — delete only the STANDARD user alarm slots (0..15) for [mac], leaving the
-     * calendar-sync slots (16..31, owned by WP9/WP13) intact. Used by the Settings "Clear all
-     * alarms" action.
+     * WP-CLEARALARMS — delete only the STANDARD user alarm slots (0..14) for [mac], leaving the
+     * reserved TIMER slot (15) and the calendar-sync slots (16..31, owned by WP9/WP13) intact.
+     * Used by the Settings "Clear all alarms" action.
+     *
+     * **TIMER:** slot 15 is now reserved for the multi-function TIMER mode's "ring in N min"
+     * one-shot; "Clear all alarms" must NOT cancel a pending timer the user just set.
      */
-    @Query("DELETE FROM watch_alarms WHERE watchMac = :mac AND slotId BETWEEN 0 AND 15")
+    @Query("DELETE FROM watch_alarms WHERE watchMac = :mac AND slotId BETWEEN 0 AND 14")
     suspend fun deleteStandardForWatch(mac: String)
+
+    /**
+     * TIMER — delete the reserved TIMER slot (15) for [mac]. Used to cancel/replace the pending
+     * "ring in N min" one-shot before writing a fresh one.
+     */
+    @Query("DELETE FROM watch_alarms WHERE watchMac = :mac AND slotId = 15")
+    suspend fun deleteTimerForWatch(mac: String)
 
     /**
      * WP13 — delete only the CALENDAR-sync slots (16..31, owned by WP9/WP13) for [mac], leaving the

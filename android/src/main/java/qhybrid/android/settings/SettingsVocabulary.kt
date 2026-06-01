@@ -260,8 +260,29 @@ object SettingsVocabulary {
     const val MODE_MUSIC_LYRION = "MUSIC_LYRION"
     const val MODE_TRACKER = "TRACKER"
 
+    /**
+     * TIMER — a multi-function mode whose three gestures arm a one-shot "ring in N min" alarm on
+     * the dedicated reserved slot (see [qhybrid.protocol.requests.fossil.alarm.AlarmCompiler.TIMER_SLOT]):
+     *   - short  → ring in [TIMER_SHORT_MINUTES] (3 min),
+     *   - double → ring in [TIMER_DOUBLE_MINUTES] (5 min),
+     *   - long   → ring in [TIMER_LONG_MINUTES] (10 min).
+     * The target time is `now + N`, rounded to the NEAREST minute (so it can be up to ~30s early).
+     */
+    const val MODE_TIMER = "TIMER"
+
     /** All selectable multi-function modes in canonical display order. */
-    val MULTI_FUNCTION_MODES = listOf(MODE_MUSIC_PHONE, MODE_MUSIC_LYRION, MODE_TRACKER)
+    val MULTI_FUNCTION_MODES = listOf(MODE_MUSIC_PHONE, MODE_MUSIC_LYRION, MODE_TRACKER, MODE_TIMER)
+
+    // ---- TIMER mode gesture durations (minutes from now; pure constants) ------
+
+    /** Short press → ring in this many minutes. */
+    const val TIMER_SHORT_MINUTES = 3
+
+    /** Double press → ring in this many minutes. */
+    const val TIMER_DOUBLE_MINUTES = 5
+
+    /** Long press → ring in this many minutes. */
+    const val TIMER_LONG_MINUTES = 10
 
     /** Default rotation out of the box — phone media only (preserves WP12 default behaviour). */
     val MULTI_FUNCTION_ROTATION_DEFAULT = listOf(MODE_MUSIC_PHONE)
@@ -276,6 +297,7 @@ object SettingsVocabulary {
     fun normalizeMode(mode: String?): String = when (mode?.trim()?.uppercase()) {
         MODE_MUSIC_LYRION -> MODE_MUSIC_LYRION
         MODE_TRACKER -> MODE_TRACKER
+        MODE_TIMER -> MODE_TIMER
         MODE_MUSIC_PHONE -> MODE_MUSIC_PHONE
         MULTI_FUNCTION_ROLE_MUSIC -> MODE_MUSIC_PHONE // legacy "MUSIC" → phone backend
         else -> MODE_MUSIC_PHONE
@@ -321,10 +343,127 @@ object SettingsVocabulary {
         return (clampIndex(rot, index) + 1) % rot.size
     }
 
+    // ---- multi-function mode-SWITCH buzz (per-mode, stable, configurable) ------
+
+    /**
+     * The buzz the watch plays when the SWITCH button advances to a mode — a STABLE, per-MODE
+     * pattern so the user feels WHICH mode they're now in, independent of the rotation's order or
+     * which modes are enabled (the old behaviour buzzed `index+1` pulses, which drifted when modes
+     * were added/removed/reordered).
+     *
+     * Limited to the FOUR most distinct [qhybrid.android.notifications.VibePatterns]:
+     *   - [SWITCH_BUZZ_SINGLE] = ONE_SHORT (5),
+     *   - [SWITCH_BUZZ_DOUBLE] = TWO_SHORT (6),
+     *   - [SWITCH_BUZZ_TRIPLE] = THREE_SHORT (7),
+     *   - [SWITCH_BUZZ_LONG]   = ONE_LONG (8).
+     * Duplicates across modes are ALLOWED (free choice; only validated onto the 4 values).
+     */
+    const val SWITCH_BUZZ_SINGLE = 5  // VibePatterns.ONE_SHORT
+    const val SWITCH_BUZZ_DOUBLE = 6  // VibePatterns.TWO_SHORT
+    const val SWITCH_BUZZ_TRIPLE = 7  // VibePatterns.THREE_SHORT
+    const val SWITCH_BUZZ_LONG = 8    // VibePatterns.ONE_LONG
+
+    /** The four selectable switch-buzz patterns, in display order. */
+    val SWITCH_BUZZ_OPTIONS = listOf(SWITCH_BUZZ_SINGLE, SWITCH_BUZZ_DOUBLE, SWITCH_BUZZ_TRIPLE, SWITCH_BUZZ_LONG)
+
+    /**
+     * The DEFAULT per-mode switch buzz (all distinct out of the box): phone=single, Lyrion=double,
+     * tracker=triple, timer=long. Unknown modes fall back to [SWITCH_BUZZ_SINGLE].
+     */
+    val SWITCH_BUZZ_DEFAULTS: Map<String, Int> = mapOf(
+        MODE_MUSIC_PHONE to SWITCH_BUZZ_SINGLE,
+        MODE_MUSIC_LYRION to SWITCH_BUZZ_DOUBLE,
+        MODE_TRACKER to SWITCH_BUZZ_TRIPLE,
+        MODE_TIMER to SWITCH_BUZZ_LONG,
+    )
+
+    /** Clamp/snap an arbitrary value onto the 4 valid switch-buzz patterns; invalid → SINGLE. */
+    fun normalizeSwitchBuzz(pattern: Int): Int =
+        if (pattern in SWITCH_BUZZ_OPTIONS) pattern else SWITCH_BUZZ_SINGLE
+
+    /**
+     * Resolve the switch buzz for [mode]: the user [overrides] value if present + valid, else the
+     * per-mode [SWITCH_BUZZ_DEFAULTS] entry, else [SWITCH_BUZZ_SINGLE]. Never throws.
+     */
+    fun switchBuzzFor(mode: String, overrides: Map<String, Int>): Int {
+        val m = normalizeMode(mode)
+        overrides[m]?.let { if (it in SWITCH_BUZZ_OPTIONS) return it }
+        return SWITCH_BUZZ_DEFAULTS[m] ?: SWITCH_BUZZ_SINGLE
+    }
+
+    /**
+     * Normalize a raw override map (never throws): key each entry onto a known mode + value onto a
+     * valid switch-buzz pattern, dropping entries that don't resolve. Keeps only real overrides.
+     */
+    fun normalizeSwitchBuzzMap(raw: Map<String, Int>?): Map<String, Int> {
+        if (raw.isNullOrEmpty()) return emptyMap()
+        val out = LinkedHashMap<String, Int>()
+        for ((k, v) in raw) {
+            if (v in SWITCH_BUZZ_OPTIONS) out[normalizeMode(k)] = v
+        }
+        return out
+    }
+
+    /** Parse a persisted CSV (`MODE=PATTERN,MODE=PATTERN`) into a normalized override map. */
+    fun parseSwitchBuzzMap(csv: String?): Map<String, Int> {
+        if (csv.isNullOrBlank()) return emptyMap()
+        val raw = LinkedHashMap<String, Int>()
+        for (part in csv.split(ROTATION_DELIM)) {
+            val kv = part.split("=", limit = 2)
+            if (kv.size != 2) continue
+            val mode = kv[0].trim()
+            val pattern = kv[1].trim().toIntOrNull() ?: continue
+            if (mode.isNotEmpty()) raw[mode] = pattern
+        }
+        return normalizeSwitchBuzzMap(raw)
+    }
+
+    /** Serialize an override map to the persisted CSV (`MODE=PATTERN,...`), normalized first. */
+    fun switchBuzzMapToCsv(overrides: Map<String, Int>?): String =
+        normalizeSwitchBuzzMap(overrides).entries.joinToString(ROTATION_DELIM) { "${it.key}=${it.value}" }
+
+    // ---- multi-function SWITCH-buzz debounce window (app pref; phone-side only) ----
+
+    /**
+     * Coalesce window (ms) for the SWITCH-mode buzz: rapid presses within this window collapse to a
+     * SINGLE buzz for the FINAL landed mode (the watch ignores a buzz while its hands animate back,
+     * so only the first of a burst would otherwise reach it — and it'd be the WRONG mode). It's a
+     * TRAILING debounce — the timer resets on every press, so the buzz fires this long after the
+     * LAST press. Configurable so the window can be tuned/tested on-device. Phone-side only.
+     */
+    const val SWITCH_BUZZ_DEBOUNCE_MIN_MS = 0
+    const val SWITCH_BUZZ_DEBOUNCE_MAX_MS = 5000
+    const val SWITCH_BUZZ_DEBOUNCE_DEFAULT_MS = 1500
+    const val SWITCH_BUZZ_DEBOUNCE_STEP_MS = 250
+
+    /** Clamp an arbitrary debounce window onto [SWITCH_BUZZ_DEBOUNCE_MIN_MS]..[SWITCH_BUZZ_DEBOUNCE_MAX_MS]. */
+    fun normalizeSwitchBuzzDebounceMs(ms: Int): Int =
+        ms.coerceIn(SWITCH_BUZZ_DEBOUNCE_MIN_MS, SWITCH_BUZZ_DEBOUNCE_MAX_MS)
+
+    /** Format a debounce window: `Off` / `750 ms` / `1.5 s`. */
+    fun switchBuzzDebounceLabel(ms: Int): String {
+        val m = normalizeSwitchBuzzDebounceMs(ms)
+        return when {
+            m == 0 -> "Off (immediate)"
+            m < 1000 -> "$m ms"
+            m % 1000 == 0 -> "${m / 1000} s"
+            else -> "%.1f s".format(m / 1000.0)
+        }
+    }
+
+    /** Human label for a switch-buzz pattern (single/double/triple/long); falls back gracefully. */
+    fun switchBuzzLabel(pattern: Int): String = when (normalizeSwitchBuzz(pattern)) {
+        SWITCH_BUZZ_DOUBLE -> "Double buzz"
+        SWITCH_BUZZ_TRIPLE -> "Triple buzz"
+        SWITCH_BUZZ_LONG -> "Long buzz"
+        else -> "Single buzz"
+    }
+
     /** Human label for a mode; falls back gracefully. */
     fun modeLabel(mode: String): String = when (normalizeMode(mode)) {
         MODE_MUSIC_LYRION -> "Music (Lyrion player)"
         MODE_TRACKER -> "GPS waypoint tracker"
+        MODE_TIMER -> "Timer (ring in N min)"
         else -> "Music (phone)"
     }
 

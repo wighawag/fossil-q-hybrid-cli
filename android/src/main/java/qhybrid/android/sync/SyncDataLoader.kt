@@ -12,7 +12,8 @@ import java.time.ZoneId
  * [SyncOrchestrator]; keeping it here means the orchestrator stays a pure function of [SyncInput]
  * and is unit-testable without coroutines/Room.
  *
- * Slot split (WP5 16/16): alarms with `slotId` in 0..15 go to [SyncInput.alarms]; 16..31 go to
+ * Slot split (WP5): alarms with `slotId` in 0..15 go to [SyncInput.alarms] (the 0..14 user slots
+ * PLUS the reserved TIMER slot 15, which is itself a standard one-shot); 16..31 go to
  * [SyncInput.calendarAlarms]. Settings are taken from the active watch row (vibration strength)
  * and the app prefs (nudge / second timezone). Returns a no-watch input when none is active.
  */
@@ -40,6 +41,7 @@ class SyncDataLoader(
         // alarm disabled IN THE INPUT ONLY — AlarmCompiler already drops disabled alarms from the
         // wire bytes. Repeating alarms are never suppressed. Mirrors the Alarms screen's display.
         val allAlarms = repo.getAlarms(mac).map { it.suppressIfPassedOneOff(nowMillis, z) }
+        // 0..14 user + 15 TIMER are all "standard" wire alarms (the timer is a one-shot).
         val standard = allAlarms.filter { it.slotId in 0..15 }
         val calendar = allAlarms.filter { it.slotId in 16..31 }
         val rules = repo.getRules(mac)

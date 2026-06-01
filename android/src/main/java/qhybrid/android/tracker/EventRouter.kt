@@ -12,6 +12,7 @@ import qhybrid.android.settings.SettingsVocabulary
  * button-blind 0x05 music stream by the GLOBAL multi-function role (a single pref read per event):
  *   - `type:"music"` (0x05) + role MUSIC   → [Route.Music]   (WP12 media control, unchanged),
  *   - `type:"music"` (0x05) + role TRACKER → [Route.Tracker] (Part A GPS-tracker gestures),
+ *   - `type:"music"` (0x05) + mode TIMER   → [Route.Timer]   (arm a "ring in N min" one-shot),
  *   - `type:"button"` (0x08)               → [Route.ButtonPath2] (Part B button-aware single press),
  *   - anything else                        → [Route.Ignore].
  *
@@ -20,21 +21,24 @@ import qhybrid.android.settings.SettingsVocabulary
  */
 object EventRouter {
 
-    enum class Route { Music, Tracker, ButtonPath2, Ignore }
+    enum class Route { Music, Tracker, Timer, ButtonPath2, Ignore }
 
     /**
      * L0 — route one event line given the current GLOBAL active MODE (the configurable rotation's
      * live entry; see [SettingsVocabulary.activeMode]). Both music modes
      * ([SettingsVocabulary.MODE_MUSIC_PHONE] / [SettingsVocabulary.MODE_MUSIC_LYRION]) share
      * [Route.Music] — which music BACKEND runs is decided downstream by the dispatcher selector, not
-     * here. [SettingsVocabulary.MODE_TRACKER] → [Route.Tracker]. Never throws.
+     * here. [SettingsVocabulary.MODE_TRACKER] → [Route.Tracker];
+     * [SettingsVocabulary.MODE_TIMER] → [Route.Timer]. Never throws.
      */
     fun routeForMode(json: String?, activeMode: String): Route {
         val type = eventType(json) ?: return Route.Ignore
         return when (type) {
-            "music" ->
-                if (SettingsVocabulary.normalizeMode(activeMode) == SettingsVocabulary.MODE_TRACKER)
-                    Route.Tracker else Route.Music
+            "music" -> when (SettingsVocabulary.normalizeMode(activeMode)) {
+                SettingsVocabulary.MODE_TRACKER -> Route.Tracker
+                SettingsVocabulary.MODE_TIMER -> Route.Timer
+                else -> Route.Music
+            }
             "button" -> Route.ButtonPath2
             else -> Route.Ignore
         }

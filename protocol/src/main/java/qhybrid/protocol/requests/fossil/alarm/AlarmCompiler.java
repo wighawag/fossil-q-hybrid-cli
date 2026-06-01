@@ -37,7 +37,18 @@ public final class AlarmCompiler {
     /** Firmware-fixed 32-entry alarm table (FINDINGS #12: 33+ alarms time out). */
     public static final int MAX_ALARMS = 32;
     public static final int STANDARD_SLOT_MIN = 0;
-    public static final int STANDARD_SLOT_MAX = 15;
+    /**
+     * Highest USER-editable alarm slot. Reduced from 15 to 14 when the TIMER feature reserved
+     * slot {@link #TIMER_SLOT} for its dedicated "ring in N min" one-shot alarm. The 32-entry
+     * table is now split 15 user (0..14) + 1 timer (15) + 16 calendar (16..31).
+     */
+    public static final int STANDARD_SLOT_MAX = 14;
+    /**
+     * Reserved single slot for the multi-function TIMER mode's "ring in N min" one-shot alarm
+     * (short=3 / double=5 / long=10 minutes). Owned by the phone-side timer dispatch, NOT the
+     * user Alarms screen. Compiled as a standard one-shot (so it lives in the standard range).
+     */
+    public static final int TIMER_SLOT = 15;
     public static final int CALENDAR_SLOT_MIN = 16;
     public static final int CALENDAR_SLOT_MAX = 31;
 
@@ -60,8 +71,10 @@ public final class AlarmCompiler {
         List<AlarmSlot> calendar = calendarAlarms == null ? List.of() : calendarAlarms;
 
         // --- Validate ranges (reject before producing bytes) ---
+        // The standard range now spans the user slots (0..14) AND the reserved TIMER_SLOT (15);
+        // the timer alarm is a standard one-shot so it validates/encodes through this same path.
         for (AlarmSlot a : standard) {
-            requireRange(a, STANDARD_SLOT_MIN, STANDARD_SLOT_MAX, "standard");
+            requireRange(a, STANDARD_SLOT_MIN, TIMER_SLOT, "standard");
         }
         for (AlarmSlot a : calendar) {
             requireRange(a, CALENDAR_SLOT_MIN, CALENDAR_SLOT_MAX, "calendar");

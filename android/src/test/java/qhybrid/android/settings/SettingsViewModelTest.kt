@@ -95,6 +95,18 @@ class SettingsViewModelTest : DbTestBase() {
                     SettingsVocabulary.clampIndex(current.multiFunctionRotation, index),
             )
         }
+        override fun setMultiFunctionSwitchBuzz(mode: String, pattern: Int) {
+            val m = SettingsVocabulary.normalizeMode(mode)
+            val p = SettingsVocabulary.normalizeSwitchBuzz(pattern)
+            current = current.copy(
+                multiFunctionSwitchBuzz = current.multiFunctionSwitchBuzz.toMutableMap().apply { put(m, p) },
+            )
+        }
+        override fun setMultiFunctionSwitchBuzzDebounceMs(ms: Int) {
+            current = current.copy(
+                multiFunctionSwitchBuzzDebounceMs = SettingsVocabulary.normalizeSwitchBuzzDebounceMs(ms),
+            )
+        }
         override fun setLyrionServer(host: String?, port: Int) {
             current = current.copy(
                 lyrionServerHost = SettingsVocabulary.normalizeLyrionHost(host),
@@ -680,6 +692,48 @@ class SettingsViewModelTest : DbTestBase() {
             listOf(SettingsVocabulary.MODE_MUSIC_PHONE),
             model.uiState.value.multiFunctionRotation,
         )
+    }
+
+    @Test
+    fun switchBuzzPerMode_defaultsThenOverrideRoundTrips() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }
+        val model = vm()
+        val s0 = awaitState(model.uiState) { it.hasActiveWatch }
+
+        // Defaults (no overrides): distinct per mode.
+        assertEquals(SettingsVocabulary.SWITCH_BUZZ_SINGLE, s0.switchBuzzFor(SettingsVocabulary.MODE_MUSIC_PHONE))
+        assertEquals(SettingsVocabulary.SWITCH_BUZZ_LONG, s0.switchBuzzFor(SettingsVocabulary.MODE_TIMER))
+
+        // Override one mode; it sticks, the others keep their defaults.
+        model.setMultiFunctionSwitchBuzz(SettingsVocabulary.MODE_TIMER, SettingsVocabulary.SWITCH_BUZZ_DOUBLE)
+        val s1 = awaitState(model.uiState) {
+            it.switchBuzzFor(SettingsVocabulary.MODE_TIMER) == SettingsVocabulary.SWITCH_BUZZ_DOUBLE
+        }
+        assertEquals(SettingsVocabulary.SWITCH_BUZZ_SINGLE, s1.switchBuzzFor(SettingsVocabulary.MODE_MUSIC_PHONE))
+
+        // Duplicates allowed: set tracker to the same buzz as timer.
+        model.setMultiFunctionSwitchBuzz(SettingsVocabulary.MODE_TRACKER, SettingsVocabulary.SWITCH_BUZZ_DOUBLE)
+        val s2 = awaitState(model.uiState) {
+            it.switchBuzzFor(SettingsVocabulary.MODE_TRACKER) == SettingsVocabulary.SWITCH_BUZZ_DOUBLE
+        }
+        assertEquals(SettingsVocabulary.SWITCH_BUZZ_DOUBLE, s2.switchBuzzFor(SettingsVocabulary.MODE_TIMER))
+    }
+
+    @Test
+    fun switchBuzzDebounceWindow_roundTripsAndClamps() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }
+        val model = vm()
+        val s0 = awaitState(model.uiState) { it.hasActiveWatch }
+        assertEquals(SettingsVocabulary.SWITCH_BUZZ_DEBOUNCE_DEFAULT_MS, s0.switchBuzzDebounceMs)
+
+        model.setMultiFunctionSwitchBuzzDebounceMs(750)
+        val s1 = awaitState(model.uiState) { it.switchBuzzDebounceMs == 750 }
+        assertEquals(750, s1.switchBuzzDebounceMs)
+
+        // Out-of-range clamps onto the valid window.
+        model.setMultiFunctionSwitchBuzzDebounceMs(99999)
+        val s2 = awaitState(model.uiState) { it.switchBuzzDebounceMs == SettingsVocabulary.SWITCH_BUZZ_DEBOUNCE_MAX_MS }
+        assertEquals(SettingsVocabulary.SWITCH_BUZZ_DEBOUNCE_MAX_MS, s2.switchBuzzDebounceMs)
     }
 
     // ---- L1: Lyrion config round-trips (pure app-side) -----------------------

@@ -50,6 +50,29 @@ class DebouncerTest {
     }
 
     @Test
+    fun windowProvider_readFreshPerSchedule() = runTest {
+        var runs = 0
+        var window = 250L
+        val d = CoroutineDebouncer(this) { window }
+
+        // First schedule uses 250 ms.
+        d.schedule { runs++ }
+        advanceTimeBy(300)
+        runCurrent()
+        assertEquals(1, runs)
+
+        // Change the window; the next schedule picks up the NEW value (1500 ms).
+        window = 1500
+        d.schedule { runs++ }
+        advanceTimeBy(300)
+        runCurrent()
+        assertEquals("still pending under the new, larger window", 1, runs)
+        advanceTimeBy(1500)
+        runCurrent()
+        assertEquals(2, runs)
+    }
+
+    @Test
     fun immediateDebouncer_runsSynchronously() {
         var runs = 0
         val d = ImmediateDebouncer()

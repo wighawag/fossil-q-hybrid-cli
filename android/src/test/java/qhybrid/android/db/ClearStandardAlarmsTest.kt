@@ -10,7 +10,8 @@ import org.robolectric.annotation.Config
 
 /**
  * WP-CLEARALARMS — [WatchRepository.clearStandardAlarms] deletes the standard user alarm slots
- * (0..15) but leaves the calendar-sync slots (16..31) intact, and normalizes the mac.
+ * (0..14) but leaves the reserved TIMER slot (15) and the calendar-sync slots (16..31) intact, and
+ * normalizes the mac.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33])
@@ -19,18 +20,20 @@ class ClearStandardAlarmsTest : DbTestBase() {
     private val mac = "AA:BB:CC:DD:EE:FF"
 
     @Test
-    fun clearsStandardSlots_keepsCalendarSlots() = runTest {
+    fun clearsUserSlots_keepsTimerAndCalendarSlots() = runTest {
         watchDao.upsert(watch(mac))
-        // Standard alarms 0..2 + a calendar alarm at slot 16.
+        // User alarms 0..2 + the TIMER slot (15) + a calendar alarm at slot 16.
         alarmDao.upsert(alarm(mac, 0))
         alarmDao.upsert(alarm(mac, 2))
+        alarmDao.upsert(alarm(mac, 14)) // highest user slot
+        alarmDao.upsert(alarm(mac, 15)) // TIMER slot
         alarmDao.upsert(alarm(mac, 16)) // calendar slot (WP9/WP13)
 
         repo.clearStandardAlarms(mac)
 
-        val remaining = alarmDao.getForWatch(mac)
-        assertEquals(1, remaining.size)
-        assertEquals(16, remaining.single().slotId) // calendar alarm preserved
+        val remaining = alarmDao.getForWatch(mac).map { it.slotId }.sorted()
+        // Timer (15) + calendar (16) preserved; user slots 0,2,14 deleted.
+        assertEquals(listOf(15, 16), remaining)
     }
 
     @Test

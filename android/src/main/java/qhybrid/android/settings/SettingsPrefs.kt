@@ -55,6 +55,18 @@ data class AppSettings(
     val multiFunctionRotation: List<String> = SettingsVocabulary.MULTI_FUNCTION_ROTATION_DEFAULT,
     /** L0 — index into [multiFunctionRotation] of the currently-active mode (clamped to range). */
     val multiFunctionActiveIndex: Int = 0,
+    /**
+     * Per-mode SWITCH-buzz overrides: the buzz the watch plays when the SWITCH button advances to a
+     * mode, keyed by mode. Empty = use [SettingsVocabulary.SWITCH_BUZZ_DEFAULTS]. Resolved (override
+     * → default → single) via [SettingsVocabulary.switchBuzzFor]. STABLE per mode (not by index).
+     */
+    val multiFunctionSwitchBuzz: Map<String, Int> = emptyMap(),
+    /**
+     * TRAILING debounce window (ms) for the SWITCH-mode buzz — rapid presses within this window
+     * coalesce to ONE buzz for the FINAL landed mode (see [SettingsVocabulary]). Configurable so it
+     * can be tuned/tested on-device. 0 = immediate (no debounce). Phone-side only.
+     */
+    val multiFunctionSwitchBuzzDebounceMs: Int = SettingsVocabulary.SWITCH_BUZZ_DEBOUNCE_DEFAULT_MS,
     /** L1 — Lyrion (LMS) server host/IP for the [SettingsVocabulary.MODE_MUSIC_LYRION] backend. */
     val lyrionServerHost: String = SettingsVocabulary.LYRION_HOST_NONE,
     /** L1 — Lyrion server HTTP/JSON-RPC port (default 9000). */
@@ -125,6 +137,16 @@ interface SettingsPrefs {
     /** L0 — persist the active-mode index (clamped to the current rotation's range). */
     fun setMultiFunctionActiveIndex(index: Int)
 
+    /**
+     * Persist the SWITCH buzz for one [mode] (normalized onto the 4 valid patterns). Merges into the
+     * existing override map (other modes untouched). Setting a mode's default is fine — it's stored
+     * as an explicit override but resolves to the same value.
+     */
+    fun setMultiFunctionSwitchBuzz(mode: String, pattern: Int)
+
+    /** Persist the SWITCH-buzz trailing debounce window in ms (normalized 0..5000). */
+    fun setMultiFunctionSwitchBuzzDebounceMs(ms: Int)
+
     /** L1 — persist the Lyrion server host (blank/null → NONE) + port (clamped/default). */
     fun setLyrionServer(host: String?, port: Int)
 
@@ -183,6 +205,12 @@ class SharedPreferencesSettingsPrefs(context: Context) : SettingsPrefs {
             multiFunctionRotation = readRotation(p),
             multiFunctionActiveIndex = SettingsVocabulary.clampIndex(
                 readRotation(p), p.getInt(KEY_MULTI_FUNCTION_INDEX, 0)
+            ),
+            multiFunctionSwitchBuzz = SettingsVocabulary.parseSwitchBuzzMap(
+                p.getString(KEY_MULTI_FUNCTION_SWITCH_BUZZ, null)
+            ),
+            multiFunctionSwitchBuzzDebounceMs = SettingsVocabulary.normalizeSwitchBuzzDebounceMs(
+                p.getInt(KEY_MULTI_FUNCTION_SWITCH_BUZZ_DEBOUNCE, SettingsVocabulary.SWITCH_BUZZ_DEBOUNCE_DEFAULT_MS)
             ),
             lyrionServerHost = SettingsVocabulary.normalizeLyrionHost(
                 p.getString(KEY_LYRION_HOST, SettingsVocabulary.LYRION_HOST_NONE)
@@ -276,6 +304,25 @@ class SharedPreferencesSettingsPrefs(context: Context) : SettingsPrefs {
             .apply()
     }
 
+    override fun setMultiFunctionSwitchBuzz(mode: String, pattern: Int) {
+        val current = SettingsVocabulary.parseSwitchBuzzMap(
+            prefs.getString(KEY_MULTI_FUNCTION_SWITCH_BUZZ, null)
+        ).toMutableMap()
+        current[SettingsVocabulary.normalizeMode(mode)] = SettingsVocabulary.normalizeSwitchBuzz(pattern)
+        prefs.edit()
+            .putString(KEY_MULTI_FUNCTION_SWITCH_BUZZ, SettingsVocabulary.switchBuzzMapToCsv(current))
+            .apply()
+    }
+
+    override fun setMultiFunctionSwitchBuzzDebounceMs(ms: Int) {
+        prefs.edit()
+            .putInt(
+                KEY_MULTI_FUNCTION_SWITCH_BUZZ_DEBOUNCE,
+                SettingsVocabulary.normalizeSwitchBuzzDebounceMs(ms),
+            )
+            .apply()
+    }
+
     override fun setLyrionServer(host: String?, port: Int) {
         prefs.edit()
             .putString(KEY_LYRION_HOST, SettingsVocabulary.normalizeLyrionHost(host))
@@ -330,6 +377,8 @@ class SharedPreferencesSettingsPrefs(context: Context) : SettingsPrefs {
         const val KEY_MULTI_FUNCTION_ROLE = "multi_function_role"
         const val KEY_MULTI_FUNCTION_ROTATION = "multi_function_rotation"
         const val KEY_MULTI_FUNCTION_INDEX = "multi_function_active_index"
+        const val KEY_MULTI_FUNCTION_SWITCH_BUZZ = "multi_function_switch_buzz"
+        const val KEY_MULTI_FUNCTION_SWITCH_BUZZ_DEBOUNCE = "multi_function_switch_buzz_debounce_ms"
         const val KEY_LYRION_HOST = "lyrion_server_host"
         const val KEY_LYRION_PORT = "lyrion_server_port"
         const val KEY_LYRION_PLAYER_ID = "lyrion_player_id"

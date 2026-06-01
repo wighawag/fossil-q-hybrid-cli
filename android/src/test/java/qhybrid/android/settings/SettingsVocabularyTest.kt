@@ -145,10 +145,15 @@ class SettingsVocabularyTest {
         assertEquals("MUSIC_PHONE", SettingsVocabulary.MODE_MUSIC_PHONE)
         assertEquals("MUSIC_LYRION", SettingsVocabulary.MODE_MUSIC_LYRION)
         assertEquals("TRACKER", SettingsVocabulary.MODE_TRACKER)
+        assertEquals("TIMER", SettingsVocabulary.MODE_TIMER)
         assertEquals(
-            listOf("MUSIC_PHONE", "MUSIC_LYRION", "TRACKER"),
+            listOf("MUSIC_PHONE", "MUSIC_LYRION", "TRACKER", "TIMER"),
             SettingsVocabulary.MULTI_FUNCTION_MODES,
         )
+        // TIMER gesture durations (short/double/long minutes).
+        assertEquals(3, SettingsVocabulary.TIMER_SHORT_MINUTES)
+        assertEquals(5, SettingsVocabulary.TIMER_DOUBLE_MINUTES)
+        assertEquals(10, SettingsVocabulary.TIMER_LONG_MINUTES)
         // Default rotation = phone media only (preserves out-of-box behaviour).
         assertEquals(
             listOf(SettingsVocabulary.MODE_MUSIC_PHONE),
@@ -166,6 +171,7 @@ class SettingsVocabularyTest {
         // Known modes round-trip; case-insensitive + trimmed.
         assertEquals(SettingsVocabulary.MODE_MUSIC_LYRION, SettingsVocabulary.normalizeMode(" music_lyrion "))
         assertEquals(SettingsVocabulary.MODE_TRACKER, SettingsVocabulary.normalizeMode("tracker"))
+        assertEquals(SettingsVocabulary.MODE_TIMER, SettingsVocabulary.normalizeMode(" timer "))
     }
 
     @Test
@@ -234,7 +240,90 @@ class SettingsVocabularyTest {
         assertEquals("Music (phone)", SettingsVocabulary.modeLabel("MUSIC_PHONE"))
         assertEquals("Music (Lyrion player)", SettingsVocabulary.modeLabel("MUSIC_LYRION"))
         assertEquals("GPS waypoint tracker", SettingsVocabulary.modeLabel("TRACKER"))
+        assertEquals("Timer (ring in N min)", SettingsVocabulary.modeLabel("TIMER"))
         assertEquals("Music (phone)", SettingsVocabulary.modeLabel("BOGUS"))
+    }
+
+    // ---- per-mode SWITCH buzz (stable, configurable, duplicates allowed) ------
+
+    @Test
+    fun switchBuzzConstantsAndOptions() {
+        assertEquals(5, SettingsVocabulary.SWITCH_BUZZ_SINGLE)
+        assertEquals(6, SettingsVocabulary.SWITCH_BUZZ_DOUBLE)
+        assertEquals(7, SettingsVocabulary.SWITCH_BUZZ_TRIPLE)
+        assertEquals(8, SettingsVocabulary.SWITCH_BUZZ_LONG)
+        assertEquals(listOf(5, 6, 7, 8), SettingsVocabulary.SWITCH_BUZZ_OPTIONS)
+    }
+
+    @Test
+    fun switchBuzzDefaultsAreDistinctPerMode() {
+        // Out of the box, all four modes have a different buzz.
+        assertEquals(5, SettingsVocabulary.switchBuzzFor("MUSIC_PHONE", emptyMap()))
+        assertEquals(6, SettingsVocabulary.switchBuzzFor("MUSIC_LYRION", emptyMap()))
+        assertEquals(7, SettingsVocabulary.switchBuzzFor("TRACKER", emptyMap()))
+        assertEquals(8, SettingsVocabulary.switchBuzzFor("TIMER", emptyMap()))
+    }
+
+    @Test
+    fun switchBuzzFor_overrideWinsOverDefault_invalidFallsBack() {
+        // A valid override is used.
+        assertEquals(8, SettingsVocabulary.switchBuzzFor("MUSIC_PHONE", mapOf("MUSIC_PHONE" to 8)))
+        // An invalid override value falls back to the per-mode default (phone=single).
+        assertEquals(5, SettingsVocabulary.switchBuzzFor("MUSIC_PHONE", mapOf("MUSIC_PHONE" to 99)))
+        // An unknown mode falls back to single.
+        assertEquals(5, SettingsVocabulary.switchBuzzFor("BOGUS", emptyMap()))
+    }
+
+    @Test
+    fun switchBuzz_duplicatesAcrossModesAllowed() {
+        // Two modes can share the same buzz (duplicates allowed by design).
+        val overrides = mapOf("MUSIC_PHONE" to 6, "TRACKER" to 6)
+        assertEquals(6, SettingsVocabulary.switchBuzzFor("MUSIC_PHONE", overrides))
+        assertEquals(6, SettingsVocabulary.switchBuzzFor("TRACKER", overrides))
+    }
+
+    @Test
+    fun switchBuzz_normalizeAndCsvRoundTrip() {
+        // normalize drops invalid values + re-keys onto known modes.
+        val norm = SettingsVocabulary.normalizeSwitchBuzzMap(
+            mapOf("music_phone" to 8, "TRACKER" to 99)
+        )
+        // TRACKER's value 99 is invalid → dropped; music_phone uppercases + keeps its valid value.
+        assertEquals(mapOf("MUSIC_PHONE" to 8), norm)
+
+        // CSV round-trips a valid map.
+        val csv = SettingsVocabulary.switchBuzzMapToCsv(mapOf("TIMER" to 6, "TRACKER" to 7))
+        val parsed = SettingsVocabulary.parseSwitchBuzzMap(csv)
+        assertEquals(6, parsed["TIMER"])
+        assertEquals(7, parsed["TRACKER"])
+
+        // Blank / malformed CSV → empty map (no throw).
+        assertEquals(emptyMap<String, Int>(), SettingsVocabulary.parseSwitchBuzzMap(null))
+        assertEquals(emptyMap<String, Int>(), SettingsVocabulary.parseSwitchBuzzMap("  "))
+        assertEquals(emptyMap<String, Int>(), SettingsVocabulary.parseSwitchBuzzMap("garbage,x=y"))
+    }
+
+    @Test
+    fun switchBuzzLabels() {
+        assertEquals("Single buzz", SettingsVocabulary.switchBuzzLabel(5))
+        assertEquals("Double buzz", SettingsVocabulary.switchBuzzLabel(6))
+        assertEquals("Triple buzz", SettingsVocabulary.switchBuzzLabel(7))
+        assertEquals("Long buzz", SettingsVocabulary.switchBuzzLabel(8))
+        assertEquals("Single buzz", SettingsVocabulary.switchBuzzLabel(99))
+    }
+
+    @Test
+    fun switchBuzzDebounce_defaultClampAndLabel() {
+        assertEquals(1500, SettingsVocabulary.SWITCH_BUZZ_DEBOUNCE_DEFAULT_MS)
+        // Clamp below min / above max; in-range passes through.
+        assertEquals(0, SettingsVocabulary.normalizeSwitchBuzzDebounceMs(-100))
+        assertEquals(5000, SettingsVocabulary.normalizeSwitchBuzzDebounceMs(99999))
+        assertEquals(1500, SettingsVocabulary.normalizeSwitchBuzzDebounceMs(1500))
+        // Labels: off / ms / whole seconds / fractional seconds.
+        assertEquals("Off (immediate)", SettingsVocabulary.switchBuzzDebounceLabel(0))
+        assertEquals("750 ms", SettingsVocabulary.switchBuzzDebounceLabel(750))
+        assertEquals("2 s", SettingsVocabulary.switchBuzzDebounceLabel(2000))
+        assertEquals("1.5 s", SettingsVocabulary.switchBuzzDebounceLabel(1500))
     }
 
     // ---- WP-TRACKER: find-my-phone ring duration -----------------------------

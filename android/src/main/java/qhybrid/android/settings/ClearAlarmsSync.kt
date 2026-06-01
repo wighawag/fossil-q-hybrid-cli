@@ -45,7 +45,7 @@ class ServiceClearAlarms(
     context: Context,
     /** Resolves the active watch's mac (or null). Production = WP4 repo. Injected for tests. */
     private val activeMac: suspend () -> String?,
-    /** Deletes [mac]'s standard alarms (slots 0..15). Production = WP4 repo. */
+    /** Deletes [mac]'s standard user alarms (slots 0..14; timer slot 15 preserved). Production = WP4 repo. */
     private val clearAlarms: suspend (mac: String) -> Unit,
     /** Launches the suspend delete off the caller's thread; production = an IO coroutine. */
     private val launchPersist: (suspend () -> Unit) -> Unit,

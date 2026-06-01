@@ -857,6 +857,7 @@ class WatchConnectionService : Service() {
             when (qhybrid.android.tracker.EventRouter.routeForMode(json, activeMode)) {
                 qhybrid.android.tracker.EventRouter.Route.Music -> musicDispatch.onEventJson(json)
                 qhybrid.android.tracker.EventRouter.Route.Tracker -> trackerDispatch.onMusicEventJson(json)
+                qhybrid.android.tracker.EventRouter.Route.Timer -> trackerDispatch.onTimerEventJson(json)
                 qhybrid.android.tracker.EventRouter.Route.ButtonPath2 -> trackerDispatch.onButtonEventJson(json)
                 qhybrid.android.tracker.EventRouter.Route.Ignore -> { /* other event types unaffected */ }
             }

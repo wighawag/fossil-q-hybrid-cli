@@ -22,19 +22,27 @@ interface Debouncer {
 
 /**
  * Production debouncer: each [schedule] cancels the pending job and launches a fresh one that waits
- * [windowMillis] then runs [action]. So N edits within the window collapse to one [action] run,
- * [windowMillis] after the LAST edit.
+ * the current window then runs [action]. So N edits within the window collapse to one [action] run,
+ * the window after the LAST edit (a TRAILING debounce — the timer resets on every schedule).
+ *
+ * The window is read from [windowMillisProvider] ON EACH SCHEDULE, so a configurable window (e.g. an
+ * app pref the user tunes at runtime) takes effect for the next burst without rebuilding the
+ * debouncer. The fixed-[windowMillis] constructor is kept for callers with a constant window.
  */
 class CoroutineDebouncer(
     private val scope: CoroutineScope,
-    private val windowMillis: Long = 750,
+    private val windowMillisProvider: () -> Long,
 ) : Debouncer {
+    /** Convenience: a constant window. */
+    constructor(scope: CoroutineScope, windowMillis: Long = 750) : this(scope, { windowMillis })
+
     private var job: Job? = null
 
     override fun schedule(action: () -> Unit) {
         job?.cancel()
+        val window = windowMillisProvider().coerceAtLeast(0)
         job = scope.launch {
-            delay(windowMillis)
+            delay(window)
             action()
         }
     }

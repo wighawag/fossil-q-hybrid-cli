@@ -71,6 +71,7 @@ class EventRouterTest {
     private val PHONE = SettingsVocabulary.MODE_MUSIC_PHONE
     private val LYRION = SettingsVocabulary.MODE_MUSIC_LYRION
     private val TRACKER_MODE = SettingsVocabulary.MODE_TRACKER
+    private val TIMER_MODE = SettingsVocabulary.MODE_TIMER
 
     @Test
     fun routeForMode_bothMusicModesYieldMusic() {
@@ -92,6 +93,15 @@ class EventRouterTest {
         assertEquals(Route.Music, EventRouter.routeForMode(music("NEXT"), "MUSIC"))
         assertEquals(Route.Music, EventRouter.routeForMode(music("NEXT"), "BOGUS"))
         assertEquals(Route.Music, EventRouter.routeForMode(music("NEXT"), ""))
+    }
+
+    @Test
+    fun routeForMode_timerModeYieldsTimer() {
+        assertEquals(Route.Timer, EventRouter.routeForMode(music("TOGGLE_PLAY_PAUSE"), TIMER_MODE))
+        assertEquals(Route.Timer, EventRouter.routeForMode(music("NEXT"), TIMER_MODE))
+        assertEquals(Route.Timer, EventRouter.routeForMode(music("PREVIOUS"), TIMER_MODE))
+        // The button stream is unaffected by the timer mode (its own event type).
+        assertEquals(Route.ButtonPath2, EventRouter.routeForMode(button("TOP"), TIMER_MODE))
     }
 
     @Test

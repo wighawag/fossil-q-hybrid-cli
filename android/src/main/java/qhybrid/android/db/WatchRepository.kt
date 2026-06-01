@@ -120,8 +120,9 @@ class WatchRepository(
     suspend fun deleteAlarmSlot(mac: String, slotId: Int) = alarmDao.deleteSlot(mac, slotId)
 
     /**
-     * WP-CLEARALARMS — delete ALL of [mac]'s standard user alarms (slots 0..15), leaving calendar
-     * slots 16..31 untouched. The mac is normalized to upper-case to match the row PK. The caller
+     * WP-CLEARALARMS — delete ALL of [mac]'s standard user alarms (slots 0..14), leaving the
+     * reserved TIMER slot 15 and calendar slots 16..31 untouched. The mac is normalized to
+     * upper-case to match the row PK. The caller
      * then pushes the (now empty) alarm section to the watch in PROVISION mode to blank it.
      */
     suspend fun clearStandardAlarms(mac: String) = alarmDao.deleteStandardForWatch(mac.uppercase())

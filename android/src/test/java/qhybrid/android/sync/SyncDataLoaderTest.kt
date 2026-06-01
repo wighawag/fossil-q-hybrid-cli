@@ -35,6 +35,8 @@ class SyncDataLoaderTest : DbTestBase() {
         override fun setMultiFunctionRole(role: String?) {}
         override fun setMultiFunctionRotation(modes: List<String>?) {}
         override fun setMultiFunctionActiveIndex(index: Int) {}
+        override fun setMultiFunctionSwitchBuzz(mode: String, pattern: Int) {}
+        override fun setMultiFunctionSwitchBuzzDebounceMs(ms: Int) {}
         override fun setLyrionServer(host: String?, port: Int) {}
         override fun setLyrionPlayer(id: String?, name: String?) {}
         override fun setLyrionEmptyQueueFallback(fallback: String?) {}
