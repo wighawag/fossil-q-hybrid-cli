@@ -248,30 +248,31 @@ class SettingsVocabularyTest {
 
     @Test
     fun switchBuzzConstantsAndOptions() {
-        assertEquals(5, SettingsVocabulary.SWITCH_BUZZ_SINGLE)
-        assertEquals(6, SettingsVocabulary.SWITCH_BUZZ_DOUBLE)
-        assertEquals(7, SettingsVocabulary.SWITCH_BUZZ_TRIPLE)
-        assertEquals(8, SettingsVocabulary.SWITCH_BUZZ_LONG)
-        assertEquals(listOf(5, 6, 7, 8), SettingsVocabulary.SWITCH_BUZZ_OPTIONS)
+        assertEquals(3, SettingsVocabulary.SWITCH_BUZZ_SINGLE)
+        assertEquals(2, SettingsVocabulary.SWITCH_BUZZ_DOUBLE)
+        assertEquals(1, SettingsVocabulary.SWITCH_BUZZ_TRIPLE)
+        assertEquals(5, SettingsVocabulary.SWITCH_BUZZ_STRONG_SINGLE)
+        // The dropdown now offers the FULL vibe palette (0..9).
+        assertEquals((0..9).toList(), SettingsVocabulary.SWITCH_BUZZ_OPTIONS)
     }
 
     @Test
-    fun switchBuzzDefaultsAreDistinctPerMode() {
-        // Out of the box, all four modes have a different buzz.
-        assertEquals(5, SettingsVocabulary.switchBuzzFor("MUSIC_PHONE", emptyMap()))
-        assertEquals(6, SettingsVocabulary.switchBuzzFor("MUSIC_LYRION", emptyMap()))
-        assertEquals(7, SettingsVocabulary.switchBuzzFor("TRACKER", emptyMap()))
-        assertEquals(8, SettingsVocabulary.switchBuzzFor("TIMER", emptyMap()))
+    fun switchBuzzDefaultsAreSoftTripleAndStrongTimer() {
+        // Out of the box: first three modes use soft single/double/triple, timer = strong single.
+        assertEquals(3, SettingsVocabulary.switchBuzzFor("MUSIC_PHONE", emptyMap()))   // single
+        assertEquals(2, SettingsVocabulary.switchBuzzFor("MUSIC_LYRION", emptyMap()))  // double
+        assertEquals(1, SettingsVocabulary.switchBuzzFor("TRACKER", emptyMap()))       // triple
+        assertEquals(5, SettingsVocabulary.switchBuzzFor("TIMER", emptyMap()))         // strong single
     }
 
     @Test
     fun switchBuzzFor_overrideWinsOverDefault_invalidFallsBack() {
-        // A valid override is used.
+        // A valid override is used (any vibe value 0..9 is now selectable).
         assertEquals(8, SettingsVocabulary.switchBuzzFor("MUSIC_PHONE", mapOf("MUSIC_PHONE" to 8)))
-        // An invalid override value falls back to the per-mode default (phone=single).
-        assertEquals(5, SettingsVocabulary.switchBuzzFor("MUSIC_PHONE", mapOf("MUSIC_PHONE" to 99)))
-        // An unknown mode falls back to single.
-        assertEquals(5, SettingsVocabulary.switchBuzzFor("BOGUS", emptyMap()))
+        // An invalid override value falls back to the per-mode default (phone=single=3).
+        assertEquals(3, SettingsVocabulary.switchBuzzFor("MUSIC_PHONE", mapOf("MUSIC_PHONE" to 99)))
+        // An unknown mode falls back to single (3).
+        assertEquals(3, SettingsVocabulary.switchBuzzFor("BOGUS", emptyMap()))
     }
 
     @Test
@@ -305,11 +306,14 @@ class SettingsVocabularyTest {
 
     @Test
     fun switchBuzzLabels() {
-        assertEquals("Single buzz", SettingsVocabulary.switchBuzzLabel(5))
-        assertEquals("Double buzz", SettingsVocabulary.switchBuzzLabel(6))
-        assertEquals("Triple buzz", SettingsVocabulary.switchBuzzLabel(7))
-        assertEquals("Long buzz", SettingsVocabulary.switchBuzzLabel(8))
-        assertEquals("Single buzz", SettingsVocabulary.switchBuzzLabel(99))
+        // Labels now reuse the shared VibePatterns names (same as the notification vibe picker).
+        assertEquals("Triple (Call)", SettingsVocabulary.switchBuzzLabel(1))
+        assertEquals("Double (Text)", SettingsVocabulary.switchBuzzLabel(2))
+        assertEquals("Single (Email)", SettingsVocabulary.switchBuzzLabel(3))
+        assertEquals("Strong single", SettingsVocabulary.switchBuzzLabel(5))
+        assertEquals("Long", SettingsVocabulary.switchBuzzLabel(8))
+        // Out-of-range falls back to the single default's label.
+        assertEquals("Single (Email)", SettingsVocabulary.switchBuzzLabel(99))
     }
 
     // ---- WP-TRACKER: find-my-phone ring duration -----------------------------

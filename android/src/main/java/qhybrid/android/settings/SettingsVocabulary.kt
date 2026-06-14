@@ -351,33 +351,37 @@ object SettingsVocabulary {
      * which modes are enabled (the old behaviour buzzed `index+1` pulses, which drifted when modes
      * were added/removed/reordered).
      *
-     * Limited to the FOUR most distinct [qhybrid.android.notifications.VibePatterns]:
-     *   - [SWITCH_BUZZ_SINGLE] = ONE_SHORT (5),
-     *   - [SWITCH_BUZZ_DOUBLE] = TWO_SHORT (6),
-     *   - [SWITCH_BUZZ_TRIPLE] = THREE_SHORT (7),
-     *   - [SWITCH_BUZZ_LONG]   = ONE_LONG (8).
-     * Duplicates across modes are ALLOWED (free choice; only validated onto the 4 values).
+     * The DROPDOWN now offers the FULL [qhybrid.android.notifications.VibePatterns] palette
+     * ([SWITCH_BUZZ_OPTIONS]); the user can pick any pattern per mode. The named constants below are
+     * only the OUT-OF-BOX defaults: the first three modes use the soft single/double/triple presets
+     * and TIMER stands out with a strong single.
+     *   - [SWITCH_BUZZ_SINGLE] = single   (VibePatterns.EMAIL, 3),
+     *   - [SWITCH_BUZZ_DOUBLE] = double   (VibePatterns.TEXT, 2),
+     *   - [SWITCH_BUZZ_TRIPLE] = triple   (VibePatterns.CALL, 1),
+     *   - [SWITCH_BUZZ_STRONG_SINGLE] = strong single (VibePatterns.ONE_SHORT, 5).
+     * Duplicates across modes are ALLOWED (free choice).
      */
-    const val SWITCH_BUZZ_SINGLE = 5  // VibePatterns.ONE_SHORT
-    const val SWITCH_BUZZ_DOUBLE = 6  // VibePatterns.TWO_SHORT
-    const val SWITCH_BUZZ_TRIPLE = 7  // VibePatterns.THREE_SHORT
-    const val SWITCH_BUZZ_LONG = 8    // VibePatterns.ONE_LONG
+    const val SWITCH_BUZZ_SINGLE = 3         // VibePatterns.EMAIL  (single)
+    const val SWITCH_BUZZ_DOUBLE = 2         // VibePatterns.TEXT   (double)
+    const val SWITCH_BUZZ_TRIPLE = 1         // VibePatterns.CALL   (triple)
+    const val SWITCH_BUZZ_STRONG_SINGLE = 5  // VibePatterns.ONE_SHORT (strong single)
 
-    /** The four selectable switch-buzz patterns, in display order. */
-    val SWITCH_BUZZ_OPTIONS = listOf(SWITCH_BUZZ_SINGLE, SWITCH_BUZZ_DOUBLE, SWITCH_BUZZ_TRIPLE, SWITCH_BUZZ_LONG)
+    /** All selectable switch-buzz patterns (the full vibe palette), in display order. */
+    val SWITCH_BUZZ_OPTIONS = qhybrid.android.notifications.VibePatterns.ALL
 
     /**
-     * The DEFAULT per-mode switch buzz (all distinct out of the box): phone=single, Lyrion=double,
-     * tracker=triple, timer=long. Unknown modes fall back to [SWITCH_BUZZ_SINGLE].
+     * The DEFAULT per-mode switch buzz: phone=single, Lyrion=double, tracker=triple (the three soft
+     * presets), and timer=strong single so the timer mode stands out. Unknown modes fall back to
+     * [SWITCH_BUZZ_SINGLE].
      */
     val SWITCH_BUZZ_DEFAULTS: Map<String, Int> = mapOf(
         MODE_MUSIC_PHONE to SWITCH_BUZZ_SINGLE,
         MODE_MUSIC_LYRION to SWITCH_BUZZ_DOUBLE,
         MODE_TRACKER to SWITCH_BUZZ_TRIPLE,
-        MODE_TIMER to SWITCH_BUZZ_LONG,
+        MODE_TIMER to SWITCH_BUZZ_STRONG_SINGLE,
     )
 
-    /** Clamp/snap an arbitrary value onto the 4 valid switch-buzz patterns; invalid → SINGLE. */
+    /** Clamp/snap an arbitrary value onto a valid switch-buzz pattern (0..9); invalid → SINGLE. */
     fun normalizeSwitchBuzz(pattern: Int): Int =
         if (pattern in SWITCH_BUZZ_OPTIONS) pattern else SWITCH_BUZZ_SINGLE
 
@@ -439,13 +443,13 @@ object SettingsVocabulary {
     /** Short hand-hold (ms) written for a reserved buzz entry when hand movement is OFF. */
     const val RESERVED_BUZZ_SHORT_DURATION_MS = 500
 
-    /** Human label for a switch-buzz pattern (single/double/triple/long); falls back gracefully. */
-    fun switchBuzzLabel(pattern: Int): String = when (normalizeSwitchBuzz(pattern)) {
-        SWITCH_BUZZ_DOUBLE -> "Double buzz"
-        SWITCH_BUZZ_TRIPLE -> "Triple buzz"
-        SWITCH_BUZZ_LONG -> "Long buzz"
-        else -> "Single buzz"
-    }
+    /**
+     * Human label for a switch-buzz pattern — reuses the shared
+     * [qhybrid.android.notifications.VibePatterns] labels so the dropdown shows the SAME names as
+     * the notification vibe picker (e.g. "Single (Email)", "Strong single"). Falls back gracefully.
+     */
+    fun switchBuzzLabel(pattern: Int): String =
+        qhybrid.android.notifications.VibePatterns.label(normalizeSwitchBuzz(pattern))
 
     /** Human label for a mode; falls back gracefully. */
     fun modeLabel(mode: String): String = when (normalizeMode(mode)) {

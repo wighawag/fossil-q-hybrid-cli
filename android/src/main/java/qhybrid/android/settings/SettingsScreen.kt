@@ -692,7 +692,7 @@ private fun SwitchBuzzPicker(
             label = { Text("Buzz") },
             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
             modifier = Modifier
-                .width(160.dp)
+                .width(190.dp)
                 .menuAnchor(MenuAnchorType.PrimaryNotEditable),
         )
         ExposedDropdownMenu(

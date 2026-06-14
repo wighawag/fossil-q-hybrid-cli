@@ -725,7 +725,7 @@ class SettingsViewModelTest : DbTestBase() {
 
         // Defaults (no overrides): distinct per mode.
         assertEquals(SettingsVocabulary.SWITCH_BUZZ_SINGLE, s0.switchBuzzFor(SettingsVocabulary.MODE_MUSIC_PHONE))
-        assertEquals(SettingsVocabulary.SWITCH_BUZZ_LONG, s0.switchBuzzFor(SettingsVocabulary.MODE_TIMER))
+        assertEquals(SettingsVocabulary.SWITCH_BUZZ_STRONG_SINGLE, s0.switchBuzzFor(SettingsVocabulary.MODE_TIMER))
 
         // Override one mode; it sticks, the others keep their defaults.
         model.setMultiFunctionSwitchBuzz(SettingsVocabulary.MODE_TIMER, SettingsVocabulary.SWITCH_BUZZ_DOUBLE)
