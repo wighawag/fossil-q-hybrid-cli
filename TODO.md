@@ -103,6 +103,23 @@ Watch: Fossil Q Commuter (HW.0.0), Firmware HW0.0.2.9r.v3, Fossil protocol (2.x)
   observed `0x01` (REQUEST). If an ack write exists, replicate it in `FossilQAdapter.handleButtonEvent`
   (write the ack for REQUEST-opcode events) — that should stop the re-send entirely and remove the
   reliance on de-dup. Update FINDINGS with the ack frame format + provenance.
+- [ ] **BUG: TIMER-mode button press can take ~20s before the alarm reaches the watch (sync
+  latency/queuing).** After the multi-buzz fix (commit 6d8432f), one press now correctly arms ONE
+  timer, BUT a 2nd press a few seconds later showed a ~20s gap between `armed timer alarm slot 15`
+  (instant, on the IO scope) and the alarm file PUT actually starting on BLE (`WRITE 3dda0003`).
+  First press was instant; the second stalled. Every TIMER press fires a FULL `SyncSection.ALARMS`
+  file sync (a ~1.5s, 3-write BLE transaction) on the single `ble-worker`, so back-to-back presses
+  serialize and can stack; the watch's async re-send (still happening intermittently) and the 12s
+  `UPLOAD_TIMEOUT_MS` / 30s adapter `REQUEST_TIMEOUT_SECS` may compound it. The 20s doesn't match a
+  single constant exactly → looks like queuing/contention, not one timeout.
+  CAPTURE NEEDED (service tag included): `adb logcat -c && adb logcat -v time -s FossilQ-Tracker
+  FossilQ-Svc AndroidBleTransport`, press twice a few seconds apart, and inspect around the gap:
+  when `syncNow:` fires vs when the `WRITE` starts, any `sync done` / `alarm upload timed out` /
+  `ERROR`, and whether a prior sync is still running when the next press lands.
+  LIKELY FIX DIRECTION: the timer only needs slot 15 — avoid a full ALARMS re-sync per press
+  (debounce/coalesce rapid timer presses into ONE alarm push, or write just the timer slot), and/or
+  make sure a press doesn't queue behind a stale/abandoned sync. Investigate after the root-cause
+  ack work above (the re-send amplifies any per-press cost).
 - [ ] ~~BUG: one physical button press sometimes fires MULTIPLE events (multi-buzz in succession).~~
   Repro (Android, hardware): press the mode-SWITCH button once and instead of one buzz for the
   next mode, the watch buzzes several patterns in succession (e.g. from Lyrion it should buzz a
