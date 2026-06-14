@@ -75,12 +75,12 @@ Watch: Fossil Q Commuter (HW.0.0), Firmware HW0.0.2.9r.v3, Fossil protocol (2.x)
   data into the void, and the put hung until the 12s caller timeout. Now a non-SUCCESS accept fails
   FAST (no data, queue advances). See FINDINGS "File-PUT 12s stall". Test:
   `AdapterFilePutTest.putAcceptWithBusyStatus_failsFastWithoutTransmitting`.
-- [ ] **FOLLOW-UP: actively CLEAR a stale half-open file handle instead of just failing fast.** The
-  fail-fast fix stops the stall but the watch still holds the stale handle, so the NEXT open may also
-  be rejected "busy" until the watch's own timeout clears it. On an OPERATION_IN_PROGRESS accept,
-  send `ABORT_FILE(9)` for the handle then retry the open ONCE (mirror the official app's recovery).
-  Verify against a btsnoop of the official app recovering from a busy handle. Likely the same
-  watch-state drift as the async-event re-send + "buttons go dead" (a re-provision clears all).
+- [x] **DONE: actively CLEAR a stale half-open file handle (ABORT_FILE(9) + reopen).** The stale
+  handle survived a full reconnect (fresh connect's FIRST alarm put got status 0x02), so fail-fast
+  alone meant ALARMS could never upload. `FilePutRawRequest` now aborts the wedged handle then
+  re-opens once on an OPERATION_IN_PROGRESS accept; the self-inflicted abort ack is ignored during
+  recovery. Tests in `AdapterFilePutTest`. Still worth a btsnoop of the official app to confirm its
+  recovery matches; the abort+reopen makes the alarm path self-heal regardless.
 
 ### Button Configuration
 - [ ] Read current button config (ButtonConfigurationGetRequest)

@@ -102,6 +102,14 @@ public class FilePutRawRequest extends FossilRequest {
     private long lastSizeWritten = -1;
     private int noProgressRetries = 0;
     private int verifyRetries = 0;
+    // Recovery from a wedged handle: if PUT_FILE is rejected with OPERATION_IN_PROGRESS (the watch
+    // still holds the handle half-open from an earlier aborted/timed-out put — observed to survive
+    // even a reconnect), send ABORT_FILE(9) to clear it then retry the open ONCE. busyRetries bounds
+    // this; recoveringFromBusy suppresses the self-inflicted ABORT ack (0x89) so it isn't treated as
+    // a watch-initiated failure.
+    private static final int BUSY_RETRY_THRESHOLD = 1;
+    private int busyRetries = 0;
+    private boolean recoveringFromBusy = false;
 
     public FilePutRawRequest(short handle, byte[] file, FossilWatchAdapter adapter) {
         this.handle = handle;
@@ -194,12 +202,25 @@ public class FilePutRawRequest extends FossilRequest {
         byte acceptStatus = value[3];
         ResultCode acceptCode = ResultCode.fromCode(acceptStatus);
         if (!acceptCode.inidicatesSuccess()) {
+            // OPERATION_IN_PROGRESS: the watch still holds this handle half-open (a prior put never
+            // cleanly closed). Send ABORT_FILE(9) to release it then retry the open ONCE, rather
+            // than failing permanently — otherwise the handle stays wedged across reconnects and this
+            // file can NEVER upload (observed on-device 2026-06-14 for ALARMS handle 0x0A).
+            if (acceptCode == ResultCode.OPERATION_IN_PROGRESS && busyRetries < BUSY_RETRY_THRESHOLD) {
+                busyRetries++;
+                recoveringFromBusy = true;
+                PUTLOG.warn("FilePut[0x{}] open busy (OPERATION_IN_PROGRESS) — ABORT_FILE(9) + retry open ({}/{})",
+                        String.format("%04X", handle), busyRetries, BUSY_RETRY_THRESHOLD);
+                abortThenReopen();
+                return;
+            }
             PUTLOG.warn("FilePut[0x{}] PUT_FILE rejected: status {} ({}) — not transmitting; failing fast",
                     String.format("%04X", handle), acceptCode, acceptStatus);
             state = UploadState.FAILED;
             onFilePut(false);
             return;
         }
+        recoveringFromBusy = false;
         state = UploadState.UPLOADING;
 
         WriteBatch transactionBuilder = adapter.getDeviceSupport().createWriteBatch("file upload");
@@ -348,8 +369,36 @@ public class FilePutRawRequest extends FossilRequest {
         onFilePut(true);
     }
 
-    /** ABORT_FILE(0x89): the watch aborted the transfer — honest failure. */
+    /**
+     * Send ABORT_FILE(9) to clear a half-open handle, then immediately re-send the PUT_FILE(3) open
+     * to retry the transfer. Both control writes are queued in order on 3dda0003.
+     */
+    private void abortThenReopen() {
+        ByteBuffer abort = ByteBuffer.allocate(3).order(ByteOrder.LITTLE_ENDIAN);
+        abort.put((byte) 0x09);
+        abort.putShort(this.handle);
+        // Re-send the original PUT_FILE(3) open (full file, offset 0) — same framing as the first try.
+        this.resumeOffset = 0;
+        ByteBuffer open = ByteBuffer.allocate(15).order(ByteOrder.LITTLE_ENDIAN);
+        open.put((byte) 0x03);
+        open.putShort(1, this.handle);
+        open.putInt(3, 0);
+        open.putInt(7, (int) this.totalLength);
+        open.putInt(11, (int) this.totalLength);
+        adapter.getDeviceSupport().createWriteBatch("file abort+reopen")
+                .write(CONTROL_CHARACTERISTIC, abort.array())
+                .write(CONTROL_CHARACTERISTIC, open.array())
+                .queue();
+    }
+
+    /** ABORT_FILE(0x89): the watch aborted the transfer — honest failure (unless it's the ack to
+     *  our OWN abort during busy-recovery, which we ignore and wait for the re-opened PUT accept). */
     private void handleAbort(byte[] value) {
+        if (recoveringFromBusy) {
+            PUTLOG.info("FilePut[0x{}] ABORT ack during busy-recovery — ignoring (awaiting re-open accept)",
+                    String.format("%04X", handle));
+            return;
+        }
         PUTLOG.warn("FilePut[0x{}] WATCH ABORT (control type 9) in state {}",
                 String.format("%04X", handle), state);
         state = UploadState.FAILED;

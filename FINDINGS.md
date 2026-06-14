@@ -2558,10 +2558,15 @@ the caller gets an immediate honest failure and the serial queue advances at onc
 stalling 12s. Status 0 (SUCCESS) is unchanged. Covered by
 `AdapterFilePutTest.putAcceptWithBusyStatus_failsFastWithoutTransmitting`.
 
-### Still open (follow-up)
-This stops the STALL but not the CAUSE: the watch keeps a stale half-open handle. We don't yet send
-an ABORT_FILE(9)/cleanup to clear it before re-opening, so a retry may still see "busy" until the
-watch's own timeout clears it. TODO: on an OPERATION_IN_PROGRESS accept, send ABORT_FILE(9) for the
-handle then retry the open once (mirror the official app's recovery). Likely related to the same
-watch-state drift as "Buttons go dead" + the async-event re-send (a clean re-provision clears all of
-them).
+### Recovery (follow-up DONE)
+The stale handle survives even a full disconnect/reconnect: on a FRESH connection the very FIRST
+alarm put already got `83 .. 0a 02` (logcat 2026-06-14, 20:37), so fail-fast alone meant the ALARMS
+file could NEVER upload. Fix: on an OPERATION_IN_PROGRESS accept, `FilePutRawRequest` now sends
+**ABORT_FILE(9)** to release the handle, then re-sends **PUT_FILE(3)** to retry the open ONCE
+(`abortThenReopen`). The watch's ack to our OWN abort (0x89) is ignored during recovery
+(`recoveringFromBusy`) so it isn't mistaken for a watch-initiated failure. Still busy after the
+retry → fail fast. Covered by `AdapterFilePutTest.putAcceptBusy_abortsAndReopens_thenCompletesOnRetry`
+and `putAcceptBusyTwice_failsAfterOneRetry`.
+
+Still the same underlying watch-state drift as "Buttons go dead" + the async-event re-send (a clean
+re-provision clears all of them); the abort+reopen makes the alarm path self-heal without one.

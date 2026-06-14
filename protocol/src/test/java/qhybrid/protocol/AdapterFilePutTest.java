@@ -156,6 +156,69 @@ public class AdapterFilePutTest {
                 "a non-SUCCESS PUT accept must NOT transmit data chunks");
     }
 
+    @Test
+    void putAcceptBusy_abortsAndReopens_thenCompletesOnRetry() throws Exception {
+        // On a wedged handle (status 0x02 OPERATION_IN_PROGRESS), the put must ABORT_FILE(9) to clear
+        // it, re-open PUT_FILE(3), and complete on the retry — so a stale handle that survives even a
+        // reconnect (observed on-device 2026-06-14) can still recover instead of failing forever.
+        FakeBleTransport t = new FakeBleTransport();
+        t.connect("AA:BB:CC:DD:EE:FF");
+        FossilQAdapter adapter = new FossilQAdapter(t);
+        forceFossilProtocol(adapter);
+
+        adapter.uploadNotificationFilterWithPattern((byte) 4, (short) 90, (short) 90);
+        int dataBefore = t.writesTo(FakeBleTransport.UUID_CHAR_DATA).size();
+        int ctrlBefore = t.writesTo(FakeBleTransport.UUID_CHAR_CONTROL).size();
+
+        // 1st accept is BUSY → no data; an ABORT(9) + a re-open PUT(3) are written instead.
+        t.injectNotification(FileTransferResponder.CONTROL,
+                FileTransferResponder.acceptFrame(NOTIFICATION_FILTER_HANDLE, (byte) 0x02));
+        assertEquals(dataBefore, t.writesTo(FakeBleTransport.UUID_CHAR_DATA).size(),
+                "busy accept must not transmit data");
+        var ctrl = t.writesTo(FakeBleTransport.UUID_CHAR_CONTROL);
+        assertEquals(ctrlBefore + 2, ctrl.size(), "busy → ABORT(9) + re-open PUT(3)");
+        assertEquals((byte) 0x09, ctrl.get(ctrl.size() - 2).data[0], "first recovery write = ABORT_FILE(9)");
+        assertEquals((byte) 0x03, ctrl.get(ctrl.size() - 1).data[0], "second recovery write = PUT_FILE(3)");
+
+        // The watch acks our ABORT (0x89) — must be IGNORED during recovery (not a failure).
+        java.nio.ByteBuffer ab = java.nio.ByteBuffer.allocate(5).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        ab.put((byte) 0x89); ab.putShort(NOTIFICATION_FILTER_HANDLE); ab.put((byte) 0x00); ab.put((byte) 0x00);
+        t.injectNotification(FileTransferResponder.CONTROL, ab.array());
+
+        // 2nd accept SUCCEEDS → data flows, then EOF_REACH + VERIFY complete the put.
+        t.injectNotification(FileTransferResponder.CONTROL,
+                FileTransferResponder.acceptFrame(NOTIFICATION_FILTER_HANDLE));
+        byte[] payload = reassemble(t.writesTo(FakeBleTransport.UUID_CHAR_DATA));
+        assertTrue(payload.length > 0, "retry accept must transmit the data chunks");
+        t.injectNotification(FileTransferResponder.CONTROL,
+                FileTransferResponder.eofReachFrame(NOTIFICATION_FILTER_HANDLE, payload));
+        t.injectNotification(FileTransferResponder.CONTROL,
+                FileTransferResponder.verifyFrame(NOTIFICATION_FILTER_HANDLE));
+        // A VERIFY(4) write proves we reached completion on the retry.
+        boolean sentVerify = t.writesTo(FakeBleTransport.UUID_CHAR_CONTROL).stream()
+.anyMatch(w -> w.data.length >= 1 && w.data[0] == (byte) 0x04);
+        assertTrue(sentVerify, "the retry must reach VERIFY_FILE(4) (completed)");
+    }
+
+    @Test
+    void putAcceptBusyTwice_failsAfterOneRetry() throws Exception {
+        // If the handle is STILL busy after the abort+reopen, fail fast (bounded to one retry).
+        FakeBleTransport t = new FakeBleTransport();
+        t.connect("AA:BB:CC:DD:EE:FF");
+        FossilQAdapter adapter = new FossilQAdapter(t);
+        forceFossilProtocol(adapter);
+
+        adapter.uploadNotificationFilterWithPattern((byte) 4, (short) 90, (short) 90);
+        // 1st busy → abort+reopen. 2nd busy → fail fast, no data ever sent.
+        t.injectNotification(FileTransferResponder.CONTROL,
+                FileTransferResponder.acceptFrame(NOTIFICATION_FILTER_HANDLE, (byte) 0x02));
+        int dataAfterFirst = t.writesTo(FakeBleTransport.UUID_CHAR_DATA).size();
+        t.injectNotification(FileTransferResponder.CONTROL,
+                FileTransferResponder.acceptFrame(NOTIFICATION_FILTER_HANDLE, (byte) 0x02));
+        assertEquals(dataAfterFirst, t.writesTo(FakeBleTransport.UUID_CHAR_DATA).size(),
+                "a second busy accept must not transmit data (bounded retry → fail)");
+    }
+
     /** Verify the 32-byte notification filter entry layout + null-terminated CRC. */
     private static void assertFilterEntry(byte[] e, String pkg, byte vibe, short hourDeg, short minDeg) {
         java.nio.ByteBuffer b = java.nio.ByteBuffer.wrap(e).order(java.nio.ByteOrder.LITTLE_ENDIAN);
