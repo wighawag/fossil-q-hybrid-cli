@@ -76,6 +76,36 @@ Watch: Fossil Q Commuter (HW.0.0), Firmware HW0.0.2.9r.v3, Fossil protocol (2.x)
 - [x] Multi-button press detection (SINGLE, DOUBLE) — firmware handles for MUSIC_CONTROL; software timing added for FORWARD_TO_PHONE (ButtonGestureDetector in FossilQAdapter). Uses 400ms double-press window (configurable via `--gesture-window`). RING_PHONE events delayed until gesture resolved; all other events unchanged.
 - [x] Mode toggle support — multi-entry button config via ButtonConfigBuilder. `mode_toggle` keyword + `+` syntax for custom combos. Up to 5+ entries confirmed working (TZ+DATE+ALARM+STEP_GOAL+LAST_NOTIFICATION). Entries without data (no alarm, no notification, 0% steps) are silently skipped. GOAL_TRACKING incompatible with toggle (error vibration). See FINDINGS.md #22.
 - [ ] Take a photo support — needs phone-side camera trigger implementation
+- [ ] **Capture the real TWENTY_FOUR_HOUR (24h) dial-mode bytes from the official Fossil app.**
+  The 24h sub-eye position does NOT trigger in a mode-toggle cycle on a 5-position dial: on a
+  cycle like `time2, alert, alarm, 24h, date`, the 24h press makes the dial return but the
+  hour/minute hands do NOT move (the entry is silently skipped), then the next press shows date.
+  ROOT CAUSE: the 24h entries in `protocol/.../ButtonConfigBuilder.java`
+  (`TWENTY_FOUR_HOUR_DATA` / `TWENTY_FOUR_HOUR_SEQ_DATA`, headers `01 01 1E 00` / `01 02 1E 00`)
+  were **"constructed by analogy" with ALARM/SECOND_TIMEZONE, never captured from the official
+  app** — FINDINGS.md says *"TWENTY_FOUR_HOUR (appId 0x1E) is untested."* Every dial entry that
+  works (Time2, Date, Alarm, Alert) is marked *"Captured from official Fossil app BLE trace."*
+  HOW TO CAPTURE (mirrors the existing FINDINGS captures, e.g. bugreport5 DATE/ALARM):
+    1. On a 5-position-dial watch (Q Activist or similar that HAS a labelled 24HR position),
+       use the **official Fossil app** to assign a button a mode-toggle cycle that INCLUDES the
+       24-hour position (ideally `Time 2 → Alert → Alarm → 24HR → Date` to match the repro).
+    2. Enable Android Bluetooth HCI snoop log (Developer options → "Enable Bluetooth HCI snoop
+       log"), reproduce the app pushing the button config, then pull the btsnoop log
+       (`adb bugreport` or `/sdcard/.../btsnoop_hci.log`).
+    3. In Wireshark, find the `SETTINGS_BUTTONS` (file handle 0x0600 / 0x0C00) file-put to the
+       data characteristic; isolate the per-entry payload whose header is `01 02 1E 00`
+       (SEQUENCED, used inside a toggle) — note its exact byte length + bytes incl. the trailing
+       CRC. Also grab `01 01 1E 00` (STANDARD) if a standalone 24h button was captured.
+    4. Replace `TWENTY_FOUR_HOUR_SEQ_DATA` (and `_DATA`) in `ButtonConfigBuilder.java` with the
+       captured bytes; update `protocol/.../golden/Wp7ButtonCompilerTest.java` lengths
+       (currently asserts 47 STANDARD / 54 SEQUENCED — verify against the capture) and add a
+       golden assertion of the captured bytes. Update FINDINGS.md (#1205-ish dial-entry table +
+       the "TWENTY_FOUR_HOUR is untested" note) with the verified payload + provenance.
+    5. Sanity-check on hardware: the documented repro cycle should now show the 24h sub-eye
+       position instead of being skipped.
+  Until captured, consider hiding/flagging 24h as experimental in the Android dial-mode picker so
+  it doesn't silently break a user's configured cycle (see `ButtonDialModes` /
+  `ButtonsScreen.DialModeOrderEditor`).
 
 ### Watch Events & Monitoring
 - [x] `monitor` command — long-running NDJSON event stream to stdout, Ctrl+C to stop

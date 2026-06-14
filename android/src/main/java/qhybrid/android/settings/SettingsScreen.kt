@@ -187,6 +187,15 @@ fun SettingsContent(
 ) {
     var note by remember { mutableStateOf<String?>(null) }
 
+    // Surface each action note as a Toast too, so a confirmation (e.g. the inactivity-nudge apply)
+    // is visible immediately rather than only as small text at the bottom of the scroll.
+    val noteContext = LocalContext.current
+    LaunchedEffect(note) {
+        note?.let {
+            android.widget.Toast.makeText(noteContext, it, android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+
     // WP-SYNCFIX: blocking "Saving to watch…" modal while a settings apply is in flight.
     SyncSavingDialog(progress)
 
@@ -376,8 +385,9 @@ private fun NudgeCard(
 ) {
     SettingCard("Inactivity nudge") {
         Text(
-            "Reminds you to move after a period of inactivity. Saved app-side; applying it to " +
-                "the watch is on-device-pending (WP14).",
+            "Reminds you to move after a period of inactivity: the watch buzzes ON ITS OWN once it " +
+                "has been idle this long (the phone just configures it; no phone needed after). " +
+                "Saved app-side and pushed to the watch when one is connected.",
             style = MaterialTheme.typography.labelSmall,
         )
         Row(
@@ -388,8 +398,8 @@ private fun NudgeCard(
             Switch(
                 checked = state.nudgeEnabled,
                 onCheckedChange = {
-                    val wired = onSetNudge(it, state.nudgeMinutes)
-                    onNote(applyNote("Inactivity nudge", wired))
+                    val pushed = onSetNudge(it, state.nudgeMinutes)
+                    onNote(nudgeNote(it, state.nudgeMinutes, pushed, state.hasActiveWatch))
                 },
             )
         }
@@ -403,8 +413,8 @@ private fun NudgeCard(
                     val next = SettingsVocabulary.normalizeNudgeMinutes(
                         state.nudgeMinutes - SettingsVocabulary.NUDGE_STEP_MINUTES
                     )
-                    val wired = onSetNudge(state.nudgeEnabled, next)
-                    onNote(applyNote("Inactivity nudge", wired))
+                    val pushed = onSetNudge(state.nudgeEnabled, next)
+                    onNote(nudgeNote(state.nudgeEnabled, next, pushed, state.hasActiveWatch))
                 },
             ) { Text("− ${SettingsVocabulary.NUDGE_STEP_MINUTES}m") }
             OutlinedButton(
@@ -412,13 +422,26 @@ private fun NudgeCard(
                     val next = SettingsVocabulary.normalizeNudgeMinutes(
                         state.nudgeMinutes + SettingsVocabulary.NUDGE_STEP_MINUTES
                     )
-                    val wired = onSetNudge(state.nudgeEnabled, next)
-                    onNote(applyNote("Inactivity nudge", wired))
+                    val pushed = onSetNudge(state.nudgeEnabled, next)
+                    onNote(nudgeNote(state.nudgeEnabled, next, pushed, state.hasActiveWatch))
                 },
             ) { Text("+ ${SettingsVocabulary.NUDGE_STEP_MINUTES}m") }
         }
     }
 }
+
+/**
+ * Build a clear, state-aware inactivity-nudge confirmation: distinguishes "pushed to the watch",
+ * "saved but no watch connected", and the disabled case, so the user knows whether the watch
+ * actually received the config.
+ */
+private fun nudgeNote(enabled: Boolean, minutes: Int, pushed: Boolean, hasWatch: Boolean): String =
+    when {
+        !hasWatch -> "Inactivity nudge saved. Connect your watch to apply it."
+        !enabled -> "Inactivity nudge turned off on the watch."
+        pushed -> "Inactivity nudge applied: watch will buzz after $minutes min idle."
+        else -> "Inactivity nudge saved (watch apply could not be confirmed)."
+    }
 
 // ---- calendar alarm ring offset (WP13 — APP PREF, applied in CalendarRefresher) ----
 
