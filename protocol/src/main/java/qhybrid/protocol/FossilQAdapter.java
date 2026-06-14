@@ -110,6 +110,18 @@ public class FossilQAdapter {
     // Button gesture detection for FORWARD_TO_PHONE buttons
     private final ButtonGestureDetector gestureDetector = new ButtonGestureDetector();
 
+    // Async-event de-duplication (3dda0006). HARDWARE FACT (logcat 2026-06-14): a single physical
+    // button press can make the watch emit the SAME async-event frame ~10x in a few ms (identical
+    // opcode+eventType+sequence+data). Without de-dup each copy drives a full effect (e.g. arm a
+    // timer + an ALARMS sync), so one press becomes a buzz/sync storm. The watch increments the
+    // per-event `sequence` byte for DISTINCT user actions, so a repeat of the same frame within a
+    // short window is a retransmit/firmware-repeat of ONE action and is dropped. Scoped to the
+    // discrete-ACTION event types (music 0x05 / micro_app 0x08 / app-notification 0x04); heartbeats,
+    // sync frames, JSON files, auth, etc. are never de-duped. See FINDINGS "multi-buzz per press".
+    private static final long ASYNC_EVENT_DEDUP_WINDOW_MS = 750;
+    private byte[] lastAsyncEventFrame;
+    private long lastAsyncEventAtMs;
+
     // Callbacks for CLI
     private Runnable onInitialized;
     private java.util.function.Consumer<byte[]> onActivityData;
@@ -1981,6 +1993,13 @@ public class FossilQAdapter {
         byte opCode = value[0];
         byte eventType = value[1];
         byte sequence = value[2];
+
+        // Drop a duplicate of the SAME frame (opcode+eventType+sequence+data) within the de-dup
+        // window, but ONLY for discrete-action event types (the watch repeats these on one press).
+        if (isDedupedActionEvent(eventType) && isDuplicateAsyncEvent(value)) {
+            LOG.debug("Dropping duplicate async event (seq={}, {} bytes)", sequence, value.length);
+            return;
+        }
         byte[] eventData = (value.length > 3) ? java.util.Arrays.copyOfRange(value, 3, value.length) : new byte[0];
 
         String opCodeStr = (opCode == 0x01) ? "REQUEST" : (opCode == 0x02) ? "NOTIFY" : String.format("0x%02X", opCode);
@@ -2048,6 +2067,35 @@ public class FossilQAdapter {
                         + ",\"dataHex\":\"" + bytesToHex(eventData)
                         + "\",\"timestamp\":\"" + nowIso8601() + "\"}");
         }
+    }
+
+    /**
+     * Whether [eventType] is a discrete USER-ACTION async event that the watch may repeat for a
+     * single press (so it should be de-duplicated). Streaming/periodic types (heartbeat, sync,
+     * JSON-file, auth, time/battery/alarm sync) are NOT de-duped — a same-sequence repeat there is
+     * meaningful or harmless.
+     */
+    private static boolean isDedupedActionEvent(byte eventType) {
+        return eventType == 0x04   // APP_NOTIFICATION_EVENT (dismiss/accept/reply)
+                || eventType == 0x05   // MUSIC_EVENT (play/pause/next/prev/volume + tracker/timer)
+                || eventType == 0x08;  // MICRO_APP_EVENT (button micro-app presses)
+    }
+
+    /**
+     * True if [frame] is byte-identical to the previous action frame AND arrived within
+     * {@link #ASYNC_EVENT_DEDUP_WINDOW_MS} of it — i.e. a retransmit/firmware-repeat of the same
+     * press (same opcode+eventType+sequence+data). Records [frame] as the new "last" either way so
+     * a genuine next press (different sequence/data, or after the window) is always handled.
+     * Single-threaded on the BLE notification callback, so no locking is needed.
+     */
+    private boolean isDuplicateAsyncEvent(byte[] frame) {
+        long nowMs = System.currentTimeMillis();
+        boolean duplicate = lastAsyncEventFrame != null
+                && (nowMs - lastAsyncEventAtMs) <= ASYNC_EVENT_DEDUP_WINDOW_MS
+                && java.util.Arrays.equals(lastAsyncEventFrame, frame);
+        lastAsyncEventFrame = frame;
+        lastAsyncEventAtMs = nowMs;
+        return duplicate;
     }
 
     private void handleJsonFileEvent(byte sequence, byte[] eventData) {

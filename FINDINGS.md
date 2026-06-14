@@ -2487,3 +2487,41 @@ the battery.
   WP-WATCHADMIN remove+re-add path) and surface it as the recommended fix when buttons misbehave.
 - Worth understanding WHAT corrupts the on-watch button state over time (a failed/partial
   `SETTINGS_BUTTONS` file-put? an auth drift?) so it can be prevented, not just recovered from.
+
+---
+
+## Multi-buzz per press: the WATCH re-sends the same async event ~10x (2026-06-14)
+
+### Symptom
+One physical button press triggered ~7-10 identical effects (e.g. in TIMER mode: arm timer + an
+ALARMS sync, repeated), so the watch buzzed several patterns in succession and a sync storm
+followed (an alarm upload even timed out). Intermittent; worse after the watch has been used a
+while.
+
+### Root cause (logcat, decisive)
+Captured with the transport tag enabled. ONE short press produced, at the GATT layer, BEFORE any
+app logic:
+```
+D/AndroidBleTransport: NOTIFY 3dda0006 <- 01 05 14 02   (x10, within ~6 ms)
+```
+i.e. the **watch firmware re-sent the SAME async-event frame ~10 times** on the button/event
+characteristic (`3dda0006`): `op=01` (NOTIFY-ish), `eventType=05` (MUSIC), `sequence=0x14`,
+`data=02` (TOGGLE_PLAY_PAUSE → mapped to the TIMER/tracker SHORT gesture). All 10 copies identical.
+
+So it is NOT duplicate Android controllers/transports (a single transport delivered 10 frames) and
+NOT the battery. The watch increments the per-event `sequence` byte for DISTINCT user actions, so a
+same-`sequence` identical frame is a retransmit/firmware-repeat of ONE press. This is consistent
+with the watch-state drift documented above ("Buttons go dead") that a clean re-provision clears.
+
+### Fix
+De-duplicate at the adapter chokepoint `FossilQAdapter.handleButtonEvent`: drop an async-event
+frame that is byte-identical (opcode+eventType+sequence+data) to the previous one AND arrived within
+a 750ms window. Scoped to the discrete-ACTION event types only (MUSIC 0x05 / MICRO_APP 0x08 /
+APP_NOTIFICATION 0x04); heartbeats, sync frames, JSON-file, auth, time/battery/alarm-sync events are
+never de-duped. A different `sequence` (a genuine next press) or a repeat after the window is always
+handled. No wire/format change. Covered by `AdapterAsyncEventDedupTest`.
+
+This also explains the earlier "mode-switch button sends multiple buzz patterns in succession":
+same firmware re-send, the rotation advanced several steps (one per duplicate), each buzzing its
+mode's pattern. Removing the switch-buzz debounce was still correct — the duplication is upstream
+of it, and is now fixed at the source.

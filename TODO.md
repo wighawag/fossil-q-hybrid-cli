@@ -76,7 +76,17 @@ Watch: Fossil Q Commuter (HW.0.0), Firmware HW0.0.2.9r.v3, Fossil protocol (2.x)
 - [x] Multi-button press detection (SINGLE, DOUBLE) — firmware handles for MUSIC_CONTROL; software timing added for FORWARD_TO_PHONE (ButtonGestureDetector in FossilQAdapter). Uses 400ms double-press window (configurable via `--gesture-window`). RING_PHONE events delayed until gesture resolved; all other events unchanged.
 - [x] Mode toggle support — multi-entry button config via ButtonConfigBuilder. `mode_toggle` keyword + `+` syntax for custom combos. Up to 5+ entries confirmed working (TZ+DATE+ALARM+STEP_GOAL+LAST_NOTIFICATION). Entries without data (no alarm, no notification, 0% steps) are silently skipped. GOAL_TRACKING incompatible with toggle (error vibration). See FINDINGS.md #22.
 - [ ] Take a photo support — needs phone-side camera trigger implementation
-- [ ] **BUG: one physical button press sometimes fires MULTIPLE events (multi-buzz in succession).**
+- [x] **FIXED: one physical button press fired MULTIPLE events (multi-buzz in succession).**
+  ROOT CAUSE (confirmed by logcat 2026-06-14): the WATCH itself re-sends the SAME async-event frame
+  on `3dda0006` ~10x within a few ms for ONE press (transport log showed `NOTIFY 3dda0006 <- 01 05
+  14 02` x10 — identical opcode+eventType+sequence+data — before any app logic). Each copy drove a
+  full effect (arm timer + ALARMS sync), so one press became a buzz/sync storm (an alarm upload even
+  timed out). Not duplicate controllers, not the battery; consistent with the watch-state drift that
+  a re-provision clears. FIX: de-duplicate identical action-event frames within a 750ms window at the
+  adapter chokepoint (`FossilQAdapter.handleButtonEvent`), scoped to the discrete-action event types
+  (music 0x05 / micro_app 0x08 / app-notification 0x04). Covered by `AdapterAsyncEventDedupTest`.
+  (Below: the original investigation notes, kept for context.)
+- [ ] ~~BUG: one physical button press sometimes fires MULTIPLE events (multi-buzz in succession).~~
   Repro (Android, hardware): press the mode-SWITCH button once and instead of one buzz for the
   next mode, the watch buzzes several patterns in succession (e.g. from Lyrion it should buzz a
   single strong-single for Tracker, but it buzzed ~5-6 buzzes — looks like the rotation advanced
