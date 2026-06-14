@@ -111,15 +111,20 @@ public class FossilQAdapter {
     private final ButtonGestureDetector gestureDetector = new ButtonGestureDetector();
 
     // Async-event de-duplication (3dda0006). HARDWARE FACT (logcat 2026-06-14): a single physical
-    // button press can make the watch emit the SAME async-event frame ~10x in a few ms (identical
-    // opcode+eventType+sequence+data). Without de-dup each copy drives a full effect (e.g. arm a
-    // timer + an ALARMS sync), so one press becomes a buzz/sync storm. The watch increments the
-    // per-event `sequence` byte for DISTINCT user actions, so a repeat of the same frame within a
-    // short window is a retransmit/firmware-repeat of ONE action and is dropped. Scoped to the
-    // discrete-ACTION event types (music 0x05 / micro_app 0x08 / app-notification 0x04); heartbeats,
-    // sync frames, JSON files, auth, etc. are never de-duped. See FINDINGS "multi-buzz per press".
+    // button press can make the watch emit the SAME async event ~10-14x in a few ms. Without de-dup
+    // each copy drives a full effect (a buzz / arm-timer + sync), so one press becomes a storm.
+    //
+    // De-dup KEY = (opcode, eventType, SEQUENCE). The watch increments the per-event `sequence` byte
+    // for DISTINCT user actions, so any frame with the SAME (op,type,seq) within the window is a
+    // retransmit/firmware-repeat of ONE action. We key on the sequence (NOT the full frame bytes)
+    // because some event types — e.g. micro_app 0x08, the mode-switch/RING_PHONE button — carry
+    // trailing payload/checksum bytes that can differ between retransmits of the same press, which
+    // defeats whole-frame equality (observed: 0x05 music de-duped, but 0x08 button did NOT, causing
+    // a switch-button buzz storm + the watch wedging the play handle). Scoped to the discrete-ACTION
+    // event types (music 0x05 / micro_app 0x08 / app-notification 0x04); heartbeats, sync frames,
+    // JSON files, auth, etc. are never de-duped. See FINDINGS "multi-buzz per press".
     private static final long ASYNC_EVENT_DEDUP_WINDOW_MS = 750;
-    private byte[] lastAsyncEventFrame;
+    private int lastAsyncEventKey = Integer.MIN_VALUE;
     private long lastAsyncEventAtMs;
 
     // Callbacks for CLI
@@ -2089,11 +2094,13 @@ public class FossilQAdapter {
      * Single-threaded on the BLE notification callback, so no locking is needed.
      */
     private boolean isDuplicateAsyncEvent(byte[] frame) {
+        // Key = opcode<<16 | eventType<<8 | sequence (the three leading bytes). Ignores trailing
+        // payload/checksum bytes that can vary between retransmits of the SAME press.
+        int key = ((frame[0] & 0xFF) << 16) | ((frame[1] & 0xFF) << 8) | (frame[2] & 0xFF);
         long nowMs = System.currentTimeMillis();
-        boolean duplicate = lastAsyncEventFrame != null
-                && (nowMs - lastAsyncEventAtMs) <= ASYNC_EVENT_DEDUP_WINDOW_MS
-                && java.util.Arrays.equals(lastAsyncEventFrame, frame);
-        lastAsyncEventFrame = frame;
+        boolean duplicate = key == lastAsyncEventKey
+                && (nowMs - lastAsyncEventAtMs) <= ASYNC_EVENT_DEDUP_WINDOW_MS;
+        lastAsyncEventKey = key;
         lastAsyncEventAtMs = nowMs;
         return duplicate;
     }

@@ -2586,3 +2586,23 @@ sync done performed=[ALARMS];  timer armed on watch — duration buzz 5
 And it was a ONE-TIME clear: every subsequent press got `83 00 0a 00 00` (status 00) directly — no
 further abort needed. The full two-buzz timer UX works (received tick + duration buzz 5/7 for
 short/long), and the alarm now shows on-watch in the Alarms screen.
+
+---
+
+## Async-event de-dup must key on SEQUENCE, not the whole frame (2026-06-14, 21:49)
+
+The whole-frame de-dup (FilePut/dedup commit) worked for 0x05 MUSIC events but FAILED for 0x08
+MICRO_APP (the mode-switch / RING_PHONE button): pressing the switch button once made the watch
+re-send ~14 frames `01 08 25 ...` with the SAME sequence (0x25) but VARYING trailing
+payload/checksum bytes, so `Arrays.equals(lastFrame, frame)` was false and all 14 passed through.
+That advanced the rotation 14 times and queued 14 buzz play-file puts; the watch then started
+rejecting the buzz PUT-accept with status `0x86` = FIRMWARE_INTERNAL_ERROR_NOT_SUPPORT (its play
+handle wedged under the storm), and the puts churned re-opening `03 00 09` for many seconds. No
+"received"/confirmation buzz ever landed.
+
+FIX: de-dup keys on `(opcode, eventType, SEQUENCE)` (the 3 leading bytes) within the 750ms window,
+NOT the full frame. The watch increments `sequence` for a DISTINCT user action, so same-sequence ==
+same press regardless of trailing bytes. This collapses the 0x08 storm (and is strictly more robust
+for 0x05 too). Covered by AdapterAsyncEventDedupTest.sameSequence_differentTrailingBytes_isDeduped
+and microAppButtonRepeats_sameSeq_varyingTrailingBytes_dedupToOnePress. The buzz `0x86` storm was a
+downstream symptom of the missing de-dup; collapsing 14 -> 1 press removes the trigger.

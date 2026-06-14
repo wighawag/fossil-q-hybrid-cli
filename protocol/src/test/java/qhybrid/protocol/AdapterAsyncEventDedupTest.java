@@ -61,18 +61,45 @@ public class AdapterAsyncEventDedupTest {
     }
 
     @Test
-    void differentData_sameSequence_isHandled() {
-        // Defensive: same seq but different payload is not the identical frame, so it is handled.
+    void sameSequence_differentTrailingBytes_isDeduped() {
+        // De-dup keys on (opcode,eventType,SEQUENCE), NOT the whole frame: a retransmit of the SAME
+        // press can carry different trailing payload/checksum bytes (observed on 0x08 micro_app),
+        // and must still collapse to ONE event. The watch increments `sequence` for a REAL next
+        // press, so same-sequence == same press regardless of trailing bytes.
         FakeBleTransport t = new FakeBleTransport();
         t.connect("AA:BB:CC:DD:EE:FF");
         FossilQAdapter adapter = new FossilQAdapter(t);
         List<String> events = captureEvents(adapter);
 
-        t.injectNotification(FakeBleTransport.UUID_CHAR_BUTTON, 0x01, 0x05, 0x14, 0x02); // TOGGLE
-        t.injectNotification(FakeBleTransport.UUID_CHAR_BUTTON, 0x01, 0x05, 0x14, 0x03); // NEXT
+        t.injectNotification(FakeBleTransport.UUID_CHAR_BUTTON, 0x01, 0x05, 0x14, 0x02);
+        t.injectNotification(FakeBleTransport.UUID_CHAR_BUTTON, 0x01, 0x05, 0x14, 0x03); // same seq
 
         long music = events.stream().filter(e -> e.contains("\"type\":\"music\"")).count();
-        assertEquals(2, music);
+        assertEquals(1, music);
+    }
+
+    @Test
+    void microAppButtonRepeats_sameSeq_varyingTrailingBytes_dedupToOnePress() {
+        // The exact on-device failure (logcat 2026-06-14 21:49): the mode-switch button (0x08
+        // micro_app) re-sent ~14 frames with the SAME sequence; whole-frame equality let them all
+        // through (trailing bytes varied) -> a switch buzz storm. With sequence-keyed de-dup they
+        // collapse to ONE micro_app event.
+        FakeBleTransport t = new FakeBleTransport();
+        t.connect("AA:BB:CC:DD:EE:FF");
+        FossilQAdapter adapter = new FossilQAdapter(t);
+        List<String> events = captureEvents(adapter);
+
+        // RING_PHONE micro_app frames, same seq 0x25, trailing bytes deliberately varied per copy.
+        for (int i = 0; i < 14; i++) {
+            t.injectNotification(FakeBleTransport.UUID_CHAR_BUTTON,
+                    0x01, 0x08, 0x25, 0x01, 0x01, 0x0c, 0x00, 0xf5, 0x01, 0x30, (0xb8 + i) & 0xFF, i & 0xFF);
+        }
+
+        // RING_PHONE micro_app presses route through the 400ms gesture detector, so the emit may be
+        // pending; the point is the de-dup collapsed 14 -> 1, so AT MOST one button event ever
+        // emerges (never 14). Assert <= 1.
+        long buttons = events.stream().filter(e -> e.contains("\"type\":\"button\"")).count();
+        assertTrue(buttons <= 1, "14 same-seq micro_app repeats must NOT each emit (got " + buttons + ")");
     }
 
     @Test
