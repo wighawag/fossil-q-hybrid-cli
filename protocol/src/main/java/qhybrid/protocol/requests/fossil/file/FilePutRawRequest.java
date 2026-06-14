@@ -183,6 +183,23 @@ public class FilePutRawRequest extends FossilRequest {
         if (value.length < 5 || (value[0] & 0x0F) != 3) {
             throw new RuntimeException("wrong answer header");
         }
+        // The PUT-accept frame carries a STATUS byte at offset 3. ONLY status 0 (SUCCESS) means the
+        // watch actually opened the file and is ready for data. A non-zero status — e.g.
+        // OPERATION_IN_PROGRESS(2) when a PRIOR put on this handle timed out and the watch still has
+        // it half-open — means the open was REJECTED. Transmitting data anyway writes into the void:
+        // the watch never sends EOF_REACH, so the put just hangs until the caller's ~12s timeout
+        // (observed on-device 2026-06-14 for the timer ALARMS upload: accept = 83 .. 02). Fail FAST
+        // instead so the caller gets an honest, immediate failure (and the next attempt — once the
+        // watch's stale handle clears — can succeed) rather than a 12s stall.
+        byte acceptStatus = value[3];
+        ResultCode acceptCode = ResultCode.fromCode(acceptStatus);
+        if (!acceptCode.inidicatesSuccess()) {
+            PUTLOG.warn("FilePut[0x{}] PUT_FILE rejected: status {} ({}) — not transmitting; failing fast",
+                    String.format("%04X", handle), acceptCode, acceptStatus);
+            state = UploadState.FAILED;
+            onFilePut(false);
+            return;
+        }
         state = UploadState.UPLOADING;
 
         WriteBatch transactionBuilder = adapter.getDeviceSupport().createWriteBatch("file upload");

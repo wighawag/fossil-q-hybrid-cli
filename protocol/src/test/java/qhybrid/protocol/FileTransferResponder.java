@@ -30,10 +30,15 @@ public final class FileTransferResponder {
 
     /** Build a PUT-accept frame {@code 0x83} (5 bytes): [0x83][handleLo][handleHi][status=0][socket?]. */
     public static byte[] acceptFrame(short handle) {
+        return acceptFrame(handle, (byte) 0x00);
+    }
+
+    /** Build a PUT-accept frame {@code 0x83} with an explicit STATUS byte (0 = SUCCESS, else error). */
+    public static byte[] acceptFrame(short handle, byte status) {
         ByteBuffer b = ByteBuffer.allocate(5).order(ByteOrder.LITTLE_ENDIAN);
         b.put((byte) 0x83);
         b.putShort(handle);
-        b.put((byte) 0x00); // status SUCCESS
+        b.put(status);      // status (0 = SUCCESS; 2 = OPERATION_IN_PROGRESS; ...)
         b.put((byte) 0x00); // proposed socket/characteristic id
         return b.array();
     }

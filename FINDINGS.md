@@ -2525,3 +2525,43 @@ This also explains the earlier "mode-switch button sends multiple buzz patterns 
 same firmware re-send, the rotation advanced several steps (one per duplicate), each buzzing its
 mode's pattern. Removing the switch-buzz debounce was still correct — the duplication is upstream
 of it, and is now fixed at the source.
+
+---
+
+## File-PUT 12s stall: watch rejects the open (status 0x02 OPERATION_IN_PROGRESS), we ignored it (2026-06-14)
+
+### Symptom
+The TIMER alarm push (ALARMS file, handle 0x0A) timed out after exactly 12s (`UPLOAD_TIMEOUT_MS`),
+every time, even with the de-dup + debounce fixes. Buzz 2 (the "armed" confirmation) therefore never
+fired and the Alarms screen showed the timer as not-synced.
+
+### Root cause (logcat, decisive)
+The buzz file-put (handle 0x09) succeeded with the full handshake; the alarm file-put did not:
+```
+WRITE 3dda0003 -> 03 00 0a ...            (PUT_FILE open, handle 0x0a)
+NOTIFY 3dda0003 <- 83 00 0a 02 00         (PUT accept — but STATUS byte = 0x02, NOT 0x00)
+WRITE 3dda0004 -> 00 00 0a 02 ...         (we transmit the data anyway)
+<silence ~12s>                            (watch never sends EOF_REACH 0x88)
+alarm upload timed out / failed
+```
+Status `0x02` = `ResultCode.OPERATION_IN_PROGRESS` (success=false): the watch did NOT open the file
+(a PRIOR timed-out put left handle 0x0A half-open on the watch, so the next open is rejected as
+"busy"). `FilePutRawRequest.handlePutAccept` ignored the accept STATUS byte and transmitted data into
+a rejected transfer, so the watch discarded it and never reported back → the caller's 12s timeout.
+It is self-perpetuating: one timed-out put poisons the next (the buzz on handle 0x09 is unaffected,
+which is why buzzes kept working while the alarm never landed).
+
+### Fix
+`FilePutRawRequest.handlePutAccept` now checks the PUT-accept status byte (offset 3). On a
+non-SUCCESS code it does NOT transmit data — it fails fast (`state=FAILED`, `onFilePut(false)`), so
+the caller gets an immediate honest failure and the serial queue advances at once instead of
+stalling 12s. Status 0 (SUCCESS) is unchanged. Covered by
+`AdapterFilePutTest.putAcceptWithBusyStatus_failsFastWithoutTransmitting`.
+
+### Still open (follow-up)
+This stops the STALL but not the CAUSE: the watch keeps a stale half-open handle. We don't yet send
+an ABORT_FILE(9)/cleanup to clear it before re-opening, so a retry may still see "busy" until the
+watch's own timeout clears it. TODO: on an OPERATION_IN_PROGRESS accept, send ABORT_FILE(9) for the
+handle then retry the open once (mirror the official app's recovery). Likely related to the same
+watch-state drift as "Buttons go dead" + the async-event re-send (a clean re-provision clears all of
+them).

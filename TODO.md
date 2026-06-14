@@ -68,6 +68,20 @@ Watch: Fossil Q Commuter (HW.0.0), Firmware HW0.0.2.9r.v3, Fossil protocol (2.x)
 - [x] Weekday bitmask corrected — hardware-verified: bit3=Wed, bit4=Thu (opposite of GB docs).
 - [x] Alarms use local time (not UTC) — confirmed on hardware
 
+### File transfer / sync
+- [x] **FIXED: file-PUT hung 12s when the watch rejected the open (status 0x02 OPERATION_IN_PROGRESS).**
+  The TIMER ALARMS upload timed out every time: the watch replied to PUT_FILE with status 0x02 (a
+  prior timed-out put left the handle half-open), `handlePutAccept` ignored the status + transmitted
+  data into the void, and the put hung until the 12s caller timeout. Now a non-SUCCESS accept fails
+  FAST (no data, queue advances). See FINDINGS "File-PUT 12s stall". Test:
+  `AdapterFilePutTest.putAcceptWithBusyStatus_failsFastWithoutTransmitting`.
+- [ ] **FOLLOW-UP: actively CLEAR a stale half-open file handle instead of just failing fast.** The
+  fail-fast fix stops the stall but the watch still holds the stale handle, so the NEXT open may also
+  be rejected "busy" until the watch's own timeout clears it. On an OPERATION_IN_PROGRESS accept,
+  send `ABORT_FILE(9)` for the handle then retry the open ONCE (mirror the official app's recovery).
+  Verify against a btsnoop of the official app recovering from a busy handle. Likely the same
+  watch-state drift as the async-event re-send + "buttons go dead" (a re-provision clears all).
+
 ### Button Configuration
 - [ ] Read current button config (ButtonConfigurationGetRequest)
 - [x] Set button actions — `buttons` command with 10 functions: stopwatch, date, music, etc.

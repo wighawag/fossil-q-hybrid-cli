@@ -132,6 +132,30 @@ public class AdapterFilePutTest {
         }
     }
 
+    @Test
+    void putAcceptWithBusyStatus_failsFastWithoutTransmitting() throws Exception {
+        // ROOT CAUSE of the on-device timer ALARMS 12s stall (logcat 2026-06-14): the watch replied
+        // to PUT_FILE with status 0x02 = OPERATION_IN_PROGRESS (a prior timed-out put left the handle
+        // half-open). The old code ignored the status, wrote data into the void, and hung until the
+        // ~12s caller timeout. Now a non-SUCCESS accept must fail FAST: no data chunks, and the
+        // request is finished (so the serial queue advances immediately).
+        FakeBleTransport t = new FakeBleTransport();
+        t.connect("AA:BB:CC:DD:EE:FF");
+        FossilQAdapter adapter = new FossilQAdapter(t);
+        forceFossilProtocol(adapter);
+
+        adapter.uploadNotificationFilterWithPattern((byte) 4, (short) 90, (short) 90);
+        int dataBefore = t.writesTo(FakeBleTransport.UUID_CHAR_DATA).size();
+
+        // Inject a PUT-accept with status 0x02 (OPERATION_IN_PROGRESS) — a rejection.
+        t.injectNotification(FileTransferResponder.CONTROL,
+                FileTransferResponder.acceptFrame(NOTIFICATION_FILTER_HANDLE, (byte) 0x02));
+
+        // No data chunks were written (we did NOT transmit into a rejected transfer).
+        assertEquals(dataBefore, t.writesTo(FakeBleTransport.UUID_CHAR_DATA).size(),
+                "a non-SUCCESS PUT accept must NOT transmit data chunks");
+    }
+
     /** Verify the 32-byte notification filter entry layout + null-terminated CRC. */
     private static void assertFilterEntry(byte[] e, String pkg, byte vibe, short hourDeg, short minDeg) {
         java.nio.ByteBuffer b = java.nio.ByteBuffer.wrap(e).order(java.nio.ByteOrder.LITTLE_ENDIAN);
