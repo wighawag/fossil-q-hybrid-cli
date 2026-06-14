@@ -144,6 +144,12 @@ data class SettingsUiState(
     /** WP-NAV — whether turn-by-turn navigation cues (buzz + point both hands) are enabled. */
     val navCueEnabled: Boolean get() = appSettings.navCueEnabled
 
+    /**
+     * WP-SWITCH-BUZZ-NOHANDS — whether reserved buzz patterns move the watch hands. OFF (default)
+     * means buzzes fire without the hand-return lockout, so rapid mode-switch buzzes land cleanly.
+     */
+    val reservedBuzzMoveHands: Boolean get() = appSettings.reservedBuzzMoveHands
+
     /** WP-NAV — the "turn soon" cue distance (m before the turn; default 40m). */
     val navCueSoonMeters: Int
         get() = SettingsVocabulary.normalizeNavCueSoonMeters(appSettings.navCueSoonMeters)
@@ -188,6 +194,10 @@ open class SettingsViewModel(
     // WP-NAV: (re-)arm the nav-cue source after the toggle/thresholds change (no-op in tests;
     // production = WatchConnectionService.refreshNavCues).
     private val navCueRefresh: () -> Unit = {},
+    // WP-SWITCH-BUZZ-NOHANDS: re-push the NOTIFICATION_FILTER after the reserved-buzz hand-move flag
+    // changes so the watch picks up the no-hand / short-duration reserved buzz entries (no-op in
+    // tests; production = NotificationSync.saveToWatch via the service's filter sync).
+    private val notificationFilterRefresh: () -> Unit = {},
     // Tests inject a real/Unconfined scope; production passes null → uses [viewModelScope].
     scope: CoroutineScope? = null,
     // WP-PROGRESS (sub-part 3): the process-wide sync signal the Save/Apply controls observe.
@@ -459,6 +469,19 @@ open class SettingsViewModel(
         appSettings.value = appSettings.value.copy(multiFunctionSwitchBuzzDebounceMs = normalized)
     }
 
+    /**
+     * WP-SWITCH-BUZZ-NOHANDS — set whether reserved buzz patterns move the watch hands, then
+     * re-push the NOTIFICATION_FILTER so the new reserved buzz entries (no-hand / short-duration
+     * when OFF) reach the watch. With hand movement OFF, rapid mode-switch buzzes are no longer
+     * smeared by the ~10s hand-return lockout. Pure app-side pref + the existing filter sync; no
+     * new wire bytes.
+     */
+    fun setReservedBuzzMoveHands(moveHands: Boolean) {
+        prefs.setReservedBuzzMoveHands(moveHands)
+        appSettings.value = appSettings.value.copy(reservedBuzzMoveHands = moveHands)
+        notificationFilterRefresh()
+    }
+
     /** L1 — persist the Lyrion server host + port (normalized). Pure app-side; no wire bytes. */
     fun setLyrionServer(host: String?, port: Int) {
         val h = SettingsVocabulary.normalizeLyrionHost(host)
@@ -697,6 +720,9 @@ open class SettingsViewModel(
                         },
                         navCueRefresh = {
                             qhybrid.android.WatchConnectionService.refreshNavCues(appContext)
+                        },
+                        notificationFilterRefresh = {
+                            qhybrid.android.notifications.ServiceNotificationSync(appContext).saveToWatch()
                         },
                     ) as T
             }

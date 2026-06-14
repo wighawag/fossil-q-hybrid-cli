@@ -1167,7 +1167,7 @@ class WatchConnectionService : Service() {
             // honestly via SyncResult.errors (see SyncState.SyncStatus.hadSectionErrors).
             val result = SyncStateReporter.reportAround(System::currentTimeMillis) {
                 SyncOrchestrator.sync(
-                    input, ServiceUploader(controller), sections,
+                    input, ServiceUploader(controller, applicationContext), sections,
                     mode = if (forceProvision) SyncMode.PROVISION else SyncMode.RECONCILE,
                 )
             }
@@ -1299,7 +1299,7 @@ class WatchConnectionService : Service() {
             val result = SyncStateReporter.reportAround(System::currentTimeMillis) {
                 SyncOrchestrator.sync(
                     input,
-                    ServiceUploader(controller),
+                    ServiceUploader(controller, applicationContext),
                     SyncSection.ALL,
                     mode = SyncMode.PROVISION,
                 )
@@ -1661,7 +1661,10 @@ class WatchConnectionService : Service() {
      * adapter's CompletableFuture so the pass is sequenced; the others are fire-and-forward like
      * the CLI/init path.
      */
-    private class ServiceUploader(private val controller: FossilController) : Uploader {
+    private class ServiceUploader(
+        private val controller: FossilController,
+        private val appContext: Context,
+    ) : Uploader {
         override fun uploadAlarms(alarmFile: ByteArray): Boolean {
             val future = CompletableFuture<Boolean>()
             controller.setAlarms(alarmFile, future)
@@ -1680,7 +1683,17 @@ class WatchConnectionService : Service() {
             // ONLY ways the reserved entries reach the watch — no per-connect/per-buzz standalone put.
             // WP-NAV: the reserved nav-cue entries (turn-direction hands + buzz) are folded in the
             // SAME way so a turn cue is also a single play-file put (no per-cue filter clobber).
-            val reserved = qhybrid.protocol.requests.fossil.notification.BuzzPatterns.reservedEntries() +
+            // WP-SWITCH-BUZZ-NOHANDS: the reserved BUZZ entries honour the global "move hands" pref.
+            // When OFF (default), they are written with hands -1/-1 + a short hold so a buzz fires
+            // WITHOUT the ~10s hand-return lockout (FINDINGS #23/#24) — rapid mode-switch buzzes no
+            // longer smear over time. Nav-cue entries are ALWAYS hand-moving (direction is the point).
+            val moveHands = qhybrid.android.settings.SharedPreferencesSettingsPrefs(appContext)
+                .get().reservedBuzzMoveHands
+            val buzzDurationMs =
+                if (moveHands) qhybrid.protocol.requests.fossil.notification.BuzzPatterns.DEFAULT_DURATION_MS
+                else qhybrid.android.settings.SettingsVocabulary.RESERVED_BUZZ_SHORT_DURATION_MS.toShort()
+            val reserved = qhybrid.protocol.requests.fossil.notification.BuzzPatterns
+                .reservedEntries(buzzDurationMs, moveHands) +
                 qhybrid.protocol.requests.fossil.notification.NavCuePatterns.reservedEntries()
             val userPackages = entries.map { it.packageName }.toSet()
             val merged = entries + reserved.filter { it.packageName !in userPackages }

@@ -67,6 +67,12 @@ data class AppSettings(
      * can be tuned/tested on-device. 0 = immediate (no debounce). Phone-side only.
      */
     val multiFunctionSwitchBuzzDebounceMs: Int = SettingsVocabulary.SWITCH_BUZZ_DEBOUNCE_DEFAULT_MS,
+    /**
+     * WP-SWITCH-BUZZ-NOHANDS — whether the reserved buzz patterns move the watch hands. Default
+     * OFF (no hand move) so a buzz fires without the hand-return lockout and rapid mode-switch
+     * buzzes land cleanly. GLOBAL; applied on the next NOTIFICATION_FILTER push.
+     */
+    val reservedBuzzMoveHands: Boolean = SettingsVocabulary.RESERVED_BUZZ_MOVE_HANDS_DEFAULT,
     /** L1 — Lyrion (LMS) server host/IP for the [SettingsVocabulary.MODE_MUSIC_LYRION] backend. */
     val lyrionServerHost: String = SettingsVocabulary.LYRION_HOST_NONE,
     /** L1 — Lyrion server HTTP/JSON-RPC port (default 9000). */
@@ -147,6 +153,9 @@ interface SettingsPrefs {
     /** Persist the SWITCH-buzz trailing debounce window in ms (normalized 0..5000). */
     fun setMultiFunctionSwitchBuzzDebounceMs(ms: Int)
 
+    /** Persist whether reserved buzz patterns move the watch hands (WP-SWITCH-BUZZ-NOHANDS). */
+    fun setReservedBuzzMoveHands(moveHands: Boolean)
+
     /** L1 — persist the Lyrion server host (blank/null → NONE) + port (clamped/default). */
     fun setLyrionServer(host: String?, port: Int)
 
@@ -211,6 +220,9 @@ class SharedPreferencesSettingsPrefs(context: Context) : SettingsPrefs {
             ),
             multiFunctionSwitchBuzzDebounceMs = SettingsVocabulary.normalizeSwitchBuzzDebounceMs(
                 p.getInt(KEY_MULTI_FUNCTION_SWITCH_BUZZ_DEBOUNCE, SettingsVocabulary.SWITCH_BUZZ_DEBOUNCE_DEFAULT_MS)
+            ),
+            reservedBuzzMoveHands = p.getBoolean(
+                KEY_RESERVED_BUZZ_MOVE_HANDS, SettingsVocabulary.RESERVED_BUZZ_MOVE_HANDS_DEFAULT
             ),
             lyrionServerHost = SettingsVocabulary.normalizeLyrionHost(
                 p.getString(KEY_LYRION_HOST, SettingsVocabulary.LYRION_HOST_NONE)
@@ -323,6 +335,12 @@ class SharedPreferencesSettingsPrefs(context: Context) : SettingsPrefs {
             .apply()
     }
 
+    override fun setReservedBuzzMoveHands(moveHands: Boolean) {
+        prefs.edit()
+            .putBoolean(KEY_RESERVED_BUZZ_MOVE_HANDS, moveHands)
+            .apply()
+    }
+
     override fun setLyrionServer(host: String?, port: Int) {
         prefs.edit()
             .putString(KEY_LYRION_HOST, SettingsVocabulary.normalizeLyrionHost(host))
@@ -379,6 +397,7 @@ class SharedPreferencesSettingsPrefs(context: Context) : SettingsPrefs {
         const val KEY_MULTI_FUNCTION_INDEX = "multi_function_active_index"
         const val KEY_MULTI_FUNCTION_SWITCH_BUZZ = "multi_function_switch_buzz"
         const val KEY_MULTI_FUNCTION_SWITCH_BUZZ_DEBOUNCE = "multi_function_switch_buzz_debounce_ms"
+        const val KEY_RESERVED_BUZZ_MOVE_HANDS = "reserved_buzz_move_hands"
         const val KEY_LYRION_HOST = "lyrion_server_host"
         const val KEY_LYRION_PORT = "lyrion_server_port"
         const val KEY_LYRION_PLAYER_ID = "lyrion_player_id"

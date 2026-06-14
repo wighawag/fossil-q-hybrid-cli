@@ -101,6 +101,7 @@ fun SettingsScreen(
         onSetActiveModeIndex = vm::setMultiFunctionActiveIndex,
         onSetSwitchBuzz = vm::setMultiFunctionSwitchBuzz,
         onSetSwitchBuzzDebounce = vm::setMultiFunctionSwitchBuzzDebounceMs,
+        onSetReservedBuzzMoveHands = vm::setReservedBuzzMoveHands,
         onSetLyrionServer = vm::setLyrionServer,
         onSetLyrionPlayer = vm::setLyrionPlayer,
         onSetLyrionFallback = vm::setLyrionEmptyQueueFallback,
@@ -142,6 +143,8 @@ fun SettingsContent(
     onSetSwitchBuzz: (String, Int) -> Unit = { _, _ -> },
     // Set the switch-mode buzz trailing debounce window (ms). No-op default.
     onSetSwitchBuzzDebounce: (Int) -> Unit = {},
+    // WP-SWITCH-BUZZ-NOHANDS: toggle whether reserved buzzes move the watch hands. No-op default.
+    onSetReservedBuzzMoveHands: (Boolean) -> Unit = {},
     // L1: set the Lyrion server host + port. No-op default.
     onSetLyrionServer: (String?, Int) -> Unit = { _, _ -> },
     // L1: set the target Lyrion player id + display name. No-op default.
@@ -218,7 +221,7 @@ fun SettingsContent(
             TimezoneCard(state, onSetTimezone) { note = it }
             CalendarOffsetCard(state, onSetCalendarOffset, onResyncCalendar) { note = it }
             MusicAppCard(state, onSetMusicApp)
-            MultiFunctionRotationCard(state, onToggleMode, onSetActiveModeIndex, onSetSwitchBuzz, onSetSwitchBuzzDebounce)
+            MultiFunctionRotationCard(state, onToggleMode, onSetActiveModeIndex, onSetSwitchBuzz, onSetSwitchBuzzDebounce, onSetReservedBuzzMoveHands)
             if (state.lyrionInRotation) {
                 LyrionCard(
                     state,
@@ -591,6 +594,7 @@ private fun MultiFunctionRotationCard(
     onSetActiveModeIndex: (Int) -> Unit,
     onSetSwitchBuzz: (String, Int) -> Unit,
     onSetSwitchBuzzDebounce: (Int) -> Unit,
+    onSetReservedBuzzMoveHands: (Boolean) -> Unit,
 ) {
     SettingCard("Multi-function button modes") {
         Text(
@@ -677,6 +681,26 @@ private fun MultiFunctionRotationCard(
                     onSetSwitchBuzzDebounce(next)
                 },
             ) { Text("+ ${SettingsVocabulary.SWITCH_BUZZ_DEBOUNCE_STEP_MS}ms") }
+        }
+
+        // WP-SWITCH-BUZZ-NOHANDS: move-hands toggle. OFF (default) = buzzes fire WITHOUT a hand
+        // excursion, so the watch isn't locked out for ~10s and rapid switch buzzes land cleanly.
+        // ON restores the N-o'clock hand mark (but reintroduces the lockout/smearing).
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Move hands on buzz", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "OFF (recommended): buzzes don't move the watch hands, so quick mode-switches " +
+                        "buzz back-to-back instead of being delayed ~10s by the hands returning. " +
+                        "ON: each buzz also points the hands (you can read the pattern on the face), " +
+                        "but rapid buzzes get smeared over time.",
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
+            Switch(
+                checked = state.reservedBuzzMoveHands,
+                onCheckedChange = { onSetReservedBuzzMoveHands(it) },
+            )
         }
     }
 }

@@ -107,6 +107,9 @@ class SettingsViewModelTest : DbTestBase() {
                 multiFunctionSwitchBuzzDebounceMs = SettingsVocabulary.normalizeSwitchBuzzDebounceMs(ms),
             )
         }
+        override fun setReservedBuzzMoveHands(moveHands: Boolean) {
+            current = current.copy(reservedBuzzMoveHands = moveHands)
+        }
         override fun setLyrionServer(host: String?, port: Int) {
             current = current.copy(
                 lyrionServerHost = SettingsVocabulary.normalizeLyrionHost(host),
@@ -223,6 +226,7 @@ class SettingsViewModelTest : DbTestBase() {
         applyDefaults: ApplyDefaultsSync = FakeApplyDefaults(),
         clearAlarms: ClearAlarmsSync = FakeClearAlarms(),
         calendarRefresh: () -> Unit = {},
+        notificationFilterRefresh: () -> Unit = {},
     ) = SettingsViewModel(
         repo = repo,
         prefs = prefs,
@@ -235,6 +239,7 @@ class SettingsViewModelTest : DbTestBase() {
         applyDefaults = applyDefaults,
         clearAlarms = clearAlarms,
         calendarRefresh = calendarRefresh,
+        notificationFilterRefresh = notificationFilterRefresh,
         scope = vmScope,
         syncSource = syncSource,
     )
@@ -757,6 +762,27 @@ class SettingsViewModelTest : DbTestBase() {
         model.setMultiFunctionSwitchBuzzDebounceMs(99999)
         val s2 = awaitState(model.uiState) { it.switchBuzzDebounceMs == SettingsVocabulary.SWITCH_BUZZ_DEBOUNCE_MAX_MS }
         assertEquals(SettingsVocabulary.SWITCH_BUZZ_DEBOUNCE_MAX_MS, s2.switchBuzzDebounceMs)
+    }
+
+    @Test
+    fun reservedBuzzMoveHands_roundTripsAndRePushesFilter() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }
+        var filterPushes = 0
+        val model = vm(notificationFilterRefresh = { filterPushes++ })
+        val s0 = awaitState(model.uiState) { it.hasActiveWatch }
+        // Default is OFF (no hand move) so rapid switch buzzes are not smeared by the lockout.
+        assertEquals(SettingsVocabulary.RESERVED_BUZZ_MOVE_HANDS_DEFAULT, s0.reservedBuzzMoveHands)
+        assertFalse(s0.reservedBuzzMoveHands)
+
+        model.setReservedBuzzMoveHands(true)
+        val s1 = awaitState(model.uiState) { it.reservedBuzzMoveHands }
+        assertTrue(s1.reservedBuzzMoveHands)
+        assertEquals(1, filterPushes) // turning it on re-pushes the NOTIFICATION_FILTER
+
+        model.setReservedBuzzMoveHands(false)
+        val s2 = awaitState(model.uiState) { !it.reservedBuzzMoveHands }
+        assertFalse(s2.reservedBuzzMoveHands)
+        assertEquals(2, filterPushes)
     }
 
     // ---- L1: Lyrion config round-trips (pure app-side) -----------------------

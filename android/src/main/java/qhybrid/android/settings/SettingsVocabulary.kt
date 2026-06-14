@@ -436,6 +436,23 @@ object SettingsVocabulary {
     const val SWITCH_BUZZ_DEBOUNCE_DEFAULT_MS = 1500
     const val SWITCH_BUZZ_DEBOUNCE_STEP_MS = 250
 
+    // ---- reserved-buzz hand-movement (WP-SWITCH-BUZZ-NOHANDS; global app pref) ----
+
+    /**
+     * WP-SWITCH-BUZZ-NOHANDS — whether the 7 RESERVED buzz patterns (mode-switch + gesture/log
+     * confirmation buzzes) move the watch hands. The reserved buzz entries normally carry a
+     * 10000ms hand excursion; the watch then ignores any further buzz until the hands settle
+     * (~7-12s, FINDINGS #23/#24), which smears rapid switch buzzes over time. With hand movement
+     * OFF the buzz fires the vibration pattern WITHOUT a hand excursion (hands written -1/-1) at a
+     * short hold ([RESERVED_BUZZ_SHORT_DURATION_MS]), so back-to-back buzzes land cleanly. Default
+     * OFF (no hand move) so quick mode-switches are felt distinctly. GLOBAL; takes effect on the
+     * next NOTIFICATION_FILTER push. Nav-cue entries are unaffected (their direction is the point).
+     */
+    const val RESERVED_BUZZ_MOVE_HANDS_DEFAULT = false
+
+    /** Short hand-hold (ms) written for a reserved buzz entry when hand movement is OFF. */
+    const val RESERVED_BUZZ_SHORT_DURATION_MS = 500
+
     /** Clamp an arbitrary debounce window onto [SWITCH_BUZZ_DEBOUNCE_MIN_MS]..[SWITCH_BUZZ_DEBOUNCE_MAX_MS]. */
     fun normalizeSwitchBuzzDebounceMs(ms: Int): Int =
         ms.coerceIn(SWITCH_BUZZ_DEBOUNCE_MIN_MS, SWITCH_BUZZ_DEBOUNCE_MAX_MS)
