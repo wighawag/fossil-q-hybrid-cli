@@ -86,6 +86,23 @@ Watch: Fossil Q Commuter (HW.0.0), Firmware HW0.0.2.9r.v3, Fossil protocol (2.x)
   adapter chokepoint (`FossilQAdapter.handleButtonEvent`), scoped to the discrete-action event types
   (music 0x05 / micro_app 0x08 / app-notification 0x04). Covered by `AdapterAsyncEventDedupTest`.
   (Below: the original investigation notes, kept for context.)
+- [ ] **ROOT-CAUSE the watch's async-event re-send (so we can stop it at the source, not just
+  absorb it).** Strong hypothesis from code review (b): the watch sends button/event frames on
+  `3dda0006` with `opCode = 0x01 = REQUEST` (the captured storm was `01 05 14 02` — opcode 01), i.e.
+  it EXPECTS an app acknowledgement/response. Our adapter only READS the event (`handleButtonEvent`
+  → `emitEvent` to the phone callback) and NEVER writes anything back to `3dda0006`, and the
+  `opCode` byte is read+logged but otherwise ignored. With no ack, the firmware re-requests the same
+  frame (~10x, same sequence) until it times out → the buzz/sync storm. The de-dup patch absorbs
+  this; the REAL fix is to send whatever ack the OFFICIAL app sends after a button event.
+  CAPTURE (bundle with the 24h capture below — same btsnoop method): with the OFFICIAL Fossil app,
+  enable Bluetooth HCI snoop log, press a watch button that emits an event (mode switch / music /
+  micro-app), pull the btsnoop (`adb bugreport`), and in Wireshark look at what the phone WRITES to
+  the watch in the ~tens of ms AFTER the `3dda0006` notification — specifically any write back to
+  `3dda0006` (or a related char) that echoes the event's `eventType`+`sequence` (an ACK), AND check
+  whether the official app's event frames carry `opCode 0x02` (NOTIFY, fire-and-forget) vs our
+  observed `0x01` (REQUEST). If an ack write exists, replicate it in `FossilQAdapter.handleButtonEvent`
+  (write the ack for REQUEST-opcode events) — that should stop the re-send entirely and remove the
+  reliance on de-dup. Update FINDINGS with the ack frame format + provenance.
 - [ ] ~~BUG: one physical button press sometimes fires MULTIPLE events (multi-buzz in succession).~~
   Repro (Android, hardware): press the mode-SWITCH button once and instead of one buzz for the
   next mode, the watch buzzes several patterns in succession (e.g. from Lyrion it should buzz a
