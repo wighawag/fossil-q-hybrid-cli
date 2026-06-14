@@ -112,10 +112,6 @@ data class SettingsUiState(
     fun switchBuzzFor(mode: String): Int =
         SettingsVocabulary.switchBuzzFor(mode, appSettings.multiFunctionSwitchBuzz)
 
-    /** The configurable TRAILING debounce window (ms) for the switch-mode buzz. */
-    val switchBuzzDebounceMs: Int
-        get() = SettingsVocabulary.normalizeSwitchBuzzDebounceMs(appSettings.multiFunctionSwitchBuzzDebounceMs)
-
     // ---- L1: Lyrion (LMS) music backend config -------------------------------
     val lyrionServerHost: String
         get() = SettingsVocabulary.normalizeLyrionHost(appSettings.lyrionServerHost)
@@ -460,13 +456,6 @@ open class SettingsViewModel(
         prefs.setMultiFunctionSwitchBuzz(m, p)
         val next = appSettings.value.multiFunctionSwitchBuzz.toMutableMap().apply { put(m, p) }
         appSettings.value = appSettings.value.copy(multiFunctionSwitchBuzz = next)
-    }
-
-    /** Set the switch-mode buzz TRAILING debounce window in ms (normalized 0..5000). */
-    fun setMultiFunctionSwitchBuzzDebounceMs(ms: Int) {
-        val normalized = SettingsVocabulary.normalizeSwitchBuzzDebounceMs(ms)
-        prefs.setMultiFunctionSwitchBuzzDebounceMs(normalized)
-        appSettings.value = appSettings.value.copy(multiFunctionSwitchBuzzDebounceMs = normalized)
     }
 
     /**

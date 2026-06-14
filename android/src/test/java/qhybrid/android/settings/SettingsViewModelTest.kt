@@ -102,11 +102,6 @@ class SettingsViewModelTest : DbTestBase() {
                 multiFunctionSwitchBuzz = current.multiFunctionSwitchBuzz.toMutableMap().apply { put(m, p) },
             )
         }
-        override fun setMultiFunctionSwitchBuzzDebounceMs(ms: Int) {
-            current = current.copy(
-                multiFunctionSwitchBuzzDebounceMs = SettingsVocabulary.normalizeSwitchBuzzDebounceMs(ms),
-            )
-        }
         override fun setReservedBuzzMoveHands(moveHands: Boolean) {
             current = current.copy(reservedBuzzMoveHands = moveHands)
         }
@@ -745,23 +740,6 @@ class SettingsViewModelTest : DbTestBase() {
             it.switchBuzzFor(SettingsVocabulary.MODE_TRACKER) == SettingsVocabulary.SWITCH_BUZZ_DOUBLE
         }
         assertEquals(SettingsVocabulary.SWITCH_BUZZ_DOUBLE, s2.switchBuzzFor(SettingsVocabulary.MODE_TIMER))
-    }
-
-    @Test
-    fun switchBuzzDebounceWindow_roundTripsAndClamps() {
-        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }
-        val model = vm()
-        val s0 = awaitState(model.uiState) { it.hasActiveWatch }
-        assertEquals(SettingsVocabulary.SWITCH_BUZZ_DEBOUNCE_DEFAULT_MS, s0.switchBuzzDebounceMs)
-
-        model.setMultiFunctionSwitchBuzzDebounceMs(750)
-        val s1 = awaitState(model.uiState) { it.switchBuzzDebounceMs == 750 }
-        assertEquals(750, s1.switchBuzzDebounceMs)
-
-        // Out-of-range clamps onto the valid window.
-        model.setMultiFunctionSwitchBuzzDebounceMs(99999)
-        val s2 = awaitState(model.uiState) { it.switchBuzzDebounceMs == SettingsVocabulary.SWITCH_BUZZ_DEBOUNCE_MAX_MS }
-        assertEquals(SettingsVocabulary.SWITCH_BUZZ_DEBOUNCE_MAX_MS, s2.switchBuzzDebounceMs)
     }
 
     @Test

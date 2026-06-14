@@ -15,8 +15,6 @@ import qhybrid.android.db.WatchRepository
 import qhybrid.android.notifications.VibePatterns
 import qhybrid.android.settings.SettingsVocabulary
 import qhybrid.android.settings.SharedPreferencesSettingsPrefs
-import qhybrid.android.sync.CoroutineDebouncer
-import qhybrid.android.sync.Debouncer
 import qhybrid.android.sync.ServiceSaveToWatch
 import qhybrid.android.sync.SyncSection
 import qhybrid.android.tracker.ButtonActionRouter.Path2Action
@@ -62,12 +60,6 @@ class ServiceTrackerDispatch(
     // TIMER: wall clock + zone for the "ring in N min" alarm time; injectable for deterministic tests.
     private val now: () -> Long = { System.currentTimeMillis() },
     private val zone: () -> ZoneId = { ZoneId.systemDefault() },
-    // Debounces the SWITCH-mode buzz so rapid presses coalesce into ONE buzz for the FINAL landed
-    // mode (hardware fact: a buzz is ignored while the hands animate back, ~10-12s, so only the
-    // first of a rapid burst would otherwise reach the watch — and it'd be the WRONG mode).
-    // Injectable for tests; null → a cancel-and-relaunch window read FRESH from prefs per schedule
-    // (so the configurable window takes effect immediately, no service restart needed).
-    switchBuzzDebouncer: Debouncer? = null,
     // The buzz effect seam: production plays via the WP3 reserved-pattern path; tests record the
     // pattern(s) that actually reach the watch. Default forwards to [WatchConnectionService.buzzNow].
     private val buzzEffect: ((Int) -> Unit)? = null,
@@ -81,14 +73,6 @@ class ServiceTrackerDispatch(
     private val ringer: PhoneRinger = ringer ?: SystemPhoneRinger(appContext)
     private val repo = WatchRepository(appContext)
     private val prefs = SharedPreferencesSettingsPrefs(appContext)
-
-    // Resolve the switch-buzz debouncer: injected (tests) or a prefs-backed trailing window read
-    // fresh per schedule, so changing the window in Settings takes effect on the next burst.
-    private val switchBuzzDebouncer: Debouncer = switchBuzzDebouncer ?: CoroutineDebouncer(io) {
-        SettingsVocabulary.normalizeSwitchBuzzDebounceMs(
-            prefs.get().multiFunctionSwitchBuzzDebounceMs
-        ).toLong()
-    }
 
     private val effects = SystemTrackerEffects()
     private val dispatcher = TrackerDispatcher(effects)
@@ -185,14 +169,13 @@ class ServiceTrackerDispatch(
                 buzz(action.buzzPattern)
             }
             is Path2Action.SwitchMultiFunctionMode -> {
-                // Advance the rotation IMMEDIATELY (the active mode must track every press), but
-                // DEBOUNCE the buzz: rapid presses cancel-and-reschedule so exactly ONE buzz reaches
-                // the watch — for the FINAL landed mode — once the burst settles. This avoids the
-                // hardware quirk where the first buzz wins and the rest are dropped mid-animation
-                // (so the user would feel an intermediate mode, not the one they actually landed on).
+                // Advance the rotation + buzz the resulting mode IMMEDIATELY. With the no-hand
+                // reserved buzz (WP-SWITCH-BUZZ-NOHANDS) there is no ~10s hand-return lockout, so a
+                // buzz lands cleanly on every press — no debounce/coalescing needed. Each press is
+                // fast enough to switch again right away and feel the new mode.
                 val (newIndex, newMode, switchBuzz) = advanceRotation()
-                Log.i(TAG, "multi-function advanced to [$newIndex] $newMode (buzz $switchBuzz pending)")
-                switchBuzzDebouncer.schedule { buzz(switchBuzz) }
+                Log.i(TAG, "multi-function advanced to [$newIndex] $newMode (buzz $switchBuzz)")
+                buzz(switchBuzz)
             }
         }
         return action

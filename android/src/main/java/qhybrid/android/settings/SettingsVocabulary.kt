@@ -422,20 +422,6 @@ object SettingsVocabulary {
     fun switchBuzzMapToCsv(overrides: Map<String, Int>?): String =
         normalizeSwitchBuzzMap(overrides).entries.joinToString(ROTATION_DELIM) { "${it.key}=${it.value}" }
 
-    // ---- multi-function SWITCH-buzz debounce window (app pref; phone-side only) ----
-
-    /**
-     * Coalesce window (ms) for the SWITCH-mode buzz: rapid presses within this window collapse to a
-     * SINGLE buzz for the FINAL landed mode (the watch ignores a buzz while its hands animate back,
-     * so only the first of a burst would otherwise reach it — and it'd be the WRONG mode). It's a
-     * TRAILING debounce — the timer resets on every press, so the buzz fires this long after the
-     * LAST press. Configurable so the window can be tuned/tested on-device. Phone-side only.
-     */
-    const val SWITCH_BUZZ_DEBOUNCE_MIN_MS = 0
-    const val SWITCH_BUZZ_DEBOUNCE_MAX_MS = 5000
-    const val SWITCH_BUZZ_DEBOUNCE_DEFAULT_MS = 1500
-    const val SWITCH_BUZZ_DEBOUNCE_STEP_MS = 250
-
     // ---- reserved-buzz hand-movement (WP-SWITCH-BUZZ-NOHANDS; global app pref) ----
 
     /**
@@ -452,21 +438,6 @@ object SettingsVocabulary {
 
     /** Short hand-hold (ms) written for a reserved buzz entry when hand movement is OFF. */
     const val RESERVED_BUZZ_SHORT_DURATION_MS = 500
-
-    /** Clamp an arbitrary debounce window onto [SWITCH_BUZZ_DEBOUNCE_MIN_MS]..[SWITCH_BUZZ_DEBOUNCE_MAX_MS]. */
-    fun normalizeSwitchBuzzDebounceMs(ms: Int): Int =
-        ms.coerceIn(SWITCH_BUZZ_DEBOUNCE_MIN_MS, SWITCH_BUZZ_DEBOUNCE_MAX_MS)
-
-    /** Format a debounce window: `Off` / `750 ms` / `1.5 s`. */
-    fun switchBuzzDebounceLabel(ms: Int): String {
-        val m = normalizeSwitchBuzzDebounceMs(ms)
-        return when {
-            m == 0 -> "Off (immediate)"
-            m < 1000 -> "$m ms"
-            m % 1000 == 0 -> "${m / 1000} s"
-            else -> "%.1f s".format(m / 1000.0)
-        }
-    }
 
     /** Human label for a switch-buzz pattern (single/double/triple/long); falls back gracefully. */
     fun switchBuzzLabel(pattern: Int): String = when (normalizeSwitchBuzz(pattern)) {

@@ -100,7 +100,6 @@ fun SettingsScreen(
         onToggleMode = vm::toggleMultiFunctionMode,
         onSetActiveModeIndex = vm::setMultiFunctionActiveIndex,
         onSetSwitchBuzz = vm::setMultiFunctionSwitchBuzz,
-        onSetSwitchBuzzDebounce = vm::setMultiFunctionSwitchBuzzDebounceMs,
         onSetReservedBuzzMoveHands = vm::setReservedBuzzMoveHands,
         onSetLyrionServer = vm::setLyrionServer,
         onSetLyrionPlayer = vm::setLyrionPlayer,
@@ -141,8 +140,6 @@ fun SettingsContent(
     onSetActiveModeIndex: (Int) -> Unit = {},
     // Set a mode's STABLE switch-buzz pattern (single/double/triple/long). No-op default.
     onSetSwitchBuzz: (String, Int) -> Unit = { _, _ -> },
-    // Set the switch-mode buzz trailing debounce window (ms). No-op default.
-    onSetSwitchBuzzDebounce: (Int) -> Unit = {},
     // WP-SWITCH-BUZZ-NOHANDS: toggle whether reserved buzzes move the watch hands. No-op default.
     onSetReservedBuzzMoveHands: (Boolean) -> Unit = {},
     // L1: set the Lyrion server host + port. No-op default.
@@ -221,7 +218,7 @@ fun SettingsContent(
             TimezoneCard(state, onSetTimezone) { note = it }
             CalendarOffsetCard(state, onSetCalendarOffset, onResyncCalendar) { note = it }
             MusicAppCard(state, onSetMusicApp)
-            MultiFunctionRotationCard(state, onToggleMode, onSetActiveModeIndex, onSetSwitchBuzz, onSetSwitchBuzzDebounce, onSetReservedBuzzMoveHands)
+            MultiFunctionRotationCard(state, onToggleMode, onSetActiveModeIndex, onSetSwitchBuzz, onSetReservedBuzzMoveHands)
             if (state.lyrionInRotation) {
                 LyrionCard(
                     state,
@@ -593,7 +590,6 @@ private fun MultiFunctionRotationCard(
     onToggleMode: (String) -> Unit,
     onSetActiveModeIndex: (Int) -> Unit,
     onSetSwitchBuzz: (String, Int) -> Unit,
-    onSetSwitchBuzzDebounce: (Int) -> Unit,
     onSetReservedBuzzMoveHands: (Boolean) -> Unit,
 ) {
     SettingCard("Multi-function button modes") {
@@ -651,36 +647,6 @@ private fun MultiFunctionRotationCard(
                     )
                 }
             }
-        }
-
-        // Switch-buzz debounce window: rapid presses coalesce to ONE buzz for the final mode (the
-        // watch ignores a buzz mid hand-animation). Configurable so it can be tuned/tested on-device.
-        Text(
-            "Switch buzz delay: ${SettingsVocabulary.switchBuzzDebounceLabel(state.switchBuzzDebounceMs)}",
-            style = MaterialTheme.typography.bodyMedium,
-        )
-        Text(
-            "Wait this long after your LAST press before buzzing, so quick mode-switches buzz once " +
-                "for where you landed (the watch can't buzz again until its hands settle).",
-            style = MaterialTheme.typography.labelSmall,
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(
-                onClick = {
-                    val next = SettingsVocabulary.normalizeSwitchBuzzDebounceMs(
-                        state.switchBuzzDebounceMs - SettingsVocabulary.SWITCH_BUZZ_DEBOUNCE_STEP_MS
-                    )
-                    onSetSwitchBuzzDebounce(next)
-                },
-            ) { Text("− ${SettingsVocabulary.SWITCH_BUZZ_DEBOUNCE_STEP_MS}ms") }
-            OutlinedButton(
-                onClick = {
-                    val next = SettingsVocabulary.normalizeSwitchBuzzDebounceMs(
-                        state.switchBuzzDebounceMs + SettingsVocabulary.SWITCH_BUZZ_DEBOUNCE_STEP_MS
-                    )
-                    onSetSwitchBuzzDebounce(next)
-                },
-            ) { Text("+ ${SettingsVocabulary.SWITCH_BUZZ_DEBOUNCE_STEP_MS}ms") }
         }
 
         // WP-SWITCH-BUZZ-NOHANDS: move-hands toggle. OFF (default) = buzzes fire WITHOUT a hand

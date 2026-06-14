@@ -62,12 +62,6 @@ data class AppSettings(
      */
     val multiFunctionSwitchBuzz: Map<String, Int> = emptyMap(),
     /**
-     * TRAILING debounce window (ms) for the SWITCH-mode buzz — rapid presses within this window
-     * coalesce to ONE buzz for the FINAL landed mode (see [SettingsVocabulary]). Configurable so it
-     * can be tuned/tested on-device. 0 = immediate (no debounce). Phone-side only.
-     */
-    val multiFunctionSwitchBuzzDebounceMs: Int = SettingsVocabulary.SWITCH_BUZZ_DEBOUNCE_DEFAULT_MS,
-    /**
      * WP-SWITCH-BUZZ-NOHANDS — whether the reserved buzz patterns move the watch hands. Default
      * OFF (no hand move) so a buzz fires without the hand-return lockout and rapid mode-switch
      * buzzes land cleanly. GLOBAL; applied on the next NOTIFICATION_FILTER push.
@@ -150,9 +144,6 @@ interface SettingsPrefs {
      */
     fun setMultiFunctionSwitchBuzz(mode: String, pattern: Int)
 
-    /** Persist the SWITCH-buzz trailing debounce window in ms (normalized 0..5000). */
-    fun setMultiFunctionSwitchBuzzDebounceMs(ms: Int)
-
     /** Persist whether reserved buzz patterns move the watch hands (WP-SWITCH-BUZZ-NOHANDS). */
     fun setReservedBuzzMoveHands(moveHands: Boolean)
 
@@ -217,9 +208,6 @@ class SharedPreferencesSettingsPrefs(context: Context) : SettingsPrefs {
             ),
             multiFunctionSwitchBuzz = SettingsVocabulary.parseSwitchBuzzMap(
                 p.getString(KEY_MULTI_FUNCTION_SWITCH_BUZZ, null)
-            ),
-            multiFunctionSwitchBuzzDebounceMs = SettingsVocabulary.normalizeSwitchBuzzDebounceMs(
-                p.getInt(KEY_MULTI_FUNCTION_SWITCH_BUZZ_DEBOUNCE, SettingsVocabulary.SWITCH_BUZZ_DEBOUNCE_DEFAULT_MS)
             ),
             reservedBuzzMoveHands = p.getBoolean(
                 KEY_RESERVED_BUZZ_MOVE_HANDS, SettingsVocabulary.RESERVED_BUZZ_MOVE_HANDS_DEFAULT
@@ -326,15 +314,6 @@ class SharedPreferencesSettingsPrefs(context: Context) : SettingsPrefs {
             .apply()
     }
 
-    override fun setMultiFunctionSwitchBuzzDebounceMs(ms: Int) {
-        prefs.edit()
-            .putInt(
-                KEY_MULTI_FUNCTION_SWITCH_BUZZ_DEBOUNCE,
-                SettingsVocabulary.normalizeSwitchBuzzDebounceMs(ms),
-            )
-            .apply()
-    }
-
     override fun setReservedBuzzMoveHands(moveHands: Boolean) {
         prefs.edit()
             .putBoolean(KEY_RESERVED_BUZZ_MOVE_HANDS, moveHands)
@@ -396,7 +375,6 @@ class SharedPreferencesSettingsPrefs(context: Context) : SettingsPrefs {
         const val KEY_MULTI_FUNCTION_ROTATION = "multi_function_rotation"
         const val KEY_MULTI_FUNCTION_INDEX = "multi_function_active_index"
         const val KEY_MULTI_FUNCTION_SWITCH_BUZZ = "multi_function_switch_buzz"
-        const val KEY_MULTI_FUNCTION_SWITCH_BUZZ_DEBOUNCE = "multi_function_switch_buzz_debounce_ms"
         const val KEY_RESERVED_BUZZ_MOVE_HANDS = "reserved_buzz_move_hands"
         const val KEY_LYRION_HOST = "lyrion_server_host"
         const val KEY_LYRION_PORT = "lyrion_server_port"

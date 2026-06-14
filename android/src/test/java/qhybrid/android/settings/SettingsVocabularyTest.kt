@@ -312,20 +312,6 @@ class SettingsVocabularyTest {
         assertEquals("Single buzz", SettingsVocabulary.switchBuzzLabel(99))
     }
 
-    @Test
-    fun switchBuzzDebounce_defaultClampAndLabel() {
-        assertEquals(1500, SettingsVocabulary.SWITCH_BUZZ_DEBOUNCE_DEFAULT_MS)
-        // Clamp below min / above max; in-range passes through.
-        assertEquals(0, SettingsVocabulary.normalizeSwitchBuzzDebounceMs(-100))
-        assertEquals(5000, SettingsVocabulary.normalizeSwitchBuzzDebounceMs(99999))
-        assertEquals(1500, SettingsVocabulary.normalizeSwitchBuzzDebounceMs(1500))
-        // Labels: off / ms / whole seconds / fractional seconds.
-        assertEquals("Off (immediate)", SettingsVocabulary.switchBuzzDebounceLabel(0))
-        assertEquals("750 ms", SettingsVocabulary.switchBuzzDebounceLabel(750))
-        assertEquals("2 s", SettingsVocabulary.switchBuzzDebounceLabel(2000))
-        assertEquals("1.5 s", SettingsVocabulary.switchBuzzDebounceLabel(1500))
-    }
-
     // ---- WP-TRACKER: find-my-phone ring duration -----------------------------
 
     @Test
