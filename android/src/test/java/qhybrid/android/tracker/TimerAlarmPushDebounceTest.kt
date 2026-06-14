@@ -83,13 +83,14 @@ class TimerAlarmPushDebounceTest {
         // One SHORT-timer press.
         d.onTimerEventJson(shortTimerJson())
 
-        // Buzz 1 fires immediately: the duration-independent "received" pulse (ONE_SHORT).
+        // Buzz 1 fires immediately: the duration-independent soft "received" tick (EMAIL), distinct
+        // from the strong duration pulses.
         runBlocking {
             kotlinx.coroutines.withTimeout(5_000) {
                 while (buzzes.isEmpty()) kotlinx.coroutines.delay(10)
             }
         }
-        assertEquals(VibePatterns.ONE_SHORT, buzzes.first())
+        assertEquals(VibePatterns.EMAIL, buzzes.first())
 
         // Let the debounced push schedule, then fire it (runs pushTimerAlarmAndConfirm on the IO scope).
         runBlocking {
@@ -139,6 +140,6 @@ class TimerAlarmPushDebounceTest {
         sync.set(SyncState.SyncPhase.ERROR, errorMessage = "Watch not reachable", nowMillis = 1L)
         runBlocking { kotlinx.coroutines.delay(200) }
         assertEquals("only the received buzz; no duration buzz on error", 1, buzzes.size)
-        assertTrue(buzzes.first() == VibePatterns.ONE_SHORT)
+        assertTrue(buzzes.first() == VibePatterns.EMAIL)
     }
 }

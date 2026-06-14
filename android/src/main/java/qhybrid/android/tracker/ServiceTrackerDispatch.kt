@@ -323,8 +323,11 @@ class ServiceTrackerDispatch(
         private const val TAG = "FossilQ-Tracker"
         // Trailing-debounce window for the timer alarm-file push (ms).
         private const val TIMER_ALARM_PUSH_DEBOUNCE_MS = 1200L
-        // Buzz 1: the immediate, duration-INDEPENDENT "press received" pulse (a single short buzz).
-        private const val TIMER_RECEIVED_BUZZ = VibePatterns.ONE_SHORT
+        // Buzz 1: the immediate, duration-INDEPENDENT "press received" tick. Uses the SOFT single
+        // (VibePatterns.EMAIL) so it is clearly DISTINCT from the strong 1/2/3-pulse DURATION buzzes
+        // (ONE_SHORT/TWO_SHORT/THREE_SHORT) of buzz 2 — otherwise a SHORT timer's buzz 2 would feel
+        // identical to buzz 1.
+        private const val TIMER_RECEIVED_BUZZ = VibePatterns.EMAIL
         // How long to wait for the alarm sync to confirm before giving up on the duration buzz.
         private const val TIMER_CONFIRM_TIMEOUT_MS = 20_000L
     }

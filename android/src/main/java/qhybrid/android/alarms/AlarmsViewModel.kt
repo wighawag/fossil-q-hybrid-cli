@@ -72,7 +72,8 @@ data class AlarmsUiState(
      * `alarmsSyncedAt` marker (the whole 32-slot file is one upload).
      */
     fun isOnWatch(slotId: Int): Boolean {
-        val alarm = (alarms + calendarAlarms).firstOrNull { it.slotId == slotId } ?: return false
+        val alarm = (alarms + calendarAlarms + listOfNotNull(timerAlarm))
+            .firstOrNull { it.slotId == slotId } ?: return false
         return SectionSyncStatus.isOnWatch(alarm.updatedAt, alarmsSyncedAt)
     }
 
