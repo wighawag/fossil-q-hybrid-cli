@@ -41,13 +41,21 @@ object VibePatterns {
     const val DEG_MIN = 0
     const val DEG_MAX = 359
 
-    /** Short labels indexed 1:1 by pattern value 0..9. */
+    /**
+     * Short labels indexed 1:1 by pattern value 0..9.
+     *
+     * These describe the ACTUAL buzz the watch plays, NOT the firmware's legacy preset SOURCE name
+     * (the presets 1/2/3 are named CALL/TEXT/EMAIL after the notification type they were meant for,
+     * but what the user feels is triple/double/single). Labelling them by the source name was
+     * confusing in the picker, so we surface the felt pattern instead (FINDINGS #23). The named
+     * source is kept in parentheses for those who recognise the official-app naming.
+     */
     val LABELS = arrayOf(
         "Auto",
-        "Call",
-        "Text",
-        "Email",
-        "Default",
+        "Triple (Call)",
+        "Double (Text)",
+        "Single (Email)",
+        "Single (Default)",
         "Strong single",
         "Strong double",
         "Strong triple",
