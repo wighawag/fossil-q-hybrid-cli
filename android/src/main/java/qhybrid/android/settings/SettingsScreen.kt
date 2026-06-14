@@ -2,6 +2,8 @@
 
 package qhybrid.android.settings
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -41,6 +43,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import qhybrid.android.notifications.VibePatterns
+import qhybrid.android.settings.backup.AppSettingsBackup
+import qhybrid.android.settings.backup.WatchConfigBackup
 import qhybrid.android.sync.ConnectionBanner
 import qhybrid.android.sync.SyncProgressUi
 import qhybrid.android.sync.SyncSavingDialog
@@ -112,6 +116,10 @@ fun SettingsScreen(
         onSetNavCue = vm::setNavCue,
         onTransfer = vm::transferSettings,
         onRemoveWatch = vm::removeActiveWatch,
+        onExportAppSettings = vm::exportAppSettingsBytes,
+        onImportAppSettings = vm::importAppSettingsBytes,
+        onExportWatchConfig = vm::exportActiveWatchConfigBytes,
+        onImportWatchConfig = vm::importActiveWatchConfigBytes,
         onOpenLogs = onOpenLogs,
         onOpenDefaults = onOpenDefaults,
         onOpenWaypoints = onOpenWaypoints,
@@ -184,6 +192,14 @@ fun SettingsContent(
     onClearAlarms: () -> Boolean = { false },
     // WP-WATCHADMIN: "remove / re-provision this watch". No-op default for previews/tests.
     onRemoveWatch: () -> Boolean = { false },
+    // BACKUP/RESTORE: export app-wide settings as JSON bytes (synchronous).
+    onExportAppSettings: () -> ByteArray = { ByteArray(0) },
+    // BACKUP/RESTORE: import app-wide settings from picked bytes; callback reports success.
+    onImportAppSettings: (ByteArray?, (Boolean) -> Unit) -> Unit = { _, cb -> cb(false) },
+    // BACKUP/RESTORE: build the active watch's config bytes, then hand them back (null = no watch).
+    onExportWatchConfig: ((ByteArray?) -> Unit) -> Unit = { cb -> cb(null) },
+    // BACKUP/RESTORE: import a watch config onto the active watch from picked bytes; reports success.
+    onImportWatchConfig: (ByteArray?, (Boolean) -> Unit) -> Unit = { _, cb -> cb(false) },
 ) {
     var note by remember { mutableStateOf<String?>(null) }
 
@@ -253,6 +269,14 @@ fun SettingsContent(
             ClearAlarmsCard(state, progress, onClearAlarms) { note = it }
             HorizontalDivider()
             TransferCard(state, onTransfer) { note = it }
+            HorizontalDivider()
+            BackupCard(
+                state,
+                onExportAppSettings,
+                onImportAppSettings,
+                onExportWatchConfig,
+                onImportWatchConfig,
+            ) { note = it }
             HorizontalDivider()
             RemoveWatchCard(state, onRemoveWatch) { note = it }
             HorizontalDivider()
@@ -1268,6 +1292,131 @@ private fun TransferCard(
             },
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Transfer settings") }
+    }
+}
+
+// ---- backup / restore (export + import to a user-chosen file) ---------------
+
+/**
+ * BACKUP/RESTORE — export/import the app-wide settings and the active watch's config to/from JSON
+ * files the user picks via the Storage Access Framework, so they survive an app uninstall / storage
+ * wipe. Four actions:
+ *   - Export app settings  -> write [AppSettings] JSON to a new file.
+ *   - Import app settings  <- read app settings JSON back (tolerant; foreign file = no change).
+ *   - Export watch config  -> write the ACTIVE watch's config (alarms/rules/buttons + metadata).
+ *   - Import watch config  <- restore a watch config onto the ACTIVE watch (NOT gated by the
+ *                            backup's MAC — it works for any watch).
+ *
+ * The export writes are deferred: the bytes are built on click into a holder, then the SAF
+ * create-document picker writes them on the chosen Uri.
+ */
+@Composable
+private fun BackupCard(
+    state: SettingsUiState,
+    onExportAppSettings: () -> ByteArray,
+    onImportAppSettings: (ByteArray?, (Boolean) -> Unit) -> Unit,
+    onExportWatchConfig: ((ByteArray?) -> Unit) -> Unit,
+    onImportWatchConfig: (ByteArray?, (Boolean) -> Unit) -> Unit,
+    onNote: (String) -> Unit,
+) {
+    val context = LocalContext.current
+    // Bytes staged for the next create-document write (set just before launching the picker).
+    var pendingExportBytes by remember { mutableStateOf<ByteArray?>(null) }
+
+    fun writePending(uri: android.net.Uri?) {
+        val bytes = pendingExportBytes
+        pendingExportBytes = null
+        if (uri == null || bytes == null) { onNote("Export cancelled."); return }
+        val ok = runCatching {
+            context.contentResolver.openOutputStream(uri)?.use { it.write(bytes); it.flush() }
+        }.isSuccess
+        onNote(if (ok) "Exported to the chosen file." else "Export failed to write the file.")
+    }
+
+    val exportAppLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument(AppSettingsBackup.MIME_TYPE)
+    ) { uri -> writePending(uri) }
+    val exportWatchLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument(WatchConfigBackup.MIME_TYPE)
+    ) { uri -> writePending(uri) }
+
+    val importAppLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) { onNote("Import cancelled."); return@rememberLauncherForActivityResult }
+        val bytes = runCatching {
+            context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+        }.getOrNull()
+        onImportAppSettings(bytes) { ok ->
+            onNote(if (ok) "App settings imported." else "Not a valid app-settings backup.")
+        }
+    }
+    val importWatchLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) { onNote("Import cancelled."); return@rememberLauncherForActivityResult }
+        val bytes = runCatching {
+            context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+        }.getOrNull()
+        onImportWatchConfig(bytes) { ok ->
+            onNote(
+                if (ok) "Watch config imported onto the active watch."
+                else "Not a valid watch-config backup (or no active watch).",
+            )
+        }
+    }
+
+    SettingCard("Backup & restore") {
+        Text(
+            "Export your settings to a file so you can restore them after reinstalling or wiping " +
+                "app data. App settings are phone-wide; watch config (alarms, notification rules, " +
+                "button mappings) belongs to a watch but can be imported onto ANY watch.",
+            style = MaterialTheme.typography.labelSmall,
+        )
+
+        Text("App-wide settings", style = MaterialTheme.typography.labelLarge)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = {
+                    pendingExportBytes = onExportAppSettings()
+                    exportAppLauncher.launch(AppSettingsBackup.EXPORT_FILENAME)
+                },
+                modifier = Modifier.weight(1f),
+            ) { Text("Export") }
+            OutlinedButton(
+                onClick = { importAppLauncher.launch(arrayOf("application/json", "*/*")) },
+                modifier = Modifier.weight(1f),
+            ) { Text("Import") }
+        }
+
+        Text("Watch config", style = MaterialTheme.typography.labelLarge)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                enabled = state.hasActiveWatch,
+                onClick = {
+                    onExportWatchConfig { bytes ->
+                        if (bytes == null) {
+                            onNote("No active watch to export.")
+                        } else {
+                            pendingExportBytes = bytes
+                            exportWatchLauncher.launch(WatchConfigBackup.EXPORT_FILENAME)
+                        }
+                    }
+                },
+                modifier = Modifier.weight(1f),
+            ) { Text("Export") }
+            OutlinedButton(
+                enabled = state.hasActiveWatch,
+                onClick = { importWatchLauncher.launch(arrayOf("application/json", "*/*")) },
+                modifier = Modifier.weight(1f),
+            ) { Text("Import") }
+        }
+        if (!state.hasActiveWatch) {
+            Text(
+                "Connect a watch to export/import its config.",
+                style = MaterialTheme.typography.labelSmall,
+            )
+        }
     }
 }
 

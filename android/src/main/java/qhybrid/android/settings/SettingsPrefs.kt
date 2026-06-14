@@ -167,6 +167,31 @@ interface SettingsPrefs {
 
     /** WP-NAV — persist the OsmAnd AIDL backend choice (a NavCueBackend enum name). */
     fun setNavCueBackend(backend: String)
+
+    /**
+     * BACKUP/RESTORE — overwrite ALL app-wide settings with [settings] (used by the settings
+     * import). Every value is normalized via the existing per-field setters so an imported blob can
+     * never persist an out-of-range value. The default implementation composes the individual
+     * setters; an impl may override for a single atomic write.
+     */
+    fun replaceAll(settings: AppSettings) {
+        setNudge(settings.nudgeEnabled, settings.nudgeMinutes)
+        setSecondTimezoneOffset(settings.secondTimezoneOffsetMinutes)
+        setPreferredMusicApp(settings.preferredMusicApp)
+        setCalendarAlarmOffset(settings.calendarAlarmOffsetMinutes)
+        setMultiFunctionRotation(settings.multiFunctionRotation)
+        setMultiFunctionActiveIndex(settings.multiFunctionActiveIndex)
+        // Re-apply each per-mode switch-buzz override (merges; the rotation reset above clears index).
+        settings.multiFunctionSwitchBuzz.forEach { (mode, pattern) -> setMultiFunctionSwitchBuzz(mode, pattern) }
+        setReservedBuzzMoveHands(settings.reservedBuzzMoveHands)
+        setLyrionServer(settings.lyrionServerHost, settings.lyrionServerPort)
+        setLyrionPlayer(settings.lyrionPlayerId, settings.lyrionPlayerName)
+        setLyrionEmptyQueueFallback(settings.lyrionEmptyQueueFallback)
+        setLyrionFavoriteId(settings.lyrionFavoriteId)
+        setRingDurationSeconds(settings.ringDurationSeconds)
+        setNavCue(settings.navCueEnabled, settings.navCueSoonMeters, settings.navCueNowMeters)
+        setNavCueBackend(settings.navCueBackend)
+    }
 }
 
 /**

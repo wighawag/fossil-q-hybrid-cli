@@ -665,6 +665,76 @@ open class SettingsViewModel(
         return true
     }
 
+    // ---- BACKUP / RESTORE (export+import; survives uninstall via a user-chosen file) ----------
+
+    /** Export the app-wide settings as JSON bytes (synchronous; the prefs are already in memory). */
+    fun exportAppSettingsBytes(): ByteArray =
+        qhybrid.android.settings.backup.AppSettingsBackup.toBytes(appSettings.value)
+
+    /**
+     * Import app-wide settings from [bytes] (tolerant: garbage/foreign -> no change). Persists ALL
+     * fields then refreshes the in-memory state so the UI updates. [onResult] is invoked on the
+     * coroutine's thread with whether a valid backup was applied.
+     */
+    fun importAppSettingsBytes(bytes: ByteArray?, onResult: (Boolean) -> Unit) {
+        val decoded = qhybrid.android.settings.backup.AppSettingsBackup.fromBytes(bytes)
+        if (decoded == null) { onResult(false); return }
+        coroutineScope.launch {
+            prefs.replaceAll(decoded)
+            appSettings.value = prefs.get()
+            onResult(true)
+        }
+    }
+
+    /**
+     * Build the ACTIVE watch's full config as JSON bytes, then hand them to [onReady] (null when no
+     * active watch). Reads Room on the coroutine scope; [onReady] runs on that scope.
+     */
+    fun exportActiveWatchConfigBytes(onReady: (ByteArray?) -> Unit) {
+        coroutineScope.launch {
+            val watch = repo.getActiveWatch()
+            if (watch == null) { onReady(null); return@launch }
+            val config = qhybrid.android.settings.backup.WatchConfig(
+                macAddress = watch.macAddress,
+                name = watch.name,
+                model = watch.model,
+                firmwareVersion = watch.firmwareVersion,
+                stepGoal = watch.stepGoal,
+                vibrationStrength = watch.vibrationStrength,
+                alarms = repo.getAlarms(watch.macAddress),
+                rules = repo.getRules(watch.macAddress),
+                buttons = repo.getButtons(watch.macAddress),
+            )
+            onReady(qhybrid.android.settings.backup.WatchConfigBackup.toBytes(config))
+        }
+    }
+
+    /**
+     * Import a watch config from [bytes] onto the ACTIVE watch (NOT gated by the backup's MAC — the
+     * rows are re-keyed onto the active watch). Tolerant: garbage/foreign -> no change. [onResult]
+     * reports whether a valid backup was applied (false also when there is no active watch).
+     */
+    fun importActiveWatchConfigBytes(bytes: ByteArray?, onResult: (Boolean) -> Unit) {
+        val config = qhybrid.android.settings.backup.WatchConfigBackup.fromBytes(bytes)
+        if (config == null) { onResult(false); return }
+        coroutineScope.launch {
+            val watch = repo.getActiveWatch()
+            if (watch == null) { onResult(false); return@launch }
+            repo.importWatchConfig(
+                mac = watch.macAddress,
+                name = config.name,
+                model = config.model,
+                firmwareVersion = config.firmwareVersion,
+                stepGoal = config.stepGoal,
+                vibrationStrength = config.vibrationStrength,
+                alarms = config.alarms,
+                rules = config.rules,
+                buttons = config.buttons,
+            )
+            onResult(true)
+        }
+    }
+
     companion object {
         /** Production factory: real WP4 repo + SharedPreferences prefs + service-backed sync. */
         fun factory(context: Context): ViewModelProvider.Factory {

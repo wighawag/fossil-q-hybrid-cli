@@ -225,6 +225,50 @@ class WatchRepository(
      * Pre-existing rows on [toMac] that collide on PK are overwritten; non-colliding rows
      * on [toMac] are left in place (matches the documented "bulk-insert with REPLACE").
      */
+    /**
+     * BACKUP/RESTORE — full-REPLACE [mac]'s child config (alarms + rules + buttons) with the
+     * supplied rows, in one transaction, AND upsert the watch row's exportable fields (name / model
+     * / firmware / step goal / vibration strength). Every child row is re-keyed onto the normalized
+     * (upper-case) [mac], so an imported backup can be restored onto ANY watch — the source MAC in
+     * the backup is ignored. Used by the per-watch config import.
+     *
+     * The watch row must already exist (the caller targets the active watch); only the exportable
+     * fields are overwritten, preserving sync stamps / isActive / battery / lastSyncTime.
+     */
+    suspend fun importWatchConfig(
+        mac: String,
+        name: String,
+        model: String?,
+        firmwareVersion: String?,
+        stepGoal: Int,
+        vibrationStrength: Int,
+        alarms: List<WatchAlarmEntity>,
+        rules: List<NotificationRuleEntity>,
+        buttons: List<ButtonMappingEntity>,
+    ) {
+        val normalized = mac.uppercase()
+        val ts = now()
+        db.withTransaction {
+            val existing = watchDao.getByMac(normalized) ?: return@withTransaction
+            watchDao.upsert(
+                existing.copy(
+                    name = name,
+                    model = model,
+                    firmwareVersion = firmwareVersion,
+                    stepGoal = stepGoal,
+                    vibrationStrength = vibrationStrength,
+                )
+            )
+            // Full overwrite of each child section (delete-then-insert), re-keyed to the target MAC.
+            alarmDao.deleteForWatch(normalized)
+            alarmDao.upsertAll(alarms.map { it.copy(watchMac = normalized, updatedAt = ts) })
+            ruleDao.deleteForWatch(normalized)
+            ruleDao.upsertAll(rules.map { it.copy(watchMac = normalized, updatedAt = ts) })
+            buttonDao.deleteForWatch(normalized)
+            buttonDao.upsertAll(buttons.map { it.copy(watchMac = normalized, updatedAt = ts) })
+        }
+    }
+
     suspend fun transferSettings(fromMac: String, toMac: String) {
         val ts = now()
         db.withTransaction {

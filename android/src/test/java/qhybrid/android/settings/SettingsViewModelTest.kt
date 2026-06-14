@@ -916,6 +916,78 @@ class SettingsViewModelTest : DbTestBase() {
         assertFalse(model.transferSettings("AA:00:00:00:00:01", "aa:00:00:00:00:01")) // same MAC
     }
 
+    // ---- BACKUP / RESTORE ----------------------------------------------------
+
+    @Test
+    fun appSettingsExportImportRoundTripsThroughPrefs() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }
+        // Source VM with non-default app settings.
+        val srcPrefs = FakePrefs(AppSettings(nudgeEnabled = true, nudgeMinutes = 45, ringDurationSeconds = 90))
+        val srcModel = vm(prefs = srcPrefs)
+        awaitState(srcModel.uiState) { it.hasActiveWatch }
+        val bytes = srcModel.exportAppSettingsBytes()
+
+        // A FRESH VM (simulating a reinstall) imports the bytes; its prefs end up matching.
+        val dstPrefs = FakePrefs()
+        val dstModel = vm(prefs = dstPrefs)
+        awaitState(dstModel.uiState) { true }
+        var done = false
+        dstModel.importAppSettingsBytes(bytes) { done = it }
+        runBlocking { withTimeout(5_000) { while (!done) kotlinx.coroutines.delay(10) } }
+        assertTrue(done)
+        assertTrue(dstPrefs.current.nudgeEnabled)
+        assertEquals(45, dstPrefs.current.nudgeMinutes)
+        assertEquals(90, dstPrefs.current.ringDurationSeconds)
+    }
+
+    @Test
+    fun appSettingsImportRejectsGarbage() {
+        val prefs = FakePrefs()
+        val model = vm(prefs = prefs)
+        var result: Boolean? = null
+        model.importAppSettingsBytes("not a backup".toByteArray()) { result = it }
+        runBlocking { withTimeout(5_000) { while (result == null) kotlinx.coroutines.delay(10) } }
+        assertFalse(result!!)
+    }
+
+    @Test
+    fun watchConfigExportImportsOntoADifferentActiveWatch_notGatedByMac() {
+        // Export watch A's config, then import it onto a DIFFERENT active watch B (no MAC gating).
+        runBlocking {
+            watchDao.upsert(watch("AA:00:00:00:00:0A", active = true))
+            alarmDao.upsert(alarm("AA:00:00:00:00:0A", slot = 0))
+            ruleDao.upsert(rule("AA:00:00:00:00:0A", pkg = "com.whatsapp"))
+            buttonDao.upsert(button("AA:00:00:00:00:0A", buttonId = 0x10))
+        }
+        val model = vm()
+        awaitState(model.uiState) { it.hasActiveWatch }
+
+        var bytes: ByteArray? = null
+        var ready = false
+        model.exportActiveWatchConfigBytes { bytes = it; ready = true }
+        runBlocking { withTimeout(5_000) { while (!ready) kotlinx.coroutines.delay(10) } }
+        assertTrue(bytes != null)
+
+        // Switch the active watch to a brand-new B (no child rows), then import A's config onto it.
+        runBlocking {
+            watchDao.upsert(watch("BB:00:00:00:00:0B", active = false))
+            watchDao.setActive("BB:00:00:00:00:0B")
+        }
+        awaitState(model.uiState) { it.activeMac == "BB:00:00:00:00:0B" }
+        var imported = false
+        model.importActiveWatchConfigBytes(bytes) { imported = it }
+        runBlocking { withTimeout(5_000) { while (!imported) kotlinx.coroutines.delay(10) } }
+        assertTrue(imported)
+
+        // B now has A's rows, re-keyed onto B's MAC; A is untouched.
+        runBlocking {
+            assertEquals(1, alarmDao.getForWatch("BB:00:00:00:00:0B").size)
+            assertEquals(1, ruleDao.getForWatch("BB:00:00:00:00:0B").size)
+            assertEquals(1, buttonDao.getForWatch("BB:00:00:00:00:0B").size)
+            assertEquals(1, alarmDao.getForWatch("AA:00:00:00:00:0A").size)
+        }
+    }
+
     // ---- empty/partial tolerance ---------------------------------------------
 
     // ---- calendar alarm ring offset (WP13 — app pref + refresh trigger) ------
