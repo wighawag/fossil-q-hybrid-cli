@@ -93,4 +93,49 @@ public class BuzzPatternsTest {
                     "distinct hand position per reserved pattern (" + p + ")");
         }
     }
+
+    // ===================================================== WP-BUZZ-DURATION-NOHANDS
+
+    @Test
+    void reservedEntries_defaultEqualsConfigured10000Move() {
+        // The no-arg form must be byte-identical to (10000ms, moveHands=true).
+        assertArrayEquals(BuzzPatterns.reservedFilterFile(),
+                BuzzPatterns.reservedFilterFile((short) 10000, true),
+                "no-arg reserved filter == configured (10000, move) — no silent byte drift");
+    }
+
+    @Test
+    void reservedEntries_configurableDuration_keepsCrcVibeAndHands_butChangesDuration() {
+        short dur = (short) 1500;
+        byte[] file = BuzzPatterns.reservedFilterFile(dur, true);
+        assertEquals(BuzzPatterns.RESERVED_PATTERNS.length * NotificationCompiler.ENTRY_SIZE, file.length);
+        for (int i = 0; i < BuzzPatterns.RESERVED_PATTERNS.length; i++) {
+            int pattern = BuzzPatterns.RESERVED_PATTERNS[i];
+            int base = i * NotificationCompiler.ENTRY_SIZE;
+            java.nio.ByteBuffer b = java.nio.ByteBuffer.wrap(file, base, NotificationCompiler.ENTRY_SIZE)
+                    .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+            // CRC + vibe + hands unchanged; only the duration short (offset +22) changes.
+            assertEquals(BuzzPatterns.crcForPattern(pattern), b.getInt(base + 4), "crc stable");
+            assertEquals((byte) pattern, file[base + 31], "vibe stable");
+            assertEquals((short) (pattern * 30), b.getShort(base + 16), "hour deg kept (move=true)");
+            assertEquals((short) (pattern * 30), b.getShort(base + 18), "min deg kept (move=true)");
+            assertEquals(dur, b.getShort(base + 22), "duration field == configured");
+        }
+    }
+
+    @Test
+    void reservedEntries_noMoveHands_writesMinusOneHands_keepsCrcAndVibe() {
+        byte[] file = BuzzPatterns.reservedFilterFile((short) 0, false);
+        for (int i = 0; i < BuzzPatterns.RESERVED_PATTERNS.length; i++) {
+            int pattern = BuzzPatterns.RESERVED_PATTERNS[i];
+            int base = i * NotificationCompiler.ENTRY_SIZE;
+            java.nio.ByteBuffer b = java.nio.ByteBuffer.wrap(file, base, NotificationCompiler.ENTRY_SIZE)
+                    .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+            // Hands suppressed -> -1/-1; CRC + vibe still match so buzzPlayOnly keeps working.
+            assertEquals((short) -1, b.getShort(base + 16), "hour hand -1 (no move)");
+            assertEquals((short) -1, b.getShort(base + 18), "min hand -1 (no move)");
+            assertEquals(BuzzPatterns.crcForPattern(pattern), b.getInt(base + 4), "crc stable");
+            assertEquals((byte) pattern, file[base + 31], "vibe stable");
+        }
+    }
 }

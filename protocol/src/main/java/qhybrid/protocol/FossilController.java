@@ -185,6 +185,23 @@ public class FossilController {
     }
 
     /**
+     * WP-BUZZ-DURATION-NOHANDS: start the "find watch" continuous buzz via the call-vibration
+     * characteristic ({@code 3dda0005}). This is the ONLY buzz path that uses NO notification filter
+     * and NO play file and moves NO hands — a single tiny BLE write — so it is NOT subject to the
+     * hand-return lockout (FINDINGS #23/#24). The watch buzzes continuously until
+     * {@link #stopFindWatchBuzz()} is sent. There is no selectable pattern (fixed firmware buzz).
+     * Invents no new wire bytes (reuses {@link FossilQAdapter#findDevice()}).
+     */
+    public void findWatchBuzz() {
+        adapter.findDevice();
+    }
+
+    /** Stop the {@link #findWatchBuzz()} continuous buzz (reuses {@link FossilQAdapter#stopFindDevice()}). */
+    public void stopFindWatchBuzz() {
+        adapter.stopFindDevice();
+    }
+
+    /**
      * WP-NAV: play a turn cue — vibrate NOW with [vibePattern] AND point BOTH hands to [deg]° —
      * using a SINGLE play-file put (NO filter upload). Like {@link #buzzPlayOnly(int)} this relies on
      * the reserved nav-cue filter entries

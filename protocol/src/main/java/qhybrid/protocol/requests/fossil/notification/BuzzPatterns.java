@@ -89,4 +89,40 @@ public final class BuzzPatterns {
     public static byte[] reservedFilterFile() {
         return NotificationCompiler.compileFilter(reservedEntries());
     }
+
+    // ===================================================== WP-BUZZ-DURATION-NOHANDS
+
+    /**
+     * Default hand-hold duration (ms) for a reserved buzz entry when the caller does not override it
+     * — the same value the unconfigured {@link #reservedEntries()} bakes in.
+     */
+    public static final short DEFAULT_DURATION_MS = NotificationCompiler.DEFAULT_HAND_DURATION_MS;
+
+    /**
+     * Configurable reserved buzz entries: each entry holds for {@code durationMs} and, when
+     * {@code moveHands == false}, suppresses the hand excursion entirely (hands written
+     * {@code -1/-1}) so a buzz fires the pattern WITHOUT the post-notification hand-return lockout
+     * (FINDINGS #23/#24). When {@code moveHands == true} the N-o'clock number display is kept (so a
+     * buzz stays visually identifiable). Scope: ONLY these 7 reserved buzz patterns — the nav-cue
+     * reserved entries are intentionally left at their fixed hands/duration (their direction is the
+     * whole point). The package names + CRCs are UNCHANGED, so a {@code buzzPlayOnly} play file still
+     * matches; only the hands/duration the watch applies differ.
+     *
+     * <p>{@link #reservedEntries()} == {@code reservedEntries(DEFAULT_DURATION_MS, true)}.
+     */
+    public static List<NotificationFilterEntry> reservedEntries(short durationMs, boolean moveHands) {
+        List<NotificationFilterEntry> entries = new ArrayList<>(RESERVED_PATTERNS.length);
+        for (int p : RESERVED_PATTERNS) {
+            short hour = moveHands ? hourDegForPattern(p) : NotificationCompiler.HAND_NO_MOVE;
+            short min = moveHands ? minDegForPattern(p) : NotificationCompiler.HAND_NO_MOVE;
+            entries.add(new NotificationFilterEntry(
+                    packageNameForPattern(p), (byte) p, hour, min, durationMs, moveHands));
+        }
+        return entries;
+    }
+
+    /** The configurable reserved buzz filter as a ready-to-put NOTIFICATION_FILTER file. */
+    public static byte[] reservedFilterFile(short durationMs, boolean moveHands) {
+        return NotificationCompiler.compileFilter(reservedEntries(durationMs, moveHands));
+    }
 }

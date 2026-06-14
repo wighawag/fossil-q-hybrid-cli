@@ -52,6 +52,12 @@ public final class NotificationCompiler {
     /** Fixed filter entry size in bytes (FINDINGS #17). */
     public static final int ENTRY_SIZE = 32;
 
+    /** Default hand-hold duration in ms (official app default). */
+    public static final short DEFAULT_HAND_DURATION_MS = 10000;
+
+    /** "No move" sentinel for a hand-degree field (firmware ignores movement for this hand). */
+    public static final short HAND_NO_MOVE = -1;
+
     /** Play-file type byte: NOTIFICATION (vibrates + animates hands) — FINDINGS #21e. */
     public static final byte PLAY_TYPE_NOTIFICATION = 3;
 
@@ -90,6 +96,24 @@ public final class NotificationCompiler {
     }
 
     /**
+     * Build a filter entry with a configurable hand-hold {@code durationMs} and an optional
+     * {@code moveHands} flag. When {@code moveHands == false}, both hand-degree fields are written as
+     * {@link #HAND_NO_MOVE} ({@code -1}) so the watch buzzes the pattern WITHOUT a hand excursion
+     * (and therefore without the post-notification hand-return lockout — FINDINGS #23/#24). When
+     * {@code moveHands == true}, {@code hourDeg}/{@code minDeg} are written as-is. The supplied
+     * {@code durationMs} is always written to the duration field.
+     *
+     * <p>The 4-arg {@link #compileEntry(String, byte, short, short)} delegates here with
+     * {@code durationMs = }{@link #DEFAULT_HAND_DURATION_MS} and {@code moveHands = true}, so its
+     * bytes are unchanged.
+     */
+    public static byte[] compileEntry(String packageName, byte vibe, short hourDeg, short minDeg,
+                                      short durationMs, boolean moveHands) {
+        return compileEntryWithCrc(computeNullTerminatedCrc(packageName), vibe, hourDeg, minDeg,
+                durationMs, moveHands);
+    }
+
+    /**
      * Build a single fixed-32-byte filter entry from an already-computed package CRC.
      *
      * <p>This is the low-level core that {@link #compileEntry(String, byte, short, short)}
@@ -98,6 +122,18 @@ public final class NotificationCompiler {
      * known. Production callers should prefer {@link #compileEntry(String, byte, short, short)}.
      */
     public static byte[] compileEntryWithCrc(int crc, byte vibe, short hourDeg, short minDeg) {
+        return compileEntryWithCrc(crc, vibe, hourDeg, minDeg, DEFAULT_HAND_DURATION_MS, true);
+    }
+
+    /**
+     * Configurable-duration / optional-no-move variant of
+     * {@link #compileEntryWithCrc(int, byte, short, short)}. See
+     * {@link #compileEntry(String, byte, short, short, short, boolean)} for the {@code durationMs} /
+     * {@code moveHands} semantics. When {@code moveHands == false} the hand-degree fields are
+     * forced to {@link #HAND_NO_MOVE}, ignoring the passed {@code hourDeg}/{@code minDeg}.
+     */
+    public static byte[] compileEntryWithCrc(int crc, byte vibe, short hourDeg, short minDeg,
+                                             short durationMs, boolean moveHands) {
         // Entry size: packetLength(2) + CRC(6) + GROUP(3) + PRIORITY(3) +
         //             MOVEMENT(12) + DISPLAY(3) + VIBRATION(3) = 32 total
         ByteBuffer buf = ByteBuffer.allocate(ENTRY_SIZE);
@@ -117,12 +153,14 @@ public final class NotificationCompiler {
         buf.put((byte) 1);
         buf.put((byte) 0);        // 0 = default priority (official app uses 0)
 
+        short hour = moveHands ? hourDeg : HAND_NO_MOVE;
+        short min = moveHands ? minDeg : HAND_NO_MOVE;
         buf.put((byte) 0xC2);     // HAND_MOVEMENT (10 bytes: hour, min, subeye, duration, subeye2)
         buf.put((byte) 10);
-        buf.putShort(hourDeg);    // hour hand degrees
-        buf.putShort(minDeg);     // minute hand degrees
+        buf.putShort(hour);       // hour hand degrees (-1 = no move)
+        buf.putShort(min);        // minute hand degrees (-1 = no move)
         buf.putShort((short) -1); // subeye: no move
-        buf.putShort((short) 10000); // duration 10000ms (official app default)
+        buf.putShort(durationMs); // duration ms (default 10000 = official app default)
         buf.putShort((short) -2); // subeye2: device default (-2)
 
         buf.put((byte) 0xC4);     // DISPLAY_CONFIG
@@ -146,7 +184,7 @@ public final class NotificationCompiler {
         ByteBuffer buf = ByteBuffer.allocate(rules.size() * ENTRY_SIZE);
         buf.order(ByteOrder.LITTLE_ENDIAN);
         for (NotificationFilterEntry e : rules) {
-            buf.put(compileEntry(e.packageName, e.vibe, e.hourDeg, e.minDeg));
+            buf.put(compileEntry(e.packageName, e.vibe, e.hourDeg, e.minDeg, e.durationMs, e.moveHands));
         }
         return buf.array();
     }
