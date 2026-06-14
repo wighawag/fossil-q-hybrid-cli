@@ -94,17 +94,31 @@ Watch: Fossil Q Commuter (HW.0.0), Firmware HW0.0.2.9r.v3, Fossil protocol (2.x)
     2. **Firmware/adapter re-delivery or the gesture detector.** `FossilQAdapter.handleMicroAppEvent`
        routes RING_PHONE (0x08) presses through `ButtonGestureDetector` (400ms window); the raw
        micro_app event carries a `sequence` byte that is NOT used for de-duplication anywhere.
-  NEXT STEP — capture logcat (filter tag `FossilQ`/`FossilQ-Tracker`) during ONE physical press and
-  read the decisive lines:
-    - adapter: `Button press: <BTN> → <APP> (<variant>) seq=<N>` — does ONE press log MULTIPLE
-      lines? SAME `seq` repeated ⇒ duplicate delivery (suspect #1); DIFFERENT `seq` ⇒ firmware
-      re-sending.
-    - dispatch: `Path-2 button press: 0xNN` then `multi-function advanced to [i] <mode> (buzz B)` —
-      count how many `advanced` lines per press.
-  FIX once known: likely de-duplicate by `sequence` (drop a repeat of the same seq within a short
-  window) at the adapter OR route events from only ONE controller (the foreground `controllerRef`),
-  not both. Do NOT re-add the old switch-buzz debounce — that masked the symptom; fix the duplicate
-  delivery instead.
+  CAPTURE 2026-06-14 (TIMER mode, ONE short press of the TOP button): the handler fired SEVEN
+  times in a ~4ms cluster — `FossilQ-Tracker: timer gesture: SHORT -> ring at 17:57 (+3 min)` x7,
+  then `armed timer alarm slot 15` x7, `buzzNow ... pattern=5` x6, and `onStartCommand BUZZ` x7.
+  So it is the **0x05 MUSIC-stream path** (`onTimerEventJson`/`onMusicEventJson`), NOT the 0x08
+  button path, and the multiplication is at/above event delivery (every downstream effect is x6-7).
+  The dispatch + switch handlers are each correct (one call → one effect); something delivers the
+  SAME watch event ~7 times.
+  STILL UNKNOWN (the adapter SLF4J tag `FossilQAdapter` did not surface in that capture, so we
+  could not see the per-event `seq`). The decisive question: did the ADAPTER emit 7 events, or did
+  ONE adapter event fan out to 7 pipelines?
+  NEXT STEP — capture with the adapter + transport tags included:
+    adb logcat -c && adb logcat -v time -s FossilQ-Tracker FossilQAdapter AndroidBleTransport FossilQ-Svc
+  press once, then read:
+    - adapter: `Music control: <ACTION> (seq=<N>)` — how many per press?
+        * 7 lines, SAME seq  ⇒ ONE watch notification fanned out to ~7 live controllers/transports
+          (duplicate-pipeline leak across reconnects) → FIX: route events from ONLY the foreground
+          `controllerRef`, and/or ensure old controllers/transports fully tear down their GATT
+          notification subscription on disconnect.
+        * 7 lines, DIFFERENT seq ⇒ the WATCH actually sent ~7 notifications (firmware/watch-state
+          issue, consistent with the "corrupted button state, fixed by re-provision" pattern)
+          → FIX: de-duplicate at the adapter (drop a repeat within a short window) and/or guard by
+          the press's own identity.
+        * only 1 adapter line but 7 downstream ⇒ the fan-out is in the Android routing layer.
+    - also note how many distinct `AndroidBleTransport`/controller instances appear.
+  Do NOT re-add the old switch-buzz debounce — it only masked this; fix the duplicate delivery.
 - [ ] **Capture the real TWENTY_FOUR_HOUR (24h) dial-mode bytes from the official Fossil app.**
   The 24h sub-eye position does NOT trigger in a mode-toggle cycle on a 5-position dial: on a
   cycle like `time2, alert, alarm, 24h, date`, the 24h press makes the dial return but the
