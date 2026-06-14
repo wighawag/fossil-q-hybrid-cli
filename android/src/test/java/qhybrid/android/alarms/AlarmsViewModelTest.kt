@@ -134,6 +134,35 @@ class AlarmsViewModelTest : DbTestBase() {
     }
 
     @Test
+    fun timerSlot15_surfacedReadOnly_separateFromUserAndCalendar() {
+        runBlocking {
+            watchDao.upsert(watch("AA:00:00:00:00:03", name = "Three", active = true))
+            alarmDao.upsert(userAlarm("AA:00:00:00:00:03", slot = 0)) // user
+            alarmDao.upsert(userAlarm("AA:00:00:00:00:03", slot = 15, hour = 20, minute = 17)) // TIMER
+            alarmDao.upsert(userAlarm("AA:00:00:00:00:03", slot = 16)) // calendar
+        }
+        val model = vm()
+        val s = awaitState(model.uiState) { it.timerAlarm != null }
+        // The timer (slot 15) is surfaced on its own, NOT in the user or calendar lists.
+        assertEquals(listOf(0), s.alarms.map { it.slotId })
+        assertEquals(listOf(16), s.calendarAlarms.map { it.slotId })
+        assertEquals(15, s.timerAlarm?.slotId)
+        assertEquals(20, s.timerAlarm?.hour)
+        assertEquals(17, s.timerAlarm?.minute)
+    }
+
+    @Test
+    fun disabledTimerSlot_isNotSurfaced() {
+        runBlocking {
+            watchDao.upsert(watch("AA:00:00:00:00:03", name = "Three", active = true))
+            alarmDao.upsert(userAlarm("AA:00:00:00:00:03", slot = 15, enabled = false)) // disabled timer
+        }
+        val model = vm()
+        val s = awaitState(model.uiState) { it.hasActiveWatch }
+        assertNull(s.timerAlarm)
+    }
+
+    @Test
     fun emptyWhenNoActiveWatch() {
         runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", name = "One", active = false)) }
         val model = vm()

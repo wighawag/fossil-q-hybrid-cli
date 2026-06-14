@@ -41,6 +41,12 @@ data class AlarmsUiState(
      * alarms.
      */
     val calendarAlarms: List<WatchAlarmEntity> = emptyList(),
+    /**
+     * The reserved TIMER alarm (slot 15), or null when no timer is armed. **READ-ONLY** here: it is
+     * owned by the phone-side multi-function TIMER dispatch ("ring in N min"), not editable on this
+     * screen. Surfaced (like [calendarAlarms]) so the user can SEE the pending timer.
+     */
+    val timerAlarm: WatchAlarmEntity? = null,
 ) {
     val activeMac: String? get() = activeWatch?.macAddress
     val hasActiveWatch: Boolean get() = activeWatch != null
@@ -140,7 +146,16 @@ open class AlarmsViewModel(
             val calendarAlarms = rows
                 .filter { it.slotId in AlarmsUiState.CALENDAR_SLOT_MIN..AlarmsUiState.CALENDAR_SLOT_MAX }
                 .sortedBy { it.slotId }
-            AlarmsUiState(activeWatch = active, alarms = userAlarms, calendarAlarms = calendarAlarms)
+            // The reserved TIMER slot (15) is surfaced read-only when armed + enabled.
+            val timerAlarm = rows.firstOrNull {
+                it.slotId == AlarmsUiState.TIMER_SLOT && it.isEnabled
+            }
+            AlarmsUiState(
+                activeWatch = active,
+                alarms = userAlarms,
+                calendarAlarms = calendarAlarms,
+                timerAlarm = timerAlarm,
+            )
         }
     }
 

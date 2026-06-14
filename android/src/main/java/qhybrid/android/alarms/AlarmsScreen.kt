@@ -200,6 +200,35 @@ fun AlarmsContent(
                             }
                         }
 
+                        // The reserved TIMER alarm (slot 15) from the multi-function "ring in N min"
+                        // mode, when armed. Read-only here (owned by the timer dispatch).
+                        state.timerAlarm?.let { timer ->
+                            item(key = "timer-header") {
+                                Column(
+                                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                                    modifier = Modifier.padding(top = 12.dp),
+                                ) {
+                                    HorizontalDivider()
+                                    Text(
+                                        "Timer",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        modifier = Modifier.padding(top = 8.dp),
+                                    )
+                                    Text(
+                                        "A one-off \"ring in N min\" timer set from the watch's " +
+                                            "multi-function button. Read-only here.",
+                                        style = MaterialTheme.typography.labelSmall,
+                                    )
+                                }
+                            }
+                            item(key = "timer-row") {
+                                CalendarAlarmRow(
+                                    alarm = timer,
+                                    onWatch = state.isOnWatch(timer.slotId),
+                                )
+                            }
+                        }
+
                         // WP13 — the read-only calendar alarms (slots 16–31), mirrored from the
                         // user's system calendar. Shown only when there are any. NOT editable here.
                         if (state.calendarAlarms.isNotEmpty()) {
