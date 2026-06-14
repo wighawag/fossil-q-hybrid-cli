@@ -15,9 +15,14 @@ import qhybrid.android.db.WatchRepository
 import qhybrid.android.notifications.VibePatterns
 import qhybrid.android.settings.SettingsVocabulary
 import qhybrid.android.settings.SharedPreferencesSettingsPrefs
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import qhybrid.android.sync.CoroutineDebouncer
 import qhybrid.android.sync.Debouncer
+import qhybrid.android.sync.GlobalSyncStateSource
 import qhybrid.android.sync.ServiceSaveToWatch
+import qhybrid.android.sync.SyncState
+import qhybrid.android.sync.SyncStateSource
 import qhybrid.android.sync.SyncSection
 import qhybrid.android.tracker.ButtonActionRouter.Path2Action
 import qhybrid.android.tracker.TrackerController.WaypointKind
@@ -71,6 +76,9 @@ class ServiceTrackerDispatch(
     // every press kicked a full 32-slot alarm-file upload (~1.5s each) and they serialized + timed
     // out on the ble-worker. Injectable for tests; null → a fixed-window CoroutineDebouncer.
     timerAlarmPushDebouncer: Debouncer? = null,
+    // TIMER two-buzz feedback: the process-wide sync state, observed to fire the SECOND (duration)
+    // buzz only AFTER the alarm actually reaches the watch. Injectable for tests.
+    private val syncStateSource: SyncStateSource = GlobalSyncStateSource(),
 ) {
     private val appContext = context.applicationContext
     // Default to the live platform-LocationManager source (zero Google Play Services); tests inject
@@ -122,7 +130,12 @@ class ServiceTrackerDispatch(
         val action = TimerController.decide(gesture, now(), zone())
         Log.i(TAG, "timer gesture: %s -> ring at %02d:%02d (+%d min)"
             .format(gesture, action.hour, action.minute, action.minutesFromNow))
-        buzz(action.buzzPattern)
+        // TWO-BUZZ feedback. Buzz 1 (NOW, duration-INDEPENDENT): a single short pulse = "phone got
+        // your press" — immediate, because the phone may be out of range and the user wants to know
+        // the press registered. Buzz 2 (later, the DURATION pattern) fires only once the alarm has
+        // actually reached the watch (see [armTimerAlarmAsync]) — so the user feels WHEN the timer
+        // truly starts + WHICH timer (short/double/long).
+        buzz(TIMER_RECEIVED_BUZZ)
         io.launch { armTimerAlarmAsync(action) }
         return action
     }
@@ -151,12 +164,44 @@ class ServiceTrackerDispatch(
             )
             // DEBOUNCE the alarm-file push: rapid presses (or a re-sent press) coalesce into ONE
             // ALARMS upload of the final armed time, instead of one full file upload per press.
+            // After the push, await the ALARMS sync result and fire the DURATION buzz on success
+            // (buzz 2) — so the user feels when the timer ACTUALLY started + which timer.
             timerAlarmPushDebouncer.schedule {
-                ServiceSaveToWatch.trigger(appContext, SyncSection.ALARMS_ONLY)
+                io.launch { pushTimerAlarmAndConfirm(action) }
             }
             Log.i(TAG, "armed timer alarm slot ${AlarmCompiler.TIMER_SLOT} at %02d:%02d (push debounced)"
                 .format(action.hour, action.minute))
         }.onFailure { Log.w(TAG, "armTimer failed", it) }
+    }
+
+    /**
+     * Trigger the ALARMS push and, when it SUCCEEDS (the alarm reached the watch), play the DURATION
+     * buzz ([TimerController.TimerAction.buzzPattern]) as the second feedback. On failure/timeout no
+     * second buzz fires — the absence itself tells the user the timer did not arm (e.g. out of
+     * range). Best-effort; never throws.
+     */
+    private suspend fun pushTimerAlarmAndConfirm(action: TimerController.TimerAction) {
+        // Capture the current state version BEFORE triggering so a stale SUCCESS already in the
+        // StateFlow (replayed to a new collector) can't satisfy the wait — we only accept a terminal
+        // phase published AFTER this point (strictly newer lastUpdatedMillis).
+        val since = syncStateSource.status.value.lastUpdatedMillis
+        ServiceSaveToWatch.trigger(appContext, SyncSection.ALARMS_ONLY)
+        val ok = withTimeoutOrNull(TIMER_CONFIRM_TIMEOUT_MS) {
+            syncStateSource.status.first { st ->
+                st.lastUpdatedMillis > since && when (st.phase) {
+                    SyncState.SyncPhase.SUCCESS ->
+                        st.lastResult?.performed?.contains(SyncSection.ALARMS) == true
+                    SyncState.SyncPhase.ERROR -> true
+                    else -> false
+                }
+            }.phase == SyncState.SyncPhase.SUCCESS
+        } ?: false
+        if (ok) {
+            Log.i(TAG, "timer armed on watch — duration buzz ${action.buzzPattern}")
+            buzz(action.buzzPattern)
+        } else {
+            Log.w(TAG, "timer alarm not confirmed on watch (timeout/error) — no duration buzz")
+        }
     }
 
     /**
@@ -278,5 +323,9 @@ class ServiceTrackerDispatch(
         private const val TAG = "FossilQ-Tracker"
         // Trailing-debounce window for the timer alarm-file push (ms).
         private const val TIMER_ALARM_PUSH_DEBOUNCE_MS = 1200L
+        // Buzz 1: the immediate, duration-INDEPENDENT "press received" pulse (a single short buzz).
+        private const val TIMER_RECEIVED_BUZZ = VibePatterns.ONE_SHORT
+        // How long to wait for the alarm sync to confirm before giving up on the duration buzz.
+        private const val TIMER_CONFIRM_TIMEOUT_MS = 20_000L
     }
 }

@@ -12,66 +12,133 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import qhybrid.android.db.WatchEntity
 import qhybrid.android.db.WatchRepository
+import qhybrid.android.notifications.VibePatterns
+import qhybrid.android.sync.FakeSyncStateSource
 import qhybrid.android.sync.RecordingDebouncer
+import qhybrid.android.sync.SyncResult
+import qhybrid.android.sync.SyncSection
+import qhybrid.android.sync.SyncState
 
 /**
- * Regression for the per-press alarm-upload storm (FINDINGS / logcat 2026-06-14): each TIMER press
- * used to kick a FULL `SyncSection.ALARMS` 32-slot file upload, so a burst of presses serialized on
- * the ble-worker and TIMED OUT. The dispatch must route the alarm PUSH through a debouncer so a
- * burst coalesces into ONE upload of the final armed time (the Room write stays per-press, so the
- * armed time is always live).
- *
- * Uses a [RecordingDebouncer] to assert the dispatch SCHEDULES the push (N times for N presses) but
- * the debouncer keeps only the LAST pending action — i.e. exactly one upload runs per burst.
+ * TIMER feedback + sync behaviour:
+ *  - the alarm PUSH is debounced (a burst of presses → ONE upload; FINDINGS 2026-06-14), and
+ *  - TWO-BUZZ feedback: buzz 1 (immediate, duration-INDEPENDENT "press received") fires on every
+ *    press; buzz 2 (the DURATION pattern) fires ONLY after the alarm sync actually SUCCEEDS.
  */
 @RunWith(RobolectricTestRunner::class)
 class TimerAlarmPushDebounceTest {
 
-    private fun timerJson() = """{"type":"music","action":"TOGGLE_PLAY_PAUSE","sequence":1}"""
+    private fun shortTimerJson() = """{"type":"music","action":"TOGGLE_PLAY_PAUSE","sequence":1}"""
 
-    @Test
-    fun timerPressesAreCoalescedIntoOneAlarmPush() {
-        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
-        // Seed an active watch so armTimerAlarmAsync has a target (otherwise it returns early).
-        val repo = WatchRepository(context)
+    private fun seedActiveWatch() {
+        val repo = WatchRepository(ApplicationProvider.getApplicationContext())
         runBlocking {
             repo.upsertWatch(
                 WatchEntity(
-                    macAddress = "AA:00:00:00:00:01",
-                    name = "Test",
-                    model = null,
-                    firmwareVersion = null,
-                    batteryLevel = 50,
-                    isActive = true,
+                    macAddress = "AA:00:00:00:00:01", name = "Test", model = null,
+                    firmwareVersion = null, batteryLevel = 50, isActive = true,
                 )
             )
         }
+    }
 
+    private fun dispatch(
+        debouncer: RecordingDebouncer,
+        sync: FakeSyncStateSource,
+        buzzes: MutableList<Int>,
+    ) = ServiceTrackerDispatch(
+        context = ApplicationProvider.getApplicationContext(),
+        io = CoroutineScope(Dispatchers.IO + SupervisorJob()),
+        buzzEffect = { pattern -> synchronized(buzzes) { buzzes.add(pattern) } },
+        timerAlarmPushDebouncer = debouncer,
+        syncStateSource = sync,
+    )
+
+    @Test
+    fun timerPressesAreCoalescedIntoOneAlarmPush() {
+        seedActiveWatch()
         val recording = RecordingDebouncer()
-        val dispatch = ServiceTrackerDispatch(
-            context = context,
-            // A real IO scope; the test polls for the async Room write + schedule to complete.
-            io = CoroutineScope(Dispatchers.IO + SupervisorJob()),
-            // A fixed "now" so the gesture decodes deterministically; a no-op buzz.
-            buzzEffect = { /* no-op */ },
-            timerAlarmPushDebouncer = recording,
-        )
+        val buzzes = mutableListOf<Int>()
+        val d = dispatch(recording, FakeSyncStateSource(), buzzes)
 
-        // Three rapid TIMER presses (the watch may even re-send one as several). Each launches an
-        // async Room write + a debouncer.schedule on the IO scope; poll briefly for them to land.
-        repeat(3) { dispatch.onTimerEventJson(timerJson()) }
+        repeat(3) { d.onTimerEventJson(shortTimerJson()) }
 
         runBlocking {
             kotlinx.coroutines.withTimeout(5_000) {
                 while (recording.scheduleCount < 3) kotlinx.coroutines.delay(10)
             }
         }
-        // Each press schedules the push, but the debouncer holds only the LAST pending action:
-        // firing it once = exactly one ALARMS upload for the whole burst.
-        assertEquals("each press schedules a push", 3, recording.scheduleCount)
+        // Three presses → three schedules, but the debouncer holds only the last (one upload/burst).
+        assertEquals(3, recording.scheduleCount)
+    }
 
-        // Firing the single pending action does not throw (it pokes the service trigger; no-op here).
+    @Test
+    fun buzz1IsImmediateReceivedPulse_buzz2IsDurationAfterSyncSuccess() {
+        seedActiveWatch()
+        val recording = RecordingDebouncer()
+        val sync = FakeSyncStateSource()
+        val buzzes = mutableListOf<Int>()
+        val d = dispatch(recording, sync, buzzes)
+
+        // One SHORT-timer press.
+        d.onTimerEventJson(shortTimerJson())
+
+        // Buzz 1 fires immediately: the duration-independent "received" pulse (ONE_SHORT).
+        runBlocking {
+            kotlinx.coroutines.withTimeout(5_000) {
+                while (buzzes.isEmpty()) kotlinx.coroutines.delay(10)
+            }
+        }
+        assertEquals(VibePatterns.ONE_SHORT, buzzes.first())
+
+        // Let the debounced push schedule, then fire it (runs pushTimerAlarmAndConfirm on the IO scope).
+        runBlocking {
+            kotlinx.coroutines.withTimeout(5_000) {
+                while (recording.scheduleCount < 1) kotlinx.coroutines.delay(10)
+            }
+        }
         recording.fireNow()
-        assertTrue(true)
+
+        // No second buzz yet — the alarm hasn't been confirmed on the watch.
+        runBlocking { kotlinx.coroutines.delay(100) }
+        assertEquals("only the received buzz so far", 1, buzzes.size)
+
+        // Drive a SUCCESS that PERFORMED the ALARMS section → buzz 2 = the SHORT duration pattern.
+        sync.set(
+            SyncState.SyncPhase.SUCCESS,
+            result = SyncResult("AA:00:00:00:00:01", listOf(SyncSection.ALARMS), emptyList(), emptyList()),
+            nowMillis = 1L,
+        )
+        runBlocking {
+            kotlinx.coroutines.withTimeout(5_000) {
+                while (buzzes.size < 2) kotlinx.coroutines.delay(10)
+            }
+        }
+        // SHORT timer → TimerController.buzzFor(SHORT) == ONE_SHORT (the duration pattern).
+        assertEquals(TimerController.buzzFor(TimerController.TimerGesture.SHORT), buzzes[1])
+        assertEquals(2, buzzes.size)
+    }
+
+    @Test
+    fun noDurationBuzz_whenSyncErrors() {
+        seedActiveWatch()
+        val recording = RecordingDebouncer()
+        val sync = FakeSyncStateSource()
+        val buzzes = mutableListOf<Int>()
+        val d = dispatch(recording, sync, buzzes)
+
+        d.onTimerEventJson(shortTimerJson())
+        runBlocking {
+            kotlinx.coroutines.withTimeout(5_000) {
+                while (recording.scheduleCount < 1) kotlinx.coroutines.delay(10)
+            }
+        }
+        recording.fireNow()
+
+        // Sync ERRORs (e.g. out of range) → NO second buzz; the absence tells the user it didn't arm.
+        sync.set(SyncState.SyncPhase.ERROR, errorMessage = "Watch not reachable", nowMillis = 1L)
+        runBlocking { kotlinx.coroutines.delay(200) }
+        assertEquals("only the received buzz; no duration buzz on error", 1, buzzes.size)
+        assertTrue(buzzes.first() == VibePatterns.ONE_SHORT)
     }
 }
