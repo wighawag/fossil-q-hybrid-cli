@@ -223,8 +223,9 @@ class ServiceTrackerDispatch(
         Log.i(TAG, "Path-2 action: $action")
         when (action) {
             is Path2Action.LogWaypoint -> {
-                io.launch { recordWaypointAsync(WaypointKind.MINOR) }
-                buzz(action.buzzPattern)
+                // Three-buzz feedback (received now, success/failure when GPS resolves) — see
+                // [recordWaypointWithFeedback]. The button's own buzzPattern is NOT used here.
+                recordWaypointWithFeedback(WaypointKind.MINOR)
             }
             is Path2Action.RingPhone -> {
                 ringPhone()
@@ -285,13 +286,32 @@ class ServiceTrackerDispatch(
         }.onFailure { Log.w(TAG, "ringPhone() failed", it) }
     }
 
-    /** Capture a GPS fix + persist it as a [kind] waypoint (best-effort; never throws). */
-    private suspend fun recordWaypointAsync(kind: WaypointKind) {
+    /**
+     * THREE-BUZZ waypoint feedback (mirrors the timer's two-buzz, plus a distinct failure):
+     *   - RECEIVED (now): soft single [WAYPOINT_RECEIVED_BUZZ] = "phone got your press",
+     *   - SUCCESS (after the GPS fix resolves + the row is saved): long [WAYPOINT_SUCCESS_BUZZ],
+     *   - FAILURE (no fix / no permission / no save): soft double [WAYPOINT_FAILURE_BUZZ].
+     * The outcome buzz fires only once GPS RESOLVES, so out in the field the user knows whether the
+     * waypoint actually recorded (a fix can take seconds, or fail). Never throws on the caller thread.
+     */
+    private fun recordWaypointWithFeedback(kind: WaypointKind) {
+        buzz(WAYPOINT_RECEIVED_BUZZ)
+        io.launch {
+            val ok = recordWaypointAsync(kind)
+            buzz(if (ok) WAYPOINT_SUCCESS_BUZZ else WAYPOINT_FAILURE_BUZZ)
+        }
+    }
+
+    /**
+     * Capture a GPS fix + persist it as a [kind] waypoint. Returns true iff a fix was obtained AND
+     * the row was written; false on no fix / no permission / any error. Best-effort; never throws.
+     */
+    private suspend fun recordWaypointAsync(kind: WaypointKind): Boolean =
         runCatching {
             val fix = location.currentFix()
             if (fix == null) {
                 Log.w(TAG, "recordWaypoint($kind): no GPS fix (no permission / no fix / timeout)")
-                return
+                return@runCatching false
             }
             val mac = repo.getActiveWatch()?.macAddress
             repo.insertWaypoint(
@@ -305,14 +325,17 @@ class ServiceTrackerDispatch(
                 )
             )
             Log.i(TAG, "logged $kind waypoint at ${fix.lat},${fix.lon}")
-        }.onFailure { Log.w(TAG, "recordWaypoint failed", it) }
-    }
+            true
+        }.getOrElse {
+            Log.w(TAG, "recordWaypoint failed", it)
+            false
+        }
 
     /** Production [TrackerEffects] over the live device: GPS+Room write, ring, and buzz-back. */
     private inner class SystemTrackerEffects : TrackerEffects {
-        override fun recordWaypoint(kind: WaypointKind) {
-            io.launch { recordWaypointAsync(kind) }
-        }
+        // The 0x05 TRACKER-gesture waypoint path: own the full three-buzz feedback here (the pure
+        // [TrackerDispatcher] no longer buzzes for Log actions, to avoid a double buzz).
+        override fun recordWaypoint(kind: WaypointKind) = recordWaypointWithFeedback(kind)
 
         override fun ringPhone() = this@ServiceTrackerDispatch.ringPhone()
 
@@ -330,5 +353,12 @@ class ServiceTrackerDispatch(
         private const val TIMER_RECEIVED_BUZZ = VibePatterns.EMAIL
         // How long to wait for the alarm sync to confirm before giving up on the duration buzz.
         private const val TIMER_CONFIRM_TIMEOUT_MS = 20_000L
+        // Waypoint three-buzz feedback (received / success / failure), all distinct + reserved:
+        //   received = soft single (EMAIL, same as the timer received tick),
+        //   success  = long (ONE_LONG, "recorded"),
+        //   failure  = soft double (TEXT, "no fix / not saved").
+        private const val WAYPOINT_RECEIVED_BUZZ = VibePatterns.EMAIL
+        private const val WAYPOINT_SUCCESS_BUZZ = VibePatterns.ONE_LONG
+        private const val WAYPOINT_FAILURE_BUZZ = VibePatterns.TEXT
     }
 }

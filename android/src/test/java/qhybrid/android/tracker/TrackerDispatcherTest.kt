@@ -34,24 +34,26 @@ class TrackerDispatcherTest {
         """{"type":"music","action":"$action","sequence":1,"timestamp":"t"}"""
 
     @Test
-    fun short_logsMinorThenBuzzesFive() {
+    fun short_logsMinor_effectOwnsTheBuzz() {
+        // The dispatcher records the MINOR waypoint and does NOT buzzBack here: the waypoint EFFECT
+        // owns the three-buzz feedback (received now, success/failure when GPS resolves).
         val fx = FakeEffects()
         val d = TrackerDispatcher(fx)
         val a = d.onEventJson(music("TOGGLE_PLAY_PAUSE"))
         assertEquals(TrackerAction.Log(WaypointKind.MINOR, VibePatterns.ONE_SHORT), a)
         assertEquals(listOf(WaypointKind.MINOR), fx.recorded)
-        assertEquals(listOf(VibePatterns.ONE_SHORT), fx.buzzed)
+        assertTrue("dispatcher must not buzz for Log (effect owns it)", fx.buzzed.isEmpty())
         assertEquals(0, fx.rings)
     }
 
     @Test
-    fun double_logsMajorThenBuzzesSix() {
+    fun double_logsMajor_effectOwnsTheBuzz() {
         val fx = FakeEffects()
         val d = TrackerDispatcher(fx)
         val a = d.onEventJson(music("NEXT"))
         assertEquals(TrackerAction.Log(WaypointKind.MAJOR, VibePatterns.TWO_SHORT), a)
         assertEquals(listOf(WaypointKind.MAJOR), fx.recorded)
-        assertEquals(listOf(VibePatterns.TWO_SHORT), fx.buzzed)
+        assertTrue("dispatcher must not buzz for Log (effect owns it)", fx.buzzed.isEmpty())
         assertEquals(0, fx.rings)
     }
 

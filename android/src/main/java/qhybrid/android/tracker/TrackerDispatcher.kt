@@ -32,8 +32,11 @@ class TrackerDispatcher(
         val action = TrackerController.decide(gesture)
         when (action) {
             is TrackerAction.Log -> {
+                // The waypoint effect owns its OWN feedback (received tick now, then success/failure
+                // when the GPS fix resolves), so we do NOT buzzBack the action pattern here (that
+                // would double-buzz + buzz "success" before GPS even resolved). See
+                // [ServiceTrackerDispatch.recordWaypointWithFeedback].
                 effects.recordWaypoint(action.kind)
-                effects.buzzBack(action.buzzPattern)
             }
             is TrackerAction.RingPhone -> {
                 effects.ringPhone()
