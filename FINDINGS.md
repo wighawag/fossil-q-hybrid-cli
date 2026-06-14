@@ -2439,3 +2439,51 @@ The fix is to re-own `FilePutRawRequest` to this real flow (PUT → data → EOF
 buttons, alarms, config, and the buzz's play file) reliably verifiable on Android, not just BlueZ.
 The FILE byte formats are unchanged — only the control handshake. Tracked in
 `WP-FILEPUT-RELIABLE-PROMPT.md`.
+
+---
+
+## Buttons go dead (no local confirmation buzz) — fixed by a clean re-provision, NOT battery (2026-06-14)
+
+### Symptom (observed on hardware)
+On a watch that had been in use for a while, the physical buttons stopped doing ANYTHING:
+- pressing a "send-to-phone" button (mode switch / "music" trigger) produced **no internal
+  confirmation buzz** (the short buzz the firmware normally fires the instant such a button is
+  pressed, BEFORE the phone is involved);
+- the middle button configured to cycle the dial (time2 / last-notif / alarm / 24h / date) did
+  **nothing** — no hand movement, no state change;
+- yet the BLE link was healthy: the app could still send a buzz and the watch vibrated, i.e.
+  **phone -> watch downlink worked fine**, only the watch's own button handling was dead.
+
+### What it was NOT
+- **Not the battery.** The same OLD battery was kept and the buttons came back after recovery.
+  (The buzz-works-but-buttons-dead asymmetry initially looked like a low-coin-cell degraded mode,
+  where the radio/motor still run but the button/hand subsystems brown out — that theory was wrong
+  here.)
+- Not an app gesture/debounce bug: removing the mode-switch buzz debounce was unrelated.
+
+### Recovery (worked, same battery)
+A full clean re-provision restored normal button behaviour:
+1. delete the app's storage,
+2. forget the watch (clear association),
+3. reopen the app and reconnect (fresh auth handshake: vibration + top-button confirm),
+4. re-import app settings + the watch config (the new Backup & restore feature),
+5. sync each section to the watch.
+After this the buttons (incl. the dial-cycle middle button) + their local confirmation buzz worked
+again.
+
+### Interpretation
+The watch's on-device button/provisioning state (most likely the `SETTINGS_BUTTONS` 0x0C00 config
+and/or the auth/provisioning state) had drifted into a bad state where presses produced no events
+and no local buzz. A fresh provision rewrites it cleanly. This is a **watch-side state corruption**,
+recoverable in software — no hardware fault.
+
+This also re-frames the earlier "**mode-switch button starts sending multiple buzz patterns in
+succession, impossible to tell which mode**" symptom: most likely the SAME corrupted/stale button
+config (garbled/duplicated entries -> repeated/confused events), not a debounce regression and not
+the battery.
+
+### TODO / follow-up
+- Consider a one-tap "**Re-provision / repair this watch**" action (it already exists as the
+  WP-WATCHADMIN remove+re-add path) and surface it as the recommended fix when buttons misbehave.
+- Worth understanding WHAT corrupts the on-watch button state over time (a failed/partial
+  `SETTINGS_BUTTONS` file-put? an auth drift?) so it can be prevented, not just recovered from.
