@@ -120,6 +120,20 @@ Watch: Fossil Q Commuter (HW.0.0), Firmware HW0.0.2.9r.v3, Fossil protocol (2.x)
   (debounce/coalesce rapid timer presses into ONE alarm push, or write just the timer slot), and/or
   make sure a press doesn't queue behind a stale/abandoned sync. Investigate after the root-cause
   ack work above (the re-send amplifies any per-press cost).
+  CAPTURE 2026-06-14 20:02 (with FossilQ-Svc): ONE press emitted 3 `timer gesture` + 3 `SYNC_NOW`,
+  and the alarm FILE was uploaded ~3-4 times (each = `03 00 09` open / `00 00 09 02...` data /
+  `04 00 09` verify). A 2nd press then hit the 12s `alarm upload timed out` (UPLOAD_TIMEOUT_MS) on a
+  BLE link saturated by the backlog. TWO compounding bugs confirmed:
+    (A) the de-dup (commit 6d8432f) did NOT fire — 3 identical `01 05 1d 02` frames (same seq 0x1d)
+        all produced a gesture. The dedup code is correct + present in the 19:47 APK, so the most
+        likely cause is that the build on the phone during this capture was STALE (pre-fix). MUST
+        re-verify with a guaranteed-fresh install (uninstall qhybrid.android, install the 19:47+
+        APK) — expect the `Dropping duplicate async event` debug line + ONE gesture per press.
+    (B) EVEN WITH dedup, each timer press triggers a FULL `SyncSection.ALARMS` 32-slot file upload
+        (`armTimerAlarmAsync` → `ServiceSaveToWatch.trigger(ALARMS_ONLY)`). The timer only changes
+        the reserved slot 15, so this is wasteful and serializes on the ble-worker. FIX: coalesce /
+        debounce the timer alarm push, and/or only re-push when the alarm rows actually changed.
+  Re-capture after the clean reinstall to separate (A) from (B).
 - [ ] ~~BUG: one physical button press sometimes fires MULTIPLE events (multi-buzz in succession).~~
   Repro (Android, hardware): press the mode-SWITCH button once and instead of one buzz for the
   next mode, the watch buzzes several patterns in succession (e.g. from Lyrion it should buzz a
