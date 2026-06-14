@@ -17,7 +17,13 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
@@ -267,9 +273,11 @@ private fun SlotEditorDialog(
 
                 if (ButtonModes.usesDialModes(mode)) {
                     Text("Cycle dial modes", style = MaterialTheme.typography.labelLarge)
-                    DialModeToggles(
+                    DialModeOrderEditor(
                         selected = selected,
-                        onToggle = { id -> selected = toggle(selected, id) },
+                        onAdd = { id -> selected = ButtonDialModes.dedup(selected + id) },
+                        onRemove = { id -> selected = selected - id },
+                        onMove = { from, to -> selected = moveItem(selected, from, to) },
                     )
                 } else {
                     // Single-select: one action only (WP-BTN cardinality contract). The catalog is
@@ -286,9 +294,16 @@ private fun SlotEditorDialog(
     )
 }
 
-/** Multi-select toggle (CUSTOM_TOGGLE only): add/remove a dial-mode id from the cycle. */
-private fun toggle(list: List<String>, id: String): List<String> =
-    if (id in list) list - id else list + id
+/** Move the item at [from] to index [to] (clamped), preserving the rest of the order. */
+private fun moveItem(list: List<String>, from: Int, to: Int): List<String> {
+    if (from !in list.indices) return list
+    val target = to.coerceIn(0, list.size - 1)
+    if (from == target) return list
+    val mutable = list.toMutableList()
+    val item = mutable.removeAt(from)
+    mutable.add(target, item)
+    return mutable
+}
 
 @Composable
 private fun ModeDropdown(selected: String, onSelect: (String) -> Unit) {
@@ -332,19 +347,68 @@ private fun ActionRadioGroup(options: List<String>, selected: String?, onSelect:
     }
 }
 
+/**
+ * CUSTOM_TOGGLE dial-mode ORDER editor. The button cycles through the selected modes one per press,
+ * in the order shown here. The order is user-controlled because different Fossil models lay the dial
+ * positions out in different orders — the cycle should match the physical dial. Selected modes show
+ * with up/down (reorder) + remove; unselected modes appear as "add" chips below.
+ */
 @Composable
-private fun DialModeToggles(selected: List<String>, onToggle: (String) -> Unit) {
+private fun DialModeOrderEditor(
+    selected: List<String>,
+    onAdd: (String) -> Unit,
+    onRemove: (String) -> Unit,
+    onMove: (from: Int, to: Int) -> Unit,
+) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(
-            "This button cycles through the dial positions you pick, one per press.",
+            "This button cycles through these dial positions in order, one per press. Reorder them " +
+                "to match your watch's dial (Fossil models differ).",
             style = MaterialTheme.typography.labelSmall,
         )
-        ButtonDialModes.ALL.forEach { id ->
-            FilterChip(
-                selected = id in selected,
-                onClick = { onToggle(id) },
-                label = { Text(ButtonDialModes.label(id)) },
+        if (selected.isEmpty()) {
+            Text(
+                "No dial positions yet — add one below.",
+                style = MaterialTheme.typography.bodySmall,
             )
+        }
+        selected.forEachIndexed { index, id ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text("${index + 1}.", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    ButtonDialModes.label(id),
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f),
+                )
+                IconButton(
+                    onClick = { onMove(index, index - 1) },
+                    enabled = index > 0,
+                ) { Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "Move up") }
+                IconButton(
+                    onClick = { onMove(index, index + 1) },
+                    enabled = index < selected.size - 1,
+                ) { Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Move down") }
+                IconButton(onClick = { onRemove(id) }) {
+                    Icon(Icons.Filled.Close, contentDescription = "Remove")
+                }
+            }
+        }
+        val available = ButtonDialModes.ALL.filter { it !in selected }
+        if (available.isNotEmpty()) {
+            Text("Add a dial position", style = MaterialTheme.typography.labelMedium)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                available.forEach { id ->
+                    FilterChip(
+                        selected = false,
+                        onClick = { onAdd(id) },
+                        label = { Text(ButtonDialModes.label(id)) },
+                    )
+                }
+            }
         }
     }
 }

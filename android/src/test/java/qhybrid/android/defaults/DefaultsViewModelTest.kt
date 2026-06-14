@@ -64,16 +64,16 @@ class DefaultsViewModelTest {
     }
 
     @Test
-    fun setButtonSlot_customToggle_keepsCanonicalCycle() {
+    fun setButtonSlot_customToggle_keepsUserCycleOrder() {
         val store = InMemoryDefaultsProfileStore()
         val model = vm(store)
-        // Tapped non-canonically; the stored cycle is canonicalized (TIMEZONE_2, ALARM, DATE).
+        // The cycle is stored in the USER'S chosen order (so it can match the watch's dial layout).
         model.setButtonSlot(
             ButtonSlots.MIDDLE, ButtonModes.CUSTOM_TOGGLE,
             listOf(ButtonDialModes.DATE, ButtonDialModes.TIMEZONE_2, ButtonDialModes.ALARM),
         )
         assertEquals(
-            listOf(ButtonDialModes.TIMEZONE_2, ButtonDialModes.ALARM, ButtonDialModes.DATE),
+            listOf(ButtonDialModes.DATE, ButtonDialModes.TIMEZONE_2, ButtonDialModes.ALARM),
             model.uiState.value.buttonFor(ButtonSlots.MIDDLE)!!.actions,
         )
     }

@@ -337,13 +337,12 @@ class ButtonsViewModelTest : DbTestBase() {
         val model = vm()
         awaitState(model.uiState) { it.hasActiveWatch }
 
-        // Tapped in a non-canonical order; stored in CANONICAL order regardless
-        // (ALERT, TIMEZONE_2, ALARM, DATE, TWENTY_FOUR_HOUR).
-        val tapped = listOf(ButtonDialModes.TIMEZONE_2, ButtonDialModes.DATE, ButtonDialModes.ALARM)
-        model.setSlot(ButtonSlots.MIDDLE, ButtonModes.CUSTOM_TOGGLE, tapped)
+        // The cycle is stored in the USER'S chosen order (so it can match the watch's dial layout).
+        val chosen = listOf(ButtonDialModes.TIMEZONE_2, ButtonDialModes.DATE, ButtonDialModes.ALARM)
+        model.setSlot(ButtonSlots.MIDDLE, ButtonModes.CUSTOM_TOGGLE, chosen)
         val s = awaitState(model.uiState) { it.mappingFor(ButtonSlots.MIDDLE) != null }
         assertEquals(
-            listOf(ButtonDialModes.TIMEZONE_2, ButtonDialModes.ALARM, ButtonDialModes.DATE),
+            chosen,
             ButtonActionsJson.decode(s.mappingFor(ButtonSlots.MIDDLE)?.actionsJson),
         )
     }

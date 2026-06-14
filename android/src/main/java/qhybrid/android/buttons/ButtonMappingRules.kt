@@ -43,11 +43,11 @@ object ButtonMappingRules {
     /**
      * Normalize an id list to honour [modeType]'s cardinality. **Pure; never throws.**
      *
-     * - [ButtonModes.CUSTOM_TOGGLE] → keep the selected dial modes, re-ordered into the CANONICAL
-     *   [ButtonDialModes.ALL] order (alert, 2nd-timezone, alarm, date, 24-hour) and de-duplicated;
-     *   unselected modes are simply skipped. The cycle order therefore does NOT depend on the
-     *   order the user tapped the chips — it is always canonical, in both the editor and on the
-     *   watch.
+     * - [ButtonModes.CUSTOM_TOGGLE] → keep the selected dial modes in the USER'S CHOSEN ORDER
+     *   (drop unknown/blank ids + de-duplicate via [ButtonDialModes.dedup]). The cycle order is
+     *   preserved end-to-end so it can match the watch's dial layout (which differs per Fossil
+     *   model); the editor and the on-watch cycle agree because the compiler emits one entry per
+     *   id in this same order.
      * - any other (single-action) mode → keep at most the **first** non-blank id.
      *
      * This is the collapse rule both the ViewModel (before persisting) and the orchestrator
@@ -56,6 +56,6 @@ object ButtonMappingRules {
      */
     fun normalizeIds(modeType: String, ids: List<String>): List<String> {
         val clean = ids.map { it.trim() }.filter { it.isNotEmpty() }
-        return if (allowsMultiple(modeType)) ButtonDialModes.canonicalOrder(clean) else clean.take(1)
+        return if (allowsMultiple(modeType)) ButtonDialModes.dedup(clean) else clean.take(1)
     }
 }

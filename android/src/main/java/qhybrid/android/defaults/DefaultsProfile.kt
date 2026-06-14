@@ -54,7 +54,7 @@ data class DefaultsProfile(
                 DefaultButton(
                     buttonId = ButtonSlots.MIDDLE,
                     modeType = ButtonModes.CUSTOM_TOGGLE,
-                    actions = ButtonDialModes.canonicalOrder(
+                    actions = ButtonDialModes.dedup(
                         listOf(ButtonDialModes.TIMEZONE_2, ButtonDialModes.ALARM, ButtonDialModes.DATE),
                     ),
                 ),

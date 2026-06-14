@@ -71,7 +71,7 @@ class ButtonVocabularyTest {
     @Test
     fun dialModeConstantsMirrorProtocol() {
         // 1:1 with ButtonCompiler.DialMode {ALERT, TIMEZONE_2, ALARM, DATE, TWENTY_FOUR_HOUR} —
-        // this is the CANONICAL display + cycle order (editor and watch agree).
+        // this is the catalog/display order (NOT the cycle order, which is user-chosen).
         assertEquals(
             listOf("ALERT", "TIMEZONE_2", "ALARM", "DATE", "TWENTY_FOUR_HOUR"),
             ButtonDialModes.ALL,
@@ -79,6 +79,20 @@ class ButtonVocabularyTest {
         assertEquals("2nd timezone", ButtonDialModes.label(ButtonDialModes.TIMEZONE_2))
         assertEquals("24-hour", ButtonDialModes.label(ButtonDialModes.TWENTY_FOUR_HOUR))
         assertTrue(ButtonDialModes.isKnown(ButtonDialModes.ALARM))
+    }
+
+    @Test
+    fun dedupPreservesUserOrderAndDropsUnknownBlankDuplicates() {
+        // The cycle order is the user's order; dedup keeps first occurrence + drops unknown/blank.
+        assertEquals(
+            listOf(ButtonDialModes.DATE, ButtonDialModes.ALARM, ButtonDialModes.TIMEZONE_2),
+            ButtonDialModes.dedup(
+                listOf(
+                    ButtonDialModes.DATE, ButtonDialModes.ALARM, ButtonDialModes.TIMEZONE_2,
+                    ButtonDialModes.DATE, "", "  ", "BOGUS",
+                ),
+            ),
+        )
     }
 
     // ---- ButtonActions -------------------------------------------------------

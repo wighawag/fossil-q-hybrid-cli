@@ -76,24 +76,24 @@ class ButtonMappingRulesTest {
         )
     }
 
-    // ---- custom-toggle: keep the selected modes in CANONICAL order ------------
+    // ---- custom-toggle: keep the selected modes in the USER'S ORDER -----------
 
     @Test
-    fun customToggleReordersToCanonical() {
-        // Selection order is IGNORED: the cycle is always canonical
-        // (ALERT, TIMEZONE_2, ALARM, DATE, TWENTY_FOUR_HOUR), unselected modes skipped.
-        val tappedOrder = listOf(ButtonDialModes.TIMEZONE_2, ButtonDialModes.DATE, ButtonDialModes.ALARM)
+    fun customTogglePreservesUserOrder() {
+        // The cycle order is the USER'S chosen order (so it can match the watch's dial layout),
+        // NOT a canonical re-sort. Unknown/blank ids are dropped; the rest stay as given.
+        val userOrder = listOf(ButtonDialModes.TIMEZONE_2, ButtonDialModes.DATE, ButtonDialModes.ALARM)
         assertEquals(
-            listOf(ButtonDialModes.TIMEZONE_2, ButtonDialModes.ALARM, ButtonDialModes.DATE),
-            ButtonMappingRules.normalizeIds(ButtonModes.CUSTOM_TOGGLE, tappedOrder),
+            userOrder,
+            ButtonMappingRules.normalizeIds(ButtonModes.CUSTOM_TOGGLE, userOrder),
         )
     }
 
     @Test
-    fun customToggleCanonicalIsStableAndDeduped() {
-        // Reverse-tapped + a duplicate → still canonical, de-duplicated.
+    fun customToggleDedupesKeepingFirstOccurrenceOrder() {
+        // A duplicate is dropped (first occurrence wins); the user's order is otherwise preserved.
         assertEquals(
-            listOf(ButtonDialModes.ALERT, ButtonDialModes.ALARM, ButtonDialModes.DATE),
+            listOf(ButtonDialModes.DATE, ButtonDialModes.ALARM, ButtonDialModes.ALERT),
             ButtonMappingRules.normalizeIds(
                 ButtonModes.CUSTOM_TOGGLE,
                 listOf(ButtonDialModes.DATE, ButtonDialModes.ALARM, ButtonDialModes.ALERT, ButtonDialModes.DATE),

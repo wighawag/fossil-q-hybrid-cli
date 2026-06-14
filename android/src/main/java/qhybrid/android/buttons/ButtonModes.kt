@@ -109,24 +109,28 @@ object ButtonDialModes {
     const val TWENTY_FOUR_HOUR = "TWENTY_FOUR_HOUR"
 
     /**
-     * All dial modes in the CANONICAL display + cycle order, 1:1 with the protocol
+     * All dial modes in their DISPLAY order, 1:1 with the protocol
      * [qhybrid.protocol.requests.fossil.button.ButtonCompiler.DialMode]
-     * {ALERT, TIMEZONE_2, ALARM, DATE, TWENTY_FOUR_HOUR}. A [ButtonModes.CUSTOM_TOGGLE] mapping
-     * always cycles its selected modes in THIS order (unselected ones are simply skipped) — the
-     * editor and the on-watch cycle agree because [ButtonDialModes.canonicalOrder] sorts the stored
-     * ids by this list before persisting/compiling.
+     * {ALERT, TIMEZONE_2, ALARM, DATE, TWENTY_FOUR_HOUR}. This is the catalog of selectable modes
+     * (e.g. the "add a mode" picker); it is NOT the cycle order. A [ButtonModes.CUSTOM_TOGGLE]
+     * mapping cycles its modes in the USER-CHOSEN order (different Fossil models ship them in
+     * different dial orders), preserved end-to-end by [dedup] / [ButtonMappingRules.normalizeIds].
      */
     val ALL = listOf(ALERT, TIMEZONE_2, ALARM, DATE, TWENTY_FOUR_HOUR)
 
     /**
-     * Re-order an arbitrary set of dial-mode [ids] into the canonical [ALL] order, dropping unknown
-     * ids and de-duplicating. This is the single source of truth for the cycle order so the editor
-     * (chip selection) and the compiler (wire entries) can never disagree, and the order does NOT
-     * depend on the order the user tapped the chips.
+     * Clean a dial-mode [ids] list while PRESERVING the user's chosen order: drop unknown/blank ids
+     * and de-duplicate (first occurrence wins). The compiler emits one wire entry per id in THIS
+     * order, so the on-watch cycle matches the editor's order exactly. (Replaces the former
+     * canonical re-sort: the cycle order is now user-controlled to match the watch's dial layout.)
      */
-    fun canonicalOrder(ids: List<String>): List<String> {
-        val set = ids.toHashSet()
-        return ALL.filter { it in set }
+    fun dedup(ids: List<String>): List<String> {
+        val seen = LinkedHashSet<String>()
+        for (id in ids) {
+            val t = id.trim()
+            if (t.isNotEmpty() && isKnown(t)) seen.add(t)
+        }
+        return seen.toList()
     }
 
     private val LABELS = mapOf(
