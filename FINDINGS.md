@@ -2570,3 +2570,19 @@ and `putAcceptBusyTwice_failsAfterOneRetry`.
 
 Still the same underlying watch-state drift as "Buttons go dead" + the async-event re-send (a clean
 re-provision clears all of them); the abort+reopen makes the alarm path self-heal without one.
+
+### Confirmed on-device (2026-06-14 20:40)
+The recovery fired exactly as designed on the first timer press of a fresh connection:
+```
+WRITE  03 00 0a ...        (open)
+NOTIFY 83 00 0a 02 00      (busy)
+WRITE  09 00 0a            (ABORT_FILE 9)
+WRITE  03 00 0a ...        (re-open)
+NOTIFY 89 00 0a 00         (abort ack — ignored during recovery)
+NOTIFY 83 00 0a 00 00      (re-open ACCEPTED, status 00)
+WRITE  00 00 0a ...        (data) -> 88 (EOF) -> 04 (VERIFY) -> 84 (SUCCESS)
+sync done performed=[ALARMS];  timer armed on watch — duration buzz 5
+```
+And it was a ONE-TIME clear: every subsequent press got `83 00 0a 00 00` (status 00) directly — no
+further abort needed. The full two-buzz timer UX works (received tick + duration buzz 5/7 for
+short/long), and the alarm now shows on-watch in the Alarms screen.
