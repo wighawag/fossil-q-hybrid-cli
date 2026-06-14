@@ -103,8 +103,15 @@ Watch: Fossil Q Commuter (HW.0.0), Firmware HW0.0.2.9r.v3, Fossil protocol (2.x)
   observed `0x01` (REQUEST). If an ack write exists, replicate it in `FossilQAdapter.handleButtonEvent`
   (write the ack for REQUEST-opcode events) — that should stop the re-send entirely and remove the
   reliance on de-dup. Update FINDINGS with the ack frame format + provenance.
-- [ ] **BUG: TIMER-mode button press can take ~20s before the alarm reaches the watch (sync
-  latency/queuing).** After the multi-buzz fix (commit 6d8432f), one press now correctly arms ONE
+- [x] **FIXED: TIMER-mode press kicked a FULL alarm-file upload PER press (latency / timeouts).**
+  Confirmed on the clean reinstall (logcat 20:06): the de-dup now works (one press → one gesture),
+  but each press still fired a full `SyncSection.ALARMS` 32-slot upload (~1.5s), so two presses
+  serialized and hit the 12s `UPLOAD_TIMEOUT_MS` twice before draining (~26s). FIX: debounce the
+  timer alarm PUSH in `ServiceTrackerDispatch` (~1.2s trailing window) so a burst coalesces into
+  ONE upload of the final armed time; the Room write stays per-press so the armed time is always
+  live. Covered by `TimerAlarmPushDebounceTest`. (Original investigation notes below.)
+- [ ] ~~BUG: TIMER-mode button press can take ~20s before the alarm reaches the watch (sync
+  latency/queuing).~~ After the multi-buzz fix (commit 6d8432f), one press now correctly arms ONE
   timer, BUT a 2nd press a few seconds later showed a ~20s gap between `armed timer alarm slot 15`
   (instant, on the IO scope) and the alarm file PUT actually starting on BLE (`WRITE 3dda0003`).
   First press was instant; the second stalled. Every TIMER press fires a FULL `SyncSection.ALARMS`

@@ -15,6 +15,8 @@ import qhybrid.android.db.WatchRepository
 import qhybrid.android.notifications.VibePatterns
 import qhybrid.android.settings.SettingsVocabulary
 import qhybrid.android.settings.SharedPreferencesSettingsPrefs
+import qhybrid.android.sync.CoroutineDebouncer
+import qhybrid.android.sync.Debouncer
 import qhybrid.android.sync.ServiceSaveToWatch
 import qhybrid.android.sync.SyncSection
 import qhybrid.android.tracker.ButtonActionRouter.Path2Action
@@ -63,6 +65,12 @@ class ServiceTrackerDispatch(
     // The buzz effect seam: production plays via the WP3 reserved-pattern path; tests record the
     // pattern(s) that actually reach the watch. Default forwards to [WatchConnectionService.buzzNow].
     private val buzzEffect: ((Int) -> Unit)? = null,
+    // TIMER: debounces the alarm-file PUSH so a burst of timer presses (or the watch re-sending one
+    // press) coalesces into a SINGLE ALARMS upload of the FINAL state. Each press still writes Room
+    // immediately (the armed time is always live); only the BLE re-push is debounced. Without this,
+    // every press kicked a full 32-slot alarm-file upload (~1.5s each) and they serialized + timed
+    // out on the ble-worker. Injectable for tests; null → a fixed-window CoroutineDebouncer.
+    timerAlarmPushDebouncer: Debouncer? = null,
 ) {
     private val appContext = context.applicationContext
     // Default to the live platform-LocationManager source (zero Google Play Services); tests inject
@@ -73,6 +81,11 @@ class ServiceTrackerDispatch(
     private val ringer: PhoneRinger = ringer ?: SystemPhoneRinger(appContext)
     private val repo = WatchRepository(appContext)
     private val prefs = SharedPreferencesSettingsPrefs(appContext)
+
+    // Trailing-debounce the timer alarm push (see the constructor param). ~1.2s after the LAST
+    // press so the final armed time is what reaches the watch, with one upload per burst.
+    private val timerAlarmPushDebouncer: Debouncer =
+        timerAlarmPushDebouncer ?: CoroutineDebouncer(io, TIMER_ALARM_PUSH_DEBOUNCE_MS)
 
     private val effects = SystemTrackerEffects()
     private val dispatcher = TrackerDispatcher(effects)
@@ -136,8 +149,12 @@ class ServiceTrackerDispatch(
                     label = "Timer",
                 )
             )
-            ServiceSaveToWatch.trigger(appContext, SyncSection.ALARMS_ONLY)
-            Log.i(TAG, "armed timer alarm slot ${AlarmCompiler.TIMER_SLOT} at %02d:%02d"
+            // DEBOUNCE the alarm-file push: rapid presses (or a re-sent press) coalesce into ONE
+            // ALARMS upload of the final armed time, instead of one full file upload per press.
+            timerAlarmPushDebouncer.schedule {
+                ServiceSaveToWatch.trigger(appContext, SyncSection.ALARMS_ONLY)
+            }
+            Log.i(TAG, "armed timer alarm slot ${AlarmCompiler.TIMER_SLOT} at %02d:%02d (push debounced)"
                 .format(action.hour, action.minute))
         }.onFailure { Log.w(TAG, "armTimer failed", it) }
     }
@@ -259,5 +276,7 @@ class ServiceTrackerDispatch(
 
     private companion object {
         private const val TAG = "FossilQ-Tracker"
+        // Trailing-debounce window for the timer alarm-file push (ms).
+        private const val TIMER_ALARM_PUSH_DEBOUNCE_MS = 1200L
     }
 }
