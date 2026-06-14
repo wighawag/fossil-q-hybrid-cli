@@ -76,6 +76,35 @@ Watch: Fossil Q Commuter (HW.0.0), Firmware HW0.0.2.9r.v3, Fossil protocol (2.x)
 - [x] Multi-button press detection (SINGLE, DOUBLE) — firmware handles for MUSIC_CONTROL; software timing added for FORWARD_TO_PHONE (ButtonGestureDetector in FossilQAdapter). Uses 400ms double-press window (configurable via `--gesture-window`). RING_PHONE events delayed until gesture resolved; all other events unchanged.
 - [x] Mode toggle support — multi-entry button config via ButtonConfigBuilder. `mode_toggle` keyword + `+` syntax for custom combos. Up to 5+ entries confirmed working (TZ+DATE+ALARM+STEP_GOAL+LAST_NOTIFICATION). Entries without data (no alarm, no notification, 0% steps) are silently skipped. GOAL_TRACKING incompatible with toggle (error vibration). See FINDINGS.md #22.
 - [ ] Take a photo support — needs phone-side camera trigger implementation
+- [ ] **BUG: one physical button press sometimes fires MULTIPLE events (multi-buzz in succession).**
+  Repro (Android, hardware): press the mode-SWITCH button once and instead of one buzz for the
+  next mode, the watch buzzes several patterns in succession (e.g. from Lyrion it should buzz a
+  single strong-single for Tracker, but it buzzed ~5-6 buzzes — looks like the rotation advanced
+  several steps, each buzzing its own mode's pattern). Also observed on the TOP button (in TIMER
+  mode, which buzzes to confirm the armed timer), so it is NOT specific to the switch action — it
+  is a single press producing multiple `micro_app` (0x08) button events. Comes and goes (worse
+  after the watch has been used a while); a clean re-provision has cleared related button issues
+  before (see FINDINGS "Buttons go dead").
+  The switch handler itself is correct (one press → one `advanceRotation()` → one `buzz()` in
+  `ServiceTrackerDispatch.onButtonEventJson`), so the multiplication is UPSTREAM — duplicate event
+  delivery. Two prime suspects:
+    1. **Two live controllers.** `onEventJson` is wired for BOTH the foreground and the
+       auto-reconnect controller (`WatchConnectionService.wireConnectionCallbacks`). If both links
+       are momentarily up (reconnect churn), the same watch event is routed twice+.
+    2. **Firmware/adapter re-delivery or the gesture detector.** `FossilQAdapter.handleMicroAppEvent`
+       routes RING_PHONE (0x08) presses through `ButtonGestureDetector` (400ms window); the raw
+       micro_app event carries a `sequence` byte that is NOT used for de-duplication anywhere.
+  NEXT STEP — capture logcat (filter tag `FossilQ`/`FossilQ-Tracker`) during ONE physical press and
+  read the decisive lines:
+    - adapter: `Button press: <BTN> → <APP> (<variant>) seq=<N>` — does ONE press log MULTIPLE
+      lines? SAME `seq` repeated ⇒ duplicate delivery (suspect #1); DIFFERENT `seq` ⇒ firmware
+      re-sending.
+    - dispatch: `Path-2 button press: 0xNN` then `multi-function advanced to [i] <mode> (buzz B)` —
+      count how many `advanced` lines per press.
+  FIX once known: likely de-duplicate by `sequence` (drop a repeat of the same seq within a short
+  window) at the adapter OR route events from only ONE controller (the foreground `controllerRef`),
+  not both. Do NOT re-add the old switch-buzz debounce — that masked the symptom; fix the duplicate
+  delivery instead.
 - [ ] **Capture the real TWENTY_FOUR_HOUR (24h) dial-mode bytes from the official Fossil app.**
   The 24h sub-eye position does NOT trigger in a mode-toggle cycle on a 5-position dial: on a
   cycle like `time2, alert, alarm, 24h, date`, the 24h press makes the dial return but the
