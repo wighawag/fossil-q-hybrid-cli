@@ -1004,6 +1004,17 @@ class WatchConnectionService : Service() {
                     mtu = transportRef.get()?.getMtu() ?: 0,
                     message = "Connected",
                 )
+                // WP-TIMESYNC: re-push the watch's time on EVERY connect. This is the ONE config
+                // that legitimately goes stale: the watch keeps the UTC offset it was last given
+                // (TimeConfigItem 0x000C), and we otherwise push it ONLY at provision/calibration
+                // (TIME is not a SyncSection, and WP-PULLSYNC stopped the per-connect full init).
+                // So a stale offset (e.g. provisioned with a briefly-wrong phone offset, or a
+                // DST flip) silently leaves the displayed time off by an hour until a re-provision
+                // (observed on-device 2026-06-14: 1h behind). A single small CONFIGURATION put is
+                // cheap and self-heals it. POTENTIAL OPTIMIZATION (later): only push when the
+                // phone's current UTC offset differs from the last value we pushed for this watch.
+                runCatching { controller.syncTime() }
+                    .onFailure { e -> Log.w(TAG, "on-connect time sync failed", e) }
                 // A connect requested by an explicit Save-to-watch is about to run the sync via
                 // the on-connect hook below; clear the pending flag so the failure paths don't
                 // also publish an error. Pick up the TARGETED sections it requested (null = full

@@ -2606,3 +2606,97 @@ same press regardless of trailing bytes. This collapses the 0x08 storm (and is s
 for 0x05 too). Covered by AdapterAsyncEventDedupTest.sameSequence_differentTrailingBytes_isDeduped
 and microAppButtonRepeats_sameSeq_varyingTrailingBytes_dedupToOnePress. The buzz `0x86` storm was a
 downstream symptom of the missing de-dup; collapsing 14 -> 1 press removes the trigger.
+
+---
+
+## Wedged play handle (0x86) survives a reconnect — only a re-provision clears it (2026-06-14, verified)
+
+On-device confirmation after shipping the SEQUENCE-keyed de-dup (commit a2d1db1). A fresh connect's
+logcat showed the de-dup working — five mode-switch presses each produced EXACTLY ONE `01 08 <seq>`
+frame on `3dda0006`, ONE `Path-2 button press`, and ONE `multi-function advanced` (rotation cycled
+1->2->3->0->1, no skips, no 14x storm). So the 0x08 path is healthy and the storm-of-effects is
+gone.
+
+BUT every buzz still failed: the `NOTIFICATION_PLAY` (handle 0x0900) play-PUT got
+`NOTIFY 3dda0003 <- 83 00 09 86 00` — PUT-accept status `0x86` (FIRMWARE_INTERNAL_ERROR_NOT_SUPPORT)
+— once per press, with NO re-open churn (the de-dup removed the churn; `handlePutAccept` correctly
+fails fast because 0x86 is not OPERATION_IN_PROGRESS, so it does NOT trigger the abort+reopen
+recovery). The watch's play subsystem was WEDGED by an EARLIER storm (before the de-dup APK) and the
+wedged state SURVIVED a full BLE reconnect — same "handle wedged across reconnect" behaviour already
+documented for the ALARMS 0x0A handle.
+
+RECOVERY (confirmed working): a plain reconnect did NOT clear it. The user cleared it by a full
+re-provision — export watch settings, remove the watch in-app, "Forget" in Android Bluetooth,
+re-add, re-import settings. After that buzzes worked again.
+
+WHAT TRIGGERS THE STORM (root cause, still un-acked): the watch sends button/event frames on
+`3dda0006` with `opCode = 0x01 = REQUEST` (the storm frames were `01 08 ...` / `01 05 ...`), i.e. it
+EXPECTS an app acknowledgement. `FossilQAdapter.handleButtonEvent` READS + logs the opcode but NEVER
+writes an ack back, so under drift the firmware re-requests the same frame (same sequence) ~14x until
+it times out. That storm of play-PUTs is what wedges the 0x0900 handle. The de-dup absorbs the storm
+of EFFECTS (one press -> one effect) but cannot stop the watch re-sending, and cannot un-wedge an
+already-stuck handle.
+
+TWO LOG TELLS for a recurrence (tags: FossilQ-Tracker FossilQ-Svc AndroidBleTransport):
+- `NOTIFY 3dda0006 <- 01 08 <seq> ...` repeated many times with the SAME seq in a few ms = the watch
+  is storming again.
+- `NOTIFY 3dda0003 <- 83 00 09 86 00` (status 0x86) on a buzz = the play handle is wedged; only a
+  re-provision (not a reconnect) clears it.
+
+FIXES, in priority order (none applied yet):
+1. ROOT CAUSE — send the ack the official app sends after a `3dda0006` REQUEST-opcode event (capture
+   it from a btsnoop: what does the phone WRITE back to `3dda0006` in the ~tens of ms after a button
+   event, echoing eventType+sequence). Replicate in `handleButtonEvent` for opCode 0x01. This stops
+   the re-send at the source, so the handle never wedges. (Already on TODO.)
+2. DEFENSIVE (narrow) — extend `handlePutAccept` to ABORT_FILE(9)+reopen on `0x86` for the
+   NOTIFICATION_PLAY handle only, with a hard retry cap. CAVEAT: 0x86 = NOT_SUPPORT is semantically
+   different from 0x02 OPERATION_IN_PROGRESS; only add this AFTER a hardware capture confirms an
+   ABORT_FILE actually clears the play handle (the way it did for 0x0A). Do NOT broaden recovery to
+   all non-success codes.
+3. KEEP the de-dup (shipped, a2d1db1) — the seatbelt: even mid-storm, one press = one effect.
+
+---
+
+## Watch time goes 1h behind because time is pushed ONLY at provision/calibration (2026-06-14)
+
+Symptom (UK, BST): the watch went 1 hour behind real local time, "not sure when it happened", and
+the user had NOT crossed a GMT<->BST boundary since getting the watch. So it is NOT a DST-flip and
+NOT a timezone-math bug — `generateTimeConfigItem()` computes the offset correctly. It is that time
+is essentially never re-sent, so any way the watch's stored offset ends up 1h wrong stays wrong.
+
+Most likely 1h cause here (no DST crossing): the watch was provisioned while the phone's effective
+UTC offset was off by an hour for a moment — e.g. provisioned right around when the phone applied
+BST, or the phone briefly reported GMT (offset 0) instead of BST (+60). A clean 1h error is an
+OFFSET error, not RTC crystal drift (which would be seconds/minutes over months, not a tidy hour).
+Whatever set it wrong, nothing ever corrected it because:
+
+How time reaches the watch:
+- `FossilQAdapter.generateTimeConfigItem()` is correct: it sends UTC epoch (`millis/1000`) plus the
+  CURRENT offset via `zone.getOffset(millis)/60000` (which INCLUDES DST — e.g. +60 for BST), as the
+  TimeConfigItem (0x000C) offset the watch uses to shift the displayed time. (See #4, #21a.)
+- That config is written ONLY in two places:
+    (a) protocol `initialize(fullInit=true)` (FossilQAdapter:254), and
+    (b) `controller.syncTime()`, which on Android is called ONLY from `CalibrationSync` (the
+        calibration flow).
+
+Why nothing re-corrects it:
+- WP-PULLSYNC: connecting NO LONGER auto-pushes the full config (`WatchConnectionService` only runs a
+  ONE-TIME full provision for a brand-new watch, or a user-requested pending sync). A KNOWN watch
+  connects WITHOUT a full init, so (a) does not re-push time.
+- `TIME` is NOT a `SyncSection` (the enum is ALARMS / NOTIFICATION_FILTER / BUTTONS / VIBRATION /
+  NUDGE / SECOND_TIMEZONE). So even an explicit "Sync all" / per-screen save NEVER re-pushes time.
+- Net: after the initial provision, the watch keeps whatever offset it was given, forever, until the
+  next provision/calibration. So ANY one-time wrong offset (wrong-offset-at-provision, a DST flip,
+  or travel across timezones) silently leaves the displayed time wrong until a manual re-provision
+  (which is what fixed it this time).
+
+FIX APPLIED (2026-06-14): re-push time on EVERY connect. `runOnLinkUp` (the single on-link-up hook
+shared by the foreground `connectAndInit` and the auto-reconnect `onAutoConnectLinkUp`) now calls
+`controller.syncTime()` right after publishing INITIALIZED, for any Fossil watch. This is one small
+CONFIGURATION put (TimeConfigItem 0x000C) and is deliberately exempt from the WP-PULLSYNC
+"don't re-push config on connect" policy, because time is the one config that genuinely goes stale
+and we never re-push it otherwise. It self-heals the 1h-behind case and also covers travel + DST.
+
+POTENTIAL OPTIMIZATION (later, noted not done): store the last-pushed UTC offset per watch and skip
+the put when the phone's current offset matches it, so a normal reconnect with a correct watch does
+NOT write at all. Until then we accept one extra tiny write per connect (negligible vs the win).
