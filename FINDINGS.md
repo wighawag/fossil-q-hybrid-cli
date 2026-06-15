@@ -2975,6 +2975,51 @@ how to prevent it (auth/provisioning drift? a file-handle wedge? a missing perio
 official app does that we omit?). The official-app captures are the place to look next - diff the
 periodic/background writes the official app makes during a long idle connection against ours.
 
+### Storm-drift step #1 (2026-06-15): the official app sends a periodic CMD the watch never gets from us
+
+Mined the longest official-app capture (`tmp/bugreport5`, 784 s / ~13 min, mostly idle) for
+phone->watch writes that recur on a timer. Findings on the **CMD characteristic `3dda0002`**
+(handle `0x0042`):
+
+- CMD frames are DeviceConfig ops: `[opId][paramId][data...]`, `opId` 01=GET / 02=SET / 03=RESPONSE
+  (`DeviceConfigOperationCode` in the disassembly). paramId `0xf1` = `-15` =
+  `DeviceConfigParameterId.DIAGNOSTIC_FUNCTIONS`.
+- The official app sends **`02 f1 05`** at t=41, 370, 763 s. Decoded against the disassembly:
+  `op=SET(02)`, `param=DIAGNOSTIC_FUNCTIONS(f1)`, `data=05` = `DiagnosticFunctionParametersData`
+  `PAIR_ANIMATION` -> the DeviceConfigOperationCode named **`PLAY_ANIMATION`**. So `02 f1 05` is the
+  app telling the watch to **play the little hand-sweep animation**, NOT a keep-alive. At connect it
+  also does `01 f1 28` (GET) -> resp `03 f1 28 b6 00`, and `02 f1 23 00 01 00 00 00` once.
+- **Our CLI/adapter sends NOTHING to `3dda0002` periodically** - no DeviceConfig SET, no scheduled
+  keep-alive at all (grep of `cli/` + `FossilQAdapter`: only UUID defs and event READING).
+
+**HONEST correction (I initially over-read this).** `02 f1 05` is PLAY_ANIMATION, so it is almost
+certainly the app playing a hand-sweep at moments it did a background SYNC (t=370 and t=763 sit
+right next to the file-sync bursts), NOT a periodic connection keep-alive. The "f1 is the keep-alive"
+idea is therefore WEAK. The real periodic signal is the **background sync itself**, not `f1`.
+
+What the official app actually does periodically that we omit, ranked by plausibility as the
+drift-preventer:
+  1. **Background SYNC bursts** every several minutes (GET/LIST on activity/config file handles at
+     t=300-480 and t=720 in bugreport5), each followed by the PLAY_ANIMATION. A periodic sync is the
+     most likely thing that keeps the watch's state "fresh". We do NOT sync on a timer.
+  2. **TIME re-push** `02 0b 00 <ts:4LE> <ms:2> 03 3c 00` on `3dda0006`. We push time on connect
+     (commit dfb609e) but not on a long-idle timer.
+  3. (`02 f1 05` PLAY_ANIMATION is a CONSEQUENCE of the sync, not an independent keep-alive - do not
+     replicate it in isolation.)
+
+**NEXT (step #2):** the strongest lead is the periodic **background sync**. Experiment: run our
+long-lived connection and trigger a lightweight sync (or just a time re-push) on a timer (~every
+5 min), leave the watch idle-connected for >15-20 min, and see whether the buttons-dead/re-send
+drift still appears vs an idle connection with no periodic activity. That tests "does periodic
+activity prevent the drift" directly. Do NOT wire anything as a "fix" until an idle soak test shows
+it helps - the causal link (periodic activity -> no drift) is still unproven, and step #1 only
+established WHAT the official app does differently, not that it is the cause.
+
+**Also still on the table (not yet investigated): AUTH/provisioning drift.** The buttons-dead state
+is cleared by a full re-provision (not a reconnect), which points at auth/secret-key or config
+state as much as at "no periodic traffic". A capture of the official app's behaviour right as the
+drift would occur (or a diff of the auth handshake/secret-key refresh) is the other avenue.
+
 ---
 
 ## File-PUT 12s stall: watch rejects the open (status 0x02 OPERATION_IN_PROGRESS), we ignored it (2026-06-14)
