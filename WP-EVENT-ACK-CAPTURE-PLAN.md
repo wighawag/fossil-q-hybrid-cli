@@ -1,10 +1,26 @@
 # WP: Capture the Official-App Event ACK on 3dda0006
 
 **Status:** ANALYSIS + CAPTURE PLAN ONLY. No production code changes in this task.
-Implementation (wiring the ack) is a separate follow-up, gated on a real capture confirming
-the ack byte layout.
+Implementation (wiring the ack) is a separate follow-up, gated on confirming the ack byte layout
+(first from the official-app disassembly, then a btsnoop capture if needed).
 
-## Why
+This WP resolves ONE remaining unknown about the OFFICIAL Fossil/Skagen app: **the event ack.**
+What does the official app write back after a `3dda0006` button / micro-app / music event so the
+watch stops re-sending the same REQUEST-opcode frame ~10-18x?
+
+> **The play-file memory leak (formerly "Part B") is RESOLVED separately, do not re-investigate.**
+> The buzz `0x86` = `NOT_ENOUGH_MEMORY` was caused by us PUTting every play file to a FIXED handle
+> `0x0900`. The official app's `FileHandleManager.getFileHandleToPut` (`m11016b` in
+> `tmp/FossilOfficialApp-deobf`, for `FileType.NOTIFICATION`) ROTATES the handle low byte:
+> `(9<<8)|index`, `index` incremented `% 255` => `0x0900, 0x0901, 0x0902, ...`. This was root-caused
+> from the disassembly (no btsnoop needed) and FIXED in commit `18553a8`: `FossilQAdapter` now keeps
+> a per-connection `notificationPlayIndex`, all three play paths open `nextNotificationPlayHandle()`,
+> and a new `FilePutRequest(short explicitHandle, FileHandle, byte[], adapter)` constructor carries
+> the rotated handle. Covered by `NotificationPlayHandleRotationTest`. See the FINDINGS section
+> "ROOT CAUSE + FIX (2026-06-15...): rotate the NOTIFICATION_PLAY handle low byte" (marked SHIPPED).
+> Nothing about the play path is capture-gated any more.
+
+## Why (the event ack)
 
 The watch sends button / music / micro-app events on GATT characteristic
 `3dda0006-957f-7d4a-34a6-74696673696d` as frames `[opCode][eventType][sequence][data...]`.
@@ -26,9 +42,10 @@ method at ~line 1995) READS opCode/eventType/sequence but NEVER writes anything 
 
 **Hypothesis:** because no ack is sent for a REQUEST-opcode event, the firmware re-requests the same
 frame (same sequence) ~10-18x until timeout. The de-dup we shipped (commit a2d1db1) collapses the
-repeats to one effect but only absorbs the symptom; the watch still re-sends, and the buzz/play
-storm wedges the watch's NOTIFICATION_PLAY handle (0x0900), after which buzz PUTs are rejected with
-status `0x86` and only a full re-provision clears it.
+repeats to one effect but only absorbs the symptom; the watch still re-sends. (Historically this
+re-send storm also queued many play-file PUTs, which is what first surfaced the play-file bug; that
+play-file bug is now fixed independently by handle rotation, so the only thing left to fix here is
+stopping the re-send at its source with the ack.)
 
 ## Decisive unknown to resolve
 
@@ -39,6 +56,46 @@ After a `3dda0006` event notification, what does the OFFICIAL app WRITE back in 
 2. Do the official app's own event frames carry `opCode 0x02` (NOTIFY) instead of our observed
    `0x01` (REQUEST), implying the re-send is provoked by something we do/omit?
 3. What is the exact byte layout, target characteristic UUID, and timing of any such ack?
+
+> Note: the play-file lifecycle is NOT an open question (see the resolved-separately note above);
+> this WP is only about the event ack.
+
+---
+
+## 0. Check the disassembly FIRST (preferred over a capture)
+
+The play-file fix came entirely from the official-app disassembly with no btsnoop needed; the ack
+may too. **Before** setting up any capture, read the deobfuscated official app under
+`tmp/FossilOfficialApp-deobf/sources` to see whether it sends an ack/response for REQUEST-opcode
+(`0x01`) async events and, if so, the exact bytes and target characteristic.
+
+Start with these classes (paths under `tmp/FossilOfficialApp-deobf/sources`):
+
+- `com/fossil/blesdk/device/logic/request/GetAsyncNotificationRequest.java` - the request that
+  reads/handles the watch's async events; look for whether it builds and sends a response frame
+  back (and on which characteristic) after receiving a REQUEST-opcode event.
+- `com/fossil/blesdk/device/logic/request/code/AsyncOperationCode.java` - the opcode enum
+  (REQUEST `0x01` vs NOTIFY `0x02` and any response/ack code); this is the same source that
+  defined the opcode meanings in FINDINGS §18.
+- `com/fossil/blesdk/device/logic/request/RequestId.java` - request ids; check for an
+  async-notification ack / response id.
+- `com/fossil/blesdk/device/event/DeviceEventId.java` - the event-id table; cross-check the
+  `eventType` values (0x05 MUSIC, 0x08 MICRO_APP, etc.) and whether each is flagged as expecting a
+  response.
+
+What to extract from the disassembly:
+
+- Does a REQUEST-opcode (`0x01`) async event get an explicit response written back? If the SDK
+  fire-and-forgets it (no write), that itself is an answer (the re-send must be provoked by
+  something else).
+- The exact response/ack byte layout (opcode byte, whether it echoes `eventType` and/or
+  `sequence`, any trailing status), and the target characteristic UUID (expected `3dda0006`).
+- The write type the SDK uses (write-with-response vs write-without-response).
+
+If the disassembly yields the exact ack bytes, the btsnoop capture (sections 1-3) becomes a
+CONFIRMATION step rather than a discovery step (capture one event + one ack and verify the bytes
+match). If the disassembly is inconclusive (e.g. the ack is assembled dynamically and hard to read
+statically), fall through to the capture below to read it off the wire.
 
 ---
 
@@ -194,7 +251,7 @@ A clean way to see the request/ack pairing: apply
 
 ---
 
-## 3. "What to look for" checklist (tied to the three unknowns)
+## 3. "What to look for" checklist (the event ack)
 
 For each captured `3dda0006` notification `01 <type> <seq> <data...>`:
 
@@ -315,12 +372,37 @@ by protocol/src/test/java/qhybrid/protocol/FakeBleTransport.java, where
 
 ---
 
-## 6. Follow-ups (do NOT do in this task)
+## 6. The play-file memory leak (formerly "Part B") - RESOLVED SEPARATELY
 
-- [ ] Perform the capture (section 1-3). Record the confirmed ack frame format + provenance
-      (capture file name, frame numbers, timing) in **FINDINGS.md** as a new section. Do NOT invent
-      bytes - only write FINDINGS after a real capture confirms them.
-- [ ] Implement the wiring (section 5) in a separate task, with the tests above.
+The buzz `0x86` = `NOT_ENOUGH_MEMORY` failure was root-caused from the official-app disassembly
+(no btsnoop needed) and FIXED in a parallel session (commit `18553a8`). Cause: we PUT every play
+file to a FIXED handle `0x0900`. The official app's `FileHandleManager.getFileHandleToPut`
+(`m11016b` in `tmp/FossilOfficialApp-deobf`, for `FileType.NOTIFICATION`) ROTATES the handle low
+byte: `(9<<8)|index`, `index` incremented `% 255` => `0x0900, 0x0901, 0x0902, ...`. The fix gives
+`FossilQAdapter` a per-connection `notificationPlayIndex`; all three play paths open
+`nextNotificationPlayHandle()`, carried by a new
+`FilePutRequest(short explicitHandle, FileHandle, byte[], adapter)` constructor. Covered by
+`NotificationPlayHandleRotationTest`. See the FINDINGS section
+"ROOT CAUSE + FIX (2026-06-15...): rotate the NOTIFICATION_PLAY handle low byte" (marked SHIPPED).
+Nothing about the play path needs a capture; this WP no longer tracks it.
+
+> Disambiguation worth keeping (two different `0x86`s - do not confuse them): in the file-control
+> OP-byte table (FINDINGS "Control channel & operation codes"), `0x86` is the RESPONSE byte for
+> `VERIFY_DATA` (op 6 | 0x80). In the PUT-accept frame `83 00 09 86 00`, the `86` is the **status
+> byte at offset 3**, which decodes via `ResultCode` to `134 = NOT_ENOUGH_MEMORY` (NOT `136 =
+> NOT_SUPPORT`). Same hex, different field. The leak was about the STATUS byte.
+
+---
+
+## 7. Follow-ups (do NOT do in this task)
+
+- [ ] Check the disassembly FIRST (section 0) for the ack. If it yields the exact ack bytes, treat
+      the capture as confirmation only.
+- [ ] If needed, perform the btsnoop capture (sections 1-3) of the button/music/ring events.
+      Record the confirmed ack frame format + provenance (source class or capture file name, frame
+      numbers, timing) in **FINDINGS.md** as a new section. Do NOT invent bytes - only write
+      FINDINGS after the disassembly or a real capture confirms them.
+- [ ] Implement the ack wiring (section 5) in a separate task, with the tests there.
 - [ ] Re-evaluate whether the de-dup window can be relaxed once the ack stops the re-send at source.
 
 ## Provenance / source pointers
@@ -332,3 +414,12 @@ by protocol/src/test/java/qhybrid/protocol/FakeBleTransport.java, where
 - De-dup mechanism + the multi-buzz root cause: FossilQAdapter.java lines 113-126, 2008-2105;
   AdapterAsyncEventDedupTest.java; TODO.md "async-event re-send".
 - Prior btsnoop-from-bugreport precedent: BLE-CAPTURE-IMPL.md / FINDINGS §21 (bugreport5-8).
+- Official-app disassembly to inspect for the ack (section 0):
+  `tmp/FossilOfficialApp-deobf/sources/com/fossil/blesdk/device/logic/request/GetAsyncNotificationRequest.java`,
+  `.../request/code/AsyncOperationCode.java`, `.../request/RequestId.java`,
+  `.../device/event/DeviceEventId.java`.
+- Play-file leak (resolved separately, section 6): FINDINGS "ROOT CAUSE + FIX (2026-06-15...):
+  rotate the NOTIFICATION_PLAY handle low byte" (SHIPPED, commit 18553a8);
+  NotificationPlayHandleRotationTest. The `0x86` = 134 NOT_ENOUGH_MEMORY vs 136 NOT_SUPPORT
+  distinction lives in ResultCode.java
+  (protocol/src/main/java/qhybrid/protocol/requests/fossil/file/ResultCode.java).
