@@ -62,7 +62,12 @@ After a `3dda0006` event notification, what does the OFFICIAL app WRITE back in 
 
 ---
 
-## 0. Check the disassembly FIRST (preferred over a capture)
+## 0. Check the disassembly FIRST (preferred over a capture) - DONE 2026-06-15
+
+> **RESULT (2026-06-15): the ack format is RECOVERED from the disassembly. The only remaining
+> unknown is the trigger condition (ack-all vs ack-REQUEST-only), which is in a method jadx could
+> not decompile.** Details in "0a. What the disassembly showed" below; the capture (sections 1-3)
+> is now a small CONFIRMATION step, not discovery.
 
 The play-file fix came entirely from the official-app disassembly with no btsnoop needed; the ack
 may too. **Before** setting up any capture, read the deobfuscated official app under
@@ -96,6 +101,57 @@ If the disassembly yields the exact ack bytes, the btsnoop capture (sections 1-3
 CONFIRMATION step rather than a discovery step (capture one event + one ack and verify the bytes
 match). If the disassembly is inconclusive (e.g. the ack is assembled dynamically and hard to read
 statically), fall through to the capture below to read it off the wire.
+
+### 0a. What the disassembly showed (2026-06-15)
+
+The official app has a dedicated `RequestId.SEND_ASYNC_EVENT_ACK`, implemented by
+`SendAsyncEventAckRequest` + `SendAsyncEventAckPhase`, that writes an ack back to the watch.
+
+**Ack wire format (recovered, NOT guessed):**
+
+```
+02 <eventType> <sequence> [optional payload]
+^opcode = 0x02 (NOTIFY) -- ALWAYS 2 for the ack
+   ^eventType byte -- echoed from the received event
+      ^sequence byte -- echoed from the received event
+         ^payload -- default EMPTY; only TimeSync/Heartbeat override it
+```
+
+- For our event types (MICRO_APP `0x08`, MUSIC `0x05`, APP_NOTIFICATION `0x04`) the payload is the
+  default empty, so the ack is exactly **3 bytes: `02 <eventType> <sequence>`**.
+- **Target characteristic: `3dda0006`** (`GattCharacteristic.CharacteristicId.ASYNC`).
+- **Write type: write-WITHOUT-response** ("command"): `SendAsyncEventAckRequest` extends
+  `SingleCommandWithoutNotificationRequest` and issues
+  `WriteCharacteristicCommand(CharacteristicId.ASYNC, ackBytes, ...)`. Matches FINDINGS §2.
+
+**Source provenance (under `tmp/FossilOfficialApp-deobf/sources`):**
+
+- `com/fossil/blesdk/device/asyncevent/AsyncEvent.java` - method `m10799a()` (the metadata names it
+  `getAckResponseData`) builds the bytes little-endian: `put((byte)2)`, `put(this.f17932a.f19927a)`
+  (eventType), `put(this.f17933b)` (sequence), `put(mo10797b())` (payload). `mo10797b()` defaults to
+  `new byte[0]`; only `TimeSyncEvent` / `HeartbeatEvent` override it.
+- `com/fossil/blesdk/device/logic/request/SendAsyncEventAckRequest.java` - `mo11158j()` returns
+  `WriteCharacteristicCommand(GattCharacteristic.CharacteristicId.ASYNC, asyncEvent.m10799a(), ...)`;
+  the ack payload `f19867C = asyncEvent.m10799a()`.
+- `com/fossil/blesdk/device/logic/phase/SendAsyncEventAckPhase.java` - the phase that runs that
+  request (requires `ResourceType.ASYNC`).
+- `com/fossil/blesdk/device/logic/request/RequestId.java` - contains `SEND_ASYNC_EVENT_ACK`.
+- `com/fossil/blesdk/device/logic/request/code/AsyncEventType.java` - the eventType id bytes
+  (`MUSIC_EVENT=5`, `MICRO_APP_EVENT=8`, `APP_NOTIFICATION_EVENT=4`, etc.) used as the 2nd ack byte.
+- `com/fossil/blesdk/device/event/DeviceEventParser.java` - `m11009a()` parses the INCOMING frame as
+  `rawData[0]`=opcode (`AsyncOperationCode` REQUEST=1 / NOTIFY=2), `[1]`=eventType, `[2]`=sequence -
+  confirming our `[opCode][eventType][sequence][data...]` layout.
+- `com/fossil/blesdk/device/DeviceImplementation.java` - `sendAsyncEventAck$blesdk_productionRelease`
+  (~line 7460) constructs the `SendAsyncEventAckPhase`; the async-event listener dispatches to it
+  (~line 1171).
+
+**The remaining unknown (capture-gated): the TRIGGER condition.** Whether the app acks EVERY async
+event or ONLY REQUEST-opcode (`0x01`) events is decided in
+`DeviceImplementation$streamingAsyncEventListener$1.C18181.invokeSuspend`, which **jadx could not
+decompile** ("Method not decompiled, instruction units count: 978"). So the static source cannot
+show the gate. A short btsnoop (sections 1-3) confirms it: press a REQUEST-opcode button and check
+whether exactly one `02 <type> <seq>` ack follows; check whether any NOTIFY-opcode (`0x02`) event is
+acked too. Our conservative default for the impl is to ack ONLY `opCode == 0x01` (see section 5).
 
 ---
 
@@ -318,6 +374,11 @@ only confirm/deny the mechanism, not the wire format.
 
 ## 5. Where/how the ack would later be wired in (proposal, not implemented)
 
+**Ack bytes are now known** (section 0a / FINDINGS §18a): write `02 <eventType> <sequence>` (3 bytes,
+empty payload for our action events) to `3dda0006` as write-without-response. The remaining gate to
+confirm before wiring is the TRIGGER (ack-all vs ack-`0x01`-only); the conservative default below is
+ack-`0x01`-only.
+
 **Method:** `FossilQAdapter.handleButtonEvent(byte[] value)`
 (protocol/src/main/java/qhybrid/protocol/FossilQAdapter.java, ~line 1995).
 
@@ -396,12 +457,13 @@ Nothing about the play path needs a capture; this WP no longer tracks it.
 
 ## 7. Follow-ups (do NOT do in this task)
 
-- [ ] Check the disassembly FIRST (section 0) for the ack. If it yields the exact ack bytes, treat
-      the capture as confirmation only.
-- [ ] If needed, perform the btsnoop capture (sections 1-3) of the button/music/ring events.
-      Record the confirmed ack frame format + provenance (source class or capture file name, frame
-      numbers, timing) in **FINDINGS.md** as a new section. Do NOT invent bytes - only write
-      FINDINGS after the disassembly or a real capture confirms them.
+- [x] Check the disassembly FIRST (section 0). DONE 2026-06-15: ack format recovered
+      (`02 <eventType> <sequence>` on `3dda0006`, write-without-response) and recorded in
+      **FINDINGS §18a** + section 0a. Only the trigger condition remains.
+- [ ] Confirm the TRIGGER (ack-all vs ack-`0x01`-only) with a short btsnoop (sections 1-3) of the
+      button/music/ring events. Record the confirmed trigger + on-wire evidence (capture file name,
+      frame numbers, timing) in **FINDINGS §18a**. The ack BYTES are already confirmed from the
+      disassembly - do NOT re-derive them; do NOT invent the trigger.
 - [ ] Implement the ack wiring (section 5) in a separate task, with the tests there.
 - [ ] Re-evaluate whether the de-dup window can be relaxed once the ack stops the re-send at source.
 

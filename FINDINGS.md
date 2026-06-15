@@ -711,6 +711,53 @@ With TOP=STOPWATCH, MIDDLE=FORWARD_TO_PHONE, BOTTOM=FORWARD_TO_PHONE:
 on the watch firmware and do NOT send events over BLE. Only phone-dependent functions
 (RING_PHONE/FORWARD_TO_PHONE, MUSIC_CONTROL, etc.) send micro_app events.
 
+### 18a. The official app ACKs async events on 3dda0006 (2026-06-15, from disassembly)
+
+**Source:** official-app disassembly under `tmp/FossilOfficialApp-deobf/sources` (authoritative,
+same class of evidence as the play-file-rotation fix). The official app has a dedicated
+`RequestId.SEND_ASYNC_EVENT_ACK` that writes an acknowledgement back to the watch after an async
+event. This is the missing ack our `FossilQAdapter.handleButtonEvent` never sends (the suspected
+root cause of the ~10-18x REQUEST-opcode re-send storm; see TODO "async-event re-send" and
+WP-EVENT-ACK-CAPTURE-PLAN.md).
+
+**Ack wire format (recovered from disassembly, NOT guessed):**
+
+```
+02 <eventType> <sequence> [optional payload]
+```
+
+- byte 0 = opcode, **ALWAYS `0x02` (NOTIFY)** for the ack.
+- byte 1 = **eventType**, echoed from the received event (e.g. `0x08` MICRO_APP, `0x05` MUSIC,
+  `0x04` APP_NOTIFICATION).
+- byte 2 = **sequence**, echoed from the received event.
+- bytes 3.. = payload, **default EMPTY**; only `TimeSyncEvent` and `HeartbeatEvent` override it. For
+  our discrete-action event types the ack is therefore exactly **3 bytes: `02 <eventType> <seq>`**.
+
+**Target characteristic: `3dda0006`** (`GattCharacteristic.CharacteristicId.ASYNC`).
+**Write type: write-WITHOUT-response** ("command") - `SendAsyncEventAckRequest` extends
+`SingleCommandWithoutNotificationRequest`. Consistent with the write-type table in §2.
+
+**Code provenance:**
+- `asyncevent/AsyncEvent.java` `m10799a()` (metadata name `getAckResponseData`): allocates
+  `payload.length + 3` LE bytes, `put((byte)2)`, `put(eventType)`, `put(sequence)`, `put(payload)`.
+- `logic/request/SendAsyncEventAckRequest.java` `mo11158j()`:
+  `WriteCharacteristicCommand(CharacteristicId.ASYNC, asyncEvent.m10799a(), ...)`.
+- `logic/phase/SendAsyncEventAckPhase.java`: runs that request (requires `ResourceType.ASYNC`).
+- `logic/request/RequestId.java`: `SEND_ASYNC_EVENT_ACK`.
+- `event/DeviceEventParser.java` `m11009a()`: parses the INCOMING frame as `rawData[0]`=opcode,
+  `[1]`=eventType, `[2]`=sequence - confirming the §18 layout.
+- `device/DeviceImplementation.java`: `sendAsyncEventAck$blesdk_productionRelease` (~line 7460)
+  builds the phase; the async listener dispatches to it (~line 1171).
+
+**STILL OPEN (capture-gated): the TRIGGER condition.** Whether the official app acks EVERY async
+event or ONLY REQUEST-opcode (`0x01`) events is decided in
+`DeviceImplementation$streamingAsyncEventListener$1.C18181.invokeSuspend`, which **jadx FAILED to
+decompile** ("Method not decompiled, instruction units count: 978"). The static source cannot show
+the gate. Confirm with a short btsnoop (press a REQUEST-opcode button, check exactly one
+`02 <type> <seq>` ack follows; check whether `0x02` NOTIFY events are acked too). Until confirmed,
+the conservative impl is to ack ONLY `opCode == 0x01` (REQUEST) events. Do NOT widen the ack to all
+events, or change the de-dup, on the strength of the bytes alone - the trigger is the open question.
+
 ---
 
 ## 19. Button Configuration & Built-in Watch Functions (2026-05-20)
