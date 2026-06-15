@@ -47,23 +47,23 @@ kept here to revisit if that angle does not pan out, or as an independent cross-
 Codebase templates exist for every piece (the `navCueEnabled` opt-in boolean is the closest
 analog).
 
-1. **Pref** — `android/.../settings/SettingsPrefs.kt`:
+1. **Pref** (`android/.../settings/SettingsPrefs.kt`):
    - Add `backgroundSyncEnabled: Boolean = false` to `AppSettings` (+ a `SettingsVocabulary`
      default `BACKGROUND_SYNC_DEFAULT_ENABLED = false`), a `KEY_BACKGROUND_SYNC` SharedPreferences
      key, read in `get()`, a `setBackgroundSync(enabled)` setter, and a line in `replaceAll(...)`.
    - Mirror `navCueEnabled` exactly.
-2. **UI** — `android/.../settings/SettingsScreen.kt` + `SettingsViewModel.kt`:
+2. **UI** (`android/.../settings/SettingsScreen.kt` + `SettingsViewModel.kt`):
    - A toggle row ("Periodic background sync (experimental)"), wired through the ViewModel like the
      nav-cue toggle. Copy should say it is an experiment and OFF by default.
-3. **Periodic driver** — `android/.../WatchConnectionService.kt`:
+3. **Periodic driver** (`android/.../WatchConnectionService.kt`):
    - When connected AND `backgroundSyncEnabled`, run a ~5-min timer that fires a LIGHTWEIGHT action
-     (recommend a TIME re-push — cheap, already-implemented path — not a full reconcile).
+     (recommend a TIME re-push: cheap, already-implemented path, not a full reconcile).
    - Cancel the timer on disconnect and when the toggle goes off. The timer must NEVER initiate a
      connect (only fire while already connected), so it cannot undermine the deliberately
      event-driven, no-polling reconnect design (see that service's header comment: "NO continuous
      scanning ... we do NOT keep polling/connecting on a timer").
    - Default OFF => production behaviour byte-for-byte unchanged.
-4. **Tests** — unit-test the pref round-trip + the ViewModel toggle (existing test style). The timer
+4. **Tests**: unit-test the pref round-trip + the ViewModel toggle (existing test style). The timer
    behaviour and the on-device soak test are NOT unit-testable here.
 
 ### Open implementation decisions (decide when revisited)
