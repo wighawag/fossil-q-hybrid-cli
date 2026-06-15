@@ -2646,6 +2646,22 @@ NOTE: this fix is per-CONNECTION (the index resets to 0 on a fresh adapter), whi
 official app's per-(mac,fileType) map being seeded at 0; if a single connection ever PUTs > 254
 play files it wraps back through 0x0900, by which point the early ones are long reclaimed.
 
+CONFIRMED ON-DEVICE (2026-06-15, new APK, after a one-time battery pull to clear the already-full
+ring): two consecutive button-press buzzes both completed cleanly, and the play handle ROTATED as
+designed:
+```
+Press 1: WRITE 03 00 09 ... 4f 00 00 00   -> NOTIFY 83 00 09 00 00 (accept OK, was 0x86)
+         WRITE 00 00 09 02 ... (data)     -> 88 00 09 (EOF) -> WRITE 04 00 09 (verify)
+                                          -> NOTIFY 84 00 09 00 (VERIFY success -> buzz fired)
+Press 2: WRITE 03 01 09 ... 4f 00 00 00   -> NOTIFY 83 01 09 00 00   (handle low byte 0x0900->0x0901)
+         ... -> 84 01 09 00 (success)
+```
+Status byte is 00 (not 0x86) on both, the handle stepped 0x0900 -> 0x0901, and each press was a
+SINGLE 01 08 <seq> frame (de-dup holding) -> one buzz, no storm. The battery pull was the one-time
+reclaim of the ring the OLD build had filled; the rotation keeps it from refilling. (There is no
+button-combo factory reset on these hybrids; a coin-cell pull / full power-off is the only hard
+reset, and a BLE re-pair does NOT clear the file ring.)
+
 ---
 
 ## CORRECTION (2026-06-15): 0x86 = NOT_ENOUGH_MEMORY, not a "wedged handle" — the play file area is FULL
