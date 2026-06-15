@@ -877,6 +877,35 @@ the watch reports the raw press, the PHONE decides the gesture and writes a butt
 back (not a lightweight 3dda0006 ack). VOLUME_UP, by contrast, is a MUSIC variant (action `0x05`)
 and gets the normal `02 05 05 ...` music ack.
 
+#### "MUSIC" (0x05) is really a GENERIC event channel; the meaning is OUR app's choice
+
+The `0x05` event type is named MUSIC_EVENT after the official app's intent, but on the wire it is
+just `[01][05][seq][action]` and the WATCH attaches no music semantics - it only reports "button
+gave action N." What action N MEANS is entirely the companion app's choice. Two consequences:
+
+1. **Button assignment vs event are separate layers.** At CONFIG time, MUSIC_CONTROL is a family of
+   distinct `declarationId`s under one MicroAppId, and they are NOT interchangeable on a button:
+   - `4614` MUSIC_CONTROL/STANDARD = the multi-gesture button: single/double/long produce THREE
+     different action bytes (capture 1: `02`/`02`/`04` = TOGGLE/TOGGLE/PREV).
+   - `4612` MUSIC_CONTROL/VOLUME_UP and `4613` VOLUME_DOWN = ONE-SHOT buttons: a single action each
+     (`05` / `06`). Volume-up cannot also do volume-down - that is a different button/declarationId.
+   - `4609`/`4610`/`4611` = PLAY_PAUSE / NEXT / PREVIOUS one-shots.
+   So "music control" (3 gestures, one button) and "volume up/down" (one-shot, separate buttons) are
+   different button assignments even though both emit `0x05` events. (See the `MICRO_APP_MAP`
+   declarationId table in `FossilQAdapter.java`.)
+2. **At EVENT time the watch only sends the action byte; we map it freely.** Our code already does
+   this: the same `0x05` action is interpreted as a TIMER gesture or tracker waypoint, not music
+   (see `FossilQAdapter` line ~2105 "play/pause/next/prev/volume + tracker/timer", and the TIMER-
+   mode storm note where action `02` drove the TIMER SHORT gesture). So we have FULL freedom: a
+   `0x05` action can mean music, timer, tracker, or anything we choose.
+
+**Why this matters for the ack:** the ack `02 05 <action> 00 00 00 00 00` is a TRANSPORT-level
+"received action N" - it echoes the type+action and is INDEPENDENT of what we do with the action.
+So we ack every `0x05` REQUEST by echoing its action byte regardless of whether we treat it as
+music / volume / timer / tracker. We do NOT need (and must not add) per-meaning ack variants; one
+`0x05` ack rule covers all uses. The semantic mapping (music vs timer vs tracker) stays purely on
+our side, after the ack.
+
 **Implications for our re-send / ack work (re-frames the root cause):**
 - For MUSIC events: replicate the `02 05 <action> 00 00 00 00 00` ack on `3dda0006`
   (write-with-response). Confirmed by both captures.
