@@ -758,6 +758,44 @@ the gate. Confirm with a short btsnoop (press a REQUEST-opcode button, check exa
 the conservative impl is to ack ONLY `opCode == 0x01` (REQUEST) events. Do NOT widen the ack to all
 events, or change the de-dup, on the strength of the bytes alone - the trigger is the open question.
 
+#### On-wire PARTIAL confirmation from existing btsnoop captures (2026-06-15)
+
+Mined the 7 existing official-app captures under `tmp/bugreportN/FS/data/misc/bluetooth/logs/`
+with `tshark` (filter `btatt.uuid128 == 3d:da:00:06:...696d`, handle `0x004e` = `3dda0006`). Three
+captures (bugreport3/4/5) carried `3dda0006` traffic; the ack FORMAT is confirmed on the wire:
+
+- **bugreport5** frame 2012 `NOTIF 01 0b 4d` (watch->phone, REQUEST, type=0x0b TIME_SYNC, seq=0x4d)
+  -> frame 2013 (+15 ms) `WRITE 02 0b 4d fedf0e6a cc00 3c00` (phone->watch). Opcode `02` (NOTIFY),
+  type+seq **echoed**.
+- **bugreport4** frame 1773 `NOTIF 01 0b 13` -> frame 1774 (+24 ms) `WRITE 02 0b 13 7d950d6a ...`.
+  Same echo pattern.
+
+This confirms the disassembly format: `02 <eventType> <sequence> [payload]` on `3dda0006`, ~15-24 ms
+after a REQUEST-opcode event. The `02 01 ...` JSON events (opcode `02` NOTIFY) in br3/4/5 get NO
+echoing ack, consistent with "NOTIFY events are not acked".
+
+**Caveats - these captures do NOT close the trigger gap, for three reasons:**
+1. **No button-press events were captured.** Every `3dda0006` event in these logs is TIME_SYNC
+   (`0x0b`), config (`0x0c`), background-sync (`0x06`), or JSON (`0x01`) - all connection-setup /
+   sync traffic. There is ZERO `0x05` (MUSIC) or `0x08` (MICRO_APP) event in any capture, so we
+   have NOT yet seen the official app ack the button events that actually cause our re-send storm.
+2. **The gate is narrower than "ack all REQUESTs".** Some `0x01`-opcode events here went UNacked
+   (bugreport3 `01 0b 0e`, bugreport4 `01 0c 15` and `01 06 47`). So "ack every REQUEST" is too
+   broad; the real condition is per-event-type (the still-undecompiled gate).
+3. **Write-type discrepancy to reconcile.** On the wire the ack used **Write Request (`0x12`,
+   WITH response)** followed by a `0x13` Write Response - NOT write-without-response, even though
+   `SendAsyncEventAckRequest` extends `SingleCommandWithoutNotificationRequest`. Confirm which the
+   button-path ack uses before relying on the write type.
+
+Also note: there is a SECOND phone->watch write shape on type `0x0b` that is NOT an ack - a
+time-PUSH `02 0b 00 <ts:4> <ms:2> 03 3c 00` with seq `0x00` and an 8-byte payload (the phone
+pushing time; matches `TimeSyncEvent.mo10797b()`'s timestamp+partial-second override). Do not mistake
+it for an ack: its seq is always `00` and it does not follow/echo a specific event.
+
+**Net:** the ack BYTES + characteristic + echo are confirmed; the BUTTON-path ack and the exact
+trigger gate (and write type) still require a fresh capture WITH a button press (MICRO_APP `0x08` /
+MUSIC `0x05`).
+
 ---
 
 ## 19. Button Configuration & Built-in Watch Functions (2026-05-20)
