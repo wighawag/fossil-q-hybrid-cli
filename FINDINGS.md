@@ -796,6 +796,55 @@ it for an ack: its seq is always `00` and it does not follow/echo a specific eve
 trigger gate (and write type) still require a fresh capture WITH a button press (MICRO_APP `0x08` /
 MUSIC `0x05`).
 
+#### MUSIC-button ack confirmed on the wire - and it is NOT the generic shape (2026-06-15)
+
+Fresh capture `tmp/bugreport-eventack.zip` (btsnoop
+`tmp/eventack-extract/FS/data/misc/bluetooth/logs/btsnoop_hci.log`, presses ~12:57-12:58 BST,
+official app paired). TOP button = Music control was pressed 3x. Handle `0x004e` = `3dda0006`
+(verified against bugreport5 discovery: `btatt.handle==0x004e` -> uuid `3dda0006957f7d4a...696d`).
+The MUSIC events AND their acks were captured:
+
+```
+t=122.809  NOTIF 01 05 09 02   (watch->phone: REQUEST, type=05 MUSIC, seq=09, action=02 TOGGLE)
+t=122.939  WRITE 02 05 02 00 00 00 00 00   (phone->watch ack, +130 ms, Write-Request 0x12 + 0x13)
+t=130.939  NOTIF 01 05 0a 02   (seq=0a, action=02)
+t=130.982  WRITE 02 05 02 00 00 00 00 00   (+43 ms)
+t=135.635  NOTIF 01 05 0b 04   (seq=0b, action=04 PREV)
+t=135.678  WRITE 02 05 04 00 00 00 00 00   (+43 ms)
+```
+
+**CORRECTION to the assumed ack shape.** For MUSIC events the ack is NOT the generic
+`02 <eventType> <sequence>`. It is a MUSIC RESPONSE frame:
+
+```
+02 05 <action> 00 00 00 00 00
+^opcode 02 (NOTIFY)
+   ^type 05 (MUSIC)
+      ^action byte -- ECHOES THE EVENT'S ACTION (data byte), NOT the sequence
+         ^5-byte payload (all zero here)
+```
+
+Proof it echoes ACTION not SEQUENCE: event `01 05 09 02` (seq=09, action=02) -> ack third byte `02`
+(= action, not 09); event `01 05 0b 04` (seq=0b, action=04) -> ack third byte `04` (= action). This
+is `MusicAsyncEvent`'s own `mo10797b()` override (cf. `RequestId.NOTIFY_MUSIC_EVENT`), not the
+empty-payload base `AsyncEvent.m10799a()`. So **the ack layout is per-event-type**: the generic
+`02 <type> <seq>` (empty payload) is only the BASE; MUSIC overrides byte 3 + adds a 5-byte body.
+
+**Other confirmations from this capture:**
+- **Write type = WITH response.** The ack is ATT Write Request (`0x12`) + Write Response (`0x13`),
+  NOT write-without-response - despite `SendAsyncEventAckRequest` extending
+  `SingleCommandWithoutNotificationRequest`. The wire is authoritative: use write-with-response.
+- **NOTIFY (`0x02`) events are not acked.** The one `02 01 ...` JSON event got no reply.
+- **One ack per press** (no storm) - because the ack is sent, the watch did NOT re-send. This
+  supports the hypothesis that the missing ack is what causes our ~10-18x re-send.
+
+**STILL NOT captured: the MICRO_APP (`0x08`) ack.** No `0x08` event occurred (the user's MIDDLE =
+switch-mode is internal/no-BLE; the volume press produced no `3dda0006` event either). Only `0x05`
+MUSIC events appeared. So the `0x08` ack shape (the one most central to the mode-switch storm) is
+STILL unconfirmed. Given MUSIC overrides the base shape, do NOT assume `0x08` is `02 08 <seq>` -
+capture a real MICRO_APP press (temporarily set a button to RING_PHONE / FORWARD_TO_PHONE, which
+DOES emit `0x08`) to confirm its exact ack bytes before wiring the `0x08` path.
+
 ---
 
 ## 19. Button Configuration & Built-in Watch Functions (2026-05-20)
