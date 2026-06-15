@@ -2214,6 +2214,53 @@ verify the CRC recompute against a round-trip, and (separately) wire READING the
 so our companion can act on a take-picture/volume press. The payload bytes are now known; only the
 builder + CRC + read-path remain.
 
+### 26c. The button-config entry carries the HID CONSUMER USAGE byte (`8c 01 <usage>`)
+
+Diffing the three captured entries (eventack5) byte-for-byte:
+
+```
+off:    1  2        ...  51       64
+VUP  : 04 12  ...  8c 01 e9  ...  8c 01 e9     (declId 4612, usage E9)
+VDN  : 05 12  ...  8c 01 ea  ...  8c 01 ea     (declId 4613, usage EA)
+TPIC : 01 10  ...  8c 01 e9  ...  8c 01 e9     (declId 4097, usage E9)
+```
+
+- VOLUME_UP vs VOLUME_DOWN differ at the declId low byte AND at offsets 51 & 64 (`e9`<->`ea`).
+- VOLUME_UP vs TAKE_PICTURE differ ONLY in the declId; both keep usage `e9`.
+
+The `8c 01 <usage>` field is the **HID Consumer Control usage** the button emits. The values match
+exactly the usages the watch's HID Report Map (§26, Report ID 2) advertises:
+
+| usage byte | HID Consumer usage | observed in |
+|-----------|--------------------|-------------|
+| `0xB5` | Scan Next Track | (advertised, not yet set) |
+| `0xB6` | Scan Previous Track | (advertised, not yet set) |
+| `0xCD` | Play/Pause | (advertised, not yet set) |
+| `0xE9` | Volume Increment | VOLUME_UP, TAKE_PICTURE |
+| `0xEA` | Volume Decrement | VOLUME_DOWN |
+| `0xE2` | Mute | (advertised, not yet set) |
+
+This explains why TAKE_PICTURE moves the phone volume UP (it emits usage `0xE9`, the same as
+VOLUME_UP; Android's camera maps a volume key to the shutter). VOLUME_UP and TAKE_PICTURE are the
+same HID key with different declIds (UI label/icon: SELFIE vs VOLUME_UP).
+
+**Hypothesis (NOT yet confirmed):** changing the `8c 01 <usage>` byte to another advertised usage
+(e.g. `b5` next-track, `cd` play/pause, `e2` mute) would make the button emit that HID key. The
+menu is FIXED to what the Report Map declares - you cannot invent usages outside that list.
+
+**UNCONFIRMED / must round-trip before relying on it:**
+1. Does the firmware honor an arbitrary `(declId, usage)` combination, or does it validate the pair
+   and reject/ignore a mismatch (e.g. declId=SELFIE + usage=`b5`)?
+2. What does the declId carry independently of the usage (watch-face label/icon? dial behaviour?) -
+   vol-up and take-picture differ only in declId yet behave the same on the HID wire.
+
+**Safe experiment to settle it (reversible):** build one button entry from VOLUME_UP with the usage
+byte set to `b5` (next track) - both offset 51 and 64 - recompute the CRC, PUT it to a spare button,
+and watch `0x2a4d`: if the watch accepts the PUT and emits the next-track HID report on press, the
+field is firmware-honored and we can expose arbitrary advertised usages. If it rejects/ignores it,
+the usage is tied to the declId and we are limited to the official pairs. Worst case: re-set the
+button in the official app. Do NOT ship a configurable-key feature until this round-trip is green.
+
 ### Could we make it work?
 
 The HID service is **read-only from our perspective** — there are no Output or Feature

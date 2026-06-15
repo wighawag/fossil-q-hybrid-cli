@@ -89,7 +89,21 @@ Watch: Fossil Q Commuter (HW.0.0), Firmware HW0.0.2.9r.v3, Fossil protocol (2.x)
 - [ ] Map button presses to custom actions (run command, send notification, etc.)
 - [x] Multi-button press detection (SINGLE, DOUBLE) — firmware handles for MUSIC_CONTROL; software timing added for FORWARD_TO_PHONE (ButtonGestureDetector in FossilQAdapter). Uses 400ms double-press window (configurable via `--gesture-window`). RING_PHONE events delayed until gesture resolved; all other events unchanged.
 - [x] Mode toggle support — multi-entry button config via ButtonConfigBuilder. `mode_toggle` keyword + `+` syntax for custom combos. Up to 5+ entries confirmed working (TZ+DATE+ALARM+STEP_GOAL+LAST_NOTIFICATION). Entries without data (no alarm, no notification, 0% steps) are silently skipped. GOAL_TRACKING incompatible with toggle (error vibration). See FINDINGS.md #22.
-- [ ] Take a photo support — needs phone-side camera trigger implementation
+- [ ] Take a photo / HID-key button support. SOLVED how (FINDINGS §26a/b/c, captures eventack4/5):
+  "take a picture" = the SELFIE micro-app (declarationId 4097, header `01 01 10`); its config entry
+  is byte-identical to VOLUME_UP except the declId. On press the watch emits a HID Consumer Control
+  report on char `0x2a4d` (handle 0x007a), `08`=key-down / `00`=up (NOT a `3dda0006` event). The
+  config entry carries the HID usage byte `8c 01 <usage>` (E9=Vol+, EA=Vol-, and the Report Map also
+  advertises B5 next, B6 prev, CD play/pause, E2 mute).
+  - [ ] Add a `ConfigPayload.TAKE_PICTURE` (SELFIE) entry: copy VOLUME_UP bytes, set declId
+    `01 01 10 00`, RECOMPUTE the CRC (do not copy VOLUME_UP's). Add a CLI keyword.
+  - [ ] FEATURE: configurable HID key. Expose a button choice in the app whose HID usage byte is
+    user-selectable (default `E9` = volume up). Build the entry with the chosen usage at offsets
+    51 & 64 (`8c 01 <usage>`). GATED on the round-trip experiment in FINDINGS §26c (confirm the
+    firmware honors an arbitrary usage byte before shipping; menu limited to the advertised usages
+    B5/B6/CD/E9/EA/E2). Default to volume_up so it is safe even if only the official pairs work.
+  - [ ] Wire READING the HID `0x2a4d` consumer-control report so the companion can act on the press
+    (separate input path from `3dda0006`).
 - [x] **FIXED: one physical button press fired MULTIPLE events (multi-buzz in succession).**
   ROOT CAUSE (confirmed by logcat 2026-06-14): the WATCH itself re-sends the SAME async-event frame
   on `3dda0006` ~10x within a few ms for ONE press (transport log showed `NOTIFY 3dda0006 <- 01 05
@@ -100,23 +114,18 @@ Watch: Fossil Q Commuter (HW.0.0), Firmware HW0.0.2.9r.v3, Fossil protocol (2.x)
   adapter chokepoint (`FossilQAdapter.handleButtonEvent`), scoped to the discrete-action event types
   (music 0x05 / micro_app 0x08 / app-notification 0x04). Covered by `AdapterAsyncEventDedupTest`.
   (Below: the original investigation notes, kept for context.)
-- [ ] **ROOT-CAUSE the watch's async-event re-send (so we can stop it at the source, not just
-  absorb it).** Strong hypothesis from code review (b): the watch sends button/event frames on
-  `3dda0006` with `opCode = 0x01 = REQUEST` (the captured storm was `01 05 14 02` — opcode 01), i.e.
-  it EXPECTS an app acknowledgement/response. Our adapter only READS the event (`handleButtonEvent`
-  → `emitEvent` to the phone callback) and NEVER writes anything back to `3dda0006`, and the
-  `opCode` byte is read+logged but otherwise ignored. With no ack, the firmware re-requests the same
-  frame (~10x, same sequence) until it times out → the buzz/sync storm. The de-dup patch absorbs
-  this; the REAL fix is to send whatever ack the OFFICIAL app sends after a button event.
-  CAPTURE (bundle with the 24h capture below — same btsnoop method): with the OFFICIAL Fossil app,
-  enable Bluetooth HCI snoop log, press a watch button that emits an event (mode switch / music /
-  micro-app), pull the btsnoop (`adb bugreport`), and in Wireshark look at what the phone WRITES to
-  the watch in the ~tens of ms AFTER the `3dda0006` notification — specifically any write back to
-  `3dda0006` (or a related char) that echoes the event's `eventType`+`sequence` (an ACK), AND check
-  whether the official app's event frames carry `opCode 0x02` (NOTIFY, fire-and-forget) vs our
-  observed `0x01` (REQUEST). If an ack write exists, replicate it in `FossilQAdapter.handleButtonEvent`
-  (write the ack for REQUEST-opcode events) — that should stop the re-send entirely and remove the
-  reliance on de-dup. Update FINDINGS with the ack frame format + provenance.
+- [ ] **ROOT-CAUSE the watch's async-event re-send.** UPDATE 2026-06-15 (captures + reconciliation,
+  FINDINGS §18a + "RECONCILIATION"): the old "missing ack causes the re-send" hypothesis is
+  FALSIFIED. The official app does NOT ack `0x08` events (it writes a SETTINGS_BUTTONS file instead),
+  yet the watch did not storm; and our storm was ~10 frames in ~6 ms (too fast for an ack-timeout
+  retry). The re-send is a DRIFT symptom (same family as "buttons go dead" + wedged handles), NOT a
+  consequence of the missing ack. So:
+  - The ACK is now understood for `0x05` (`02 05 <action> 00*5`, write-with-response, FINDINGS §18a)
+    and is worth sending for fidelity, but must NOT be expected to stop the storm. De-dup stays as
+    the storm-of-effects mitigation.
+  - The REAL open question is now "what drifts the watch into the re-send / buttons-dead state, and
+    what does the official app do (periodic keep-alive / time push / sync) over a long idle
+    connection that we omit?" -> see the new storm-drift task below.
 - [x] **FIXED: TIMER-mode press kicked a FULL alarm-file upload PER press (latency / timeouts).**
   Confirmed on the clean reinstall (logcat 20:06): the de-dup now works (one press → one gesture),
   but each press still fired a full `SyncSection.ALARMS` 32-slot upload (~1.5s), so two presses
