@@ -3015,10 +3015,41 @@ activity prevent the drift" directly. Do NOT wire anything as a "fix" until an i
 it helps - the causal link (periodic activity -> no drift) is still unproven, and step #1 only
 established WHAT the official app does differently, not that it is the cause.
 
-**Also still on the table (not yet investigated): AUTH/provisioning drift.** The buttons-dead state
-is cleared by a full re-provision (not a reconnect), which points at auth/secret-key or config
-state as much as at "no periodic traffic". A capture of the official app's behaviour right as the
-drift would occur (or a diff of the auth handshake/secret-key refresh) is the other avenue.
+**AUTH/provisioning drift (investigated 2026-06-15) - LARGELY RULED OUT as a we-differ-from-them
+cause.** The buttons-dead state is cleared by a full re-provision (not a reconnect), which pointed
+at auth/secret-key/config state. Investigated:
+
+- Across ALL FIVE captures (bugreport3/4/5 + eventack2/5), the official app's auth on `3dda0005`
+  (handle `0x004b`) is exactly `02 06 30 75 00 00 01` -> watch `03 06 00 01`, i.e.
+  **PROCESS_USER_AUTHORIZATION_V2** (30 s timeout, removeOtherLinkedPhones=1). That is BYTE-IDENTICAL
+  to what `FossilQAdapter.performAuthentication()` sends (the `confirmAuth` bytes).
+- The official SDK's `AuthenticatePhase` CAN do a secret-key crypto exchange
+  (`SendPhoneRandomNumberRequest` / `SendBothSidesRandomNumbersRequest`, AES128), but it **never
+  does so on this Q Hybrid** in any capture - no `02 01` / `02 02` / `02 03` secret-key package
+  types ever appear on `0x004b`. That crypto path is for other (HR) models. AUTHENTICATION-PLAN.md's
+  "the official app performs the handshake during every reconnect" is satisfied by the SAME V2
+  button-auth we already do.
+
+**Conclusion:** auth is NOT a way we differ from the official app on this watch - we authenticate
+identically. So neither "missing ack" (falsified earlier) NOR "different/missing auth" explains the
+drift. Both of the two leading hypotheses are now ruled out by the captures.
+
+**What is left for the drift (genuinely open, weaker leads):**
+1. CONFIG/state we write differently at provision time (the re-provision-clears-it clue still points
+   at some persistent watch-side state, but it is NOT the auth handshake). Candidate: diff the exact
+   CONFIGURATION (file 0x08) / DEVICE_INFO / button-config bytes we write at init vs the official
+   app, for a field that drifts.
+2. The periodic background-SYNC difference (WP-PERIODIC-SYNC-EXPERIMENT-PLAN.md) - still unproven,
+   still a coin-flip.
+3. Connection PARAMETERS / MTU / subscription order differences at connect (we have not diffed
+   these). The official app SETs connection params (`02 09 ...` CONNECTION_PARAMETERS_REQUEST,
+   `02 0c ...` STREAMING_CONFIG on `3dda0002`) at connect - do we?
+4. It may be a firmware bug with no app-side prevention, only the de-dup mitigation + re-provision
+   recovery we already have.
+
+Given both strong hypotheses are now falsified, the HONEST status is: we do not know what causes the
+drift, the de-dup remains the mitigation, and the next cheap analysis step is the connect-time CONFIG
++ connection-params diff (#1, #3) before spending effort on the periodic-sync soak test.
 
 ---
 
