@@ -2596,8 +2596,9 @@ MICRO_APP (the mode-switch / RING_PHONE button): pressing the switch button once
 re-send ~14 frames `01 08 25 ...` with the SAME sequence (0x25) but VARYING trailing
 payload/checksum bytes, so `Arrays.equals(lastFrame, frame)` was false and all 14 passed through.
 That advanced the rotation 14 times and queued 14 buzz play-file puts; the watch then started
-rejecting the buzz PUT-accept with status `0x86` = FIRMWARE_INTERNAL_ERROR_NOT_SUPPORT (its play
-handle wedged under the storm), and the puts churned re-opening `03 00 09` for many seconds. No
+rejecting the buzz PUT-accept with status `0x86` (CORRECTED 2026-06-15: 0x86 = 134 =
+FIRMWARE_INTERNAL_ERROR_NOT_ENOUGH_MEMORY, NOT "NOT_SUPPORT" which is 0x88 = 136 — its play
+file area FILLED UP under the storm), and the puts churned re-opening `03 00 09` for many seconds. No
 "received"/confirmation buzz ever landed.
 
 FIX: de-dup keys on `(opcode, eventType, SEQUENCE)` (the 3 leading bytes) within the 750ms window,
@@ -2606,6 +2607,37 @@ same press regardless of trailing bytes. This collapses the 0x08 storm (and is s
 for 0x05 too). Covered by AdapterAsyncEventDedupTest.sameSequence_differentTrailingBytes_isDeduped
 and microAppButtonRepeats_sameSeq_varyingTrailingBytes_dedupToOnePress. The buzz `0x86` storm was a
 downstream symptom of the missing de-dup; collapsing 14 -> 1 press removes the trigger.
+
+---
+
+## CORRECTION (2026-06-15): 0x86 = NOT_ENOUGH_MEMORY, not a "wedged handle" — the play file area is FULL
+
+The code below mislabeled `0x86`. Against `ResultCode.java`: 0x86 = 134 =
+`FIRMWARE_INTERNAL_ERROR_NOT_ENOUGH_MEMORY` (NOT_SUPPORT is 0x88 = 136). So the buzz failure is NOT
+a semantically "wedged handle" — the watch's NOTIFICATION_PLAY (0x0900) file area is OUT OF MEMORY.
+
+New on-device evidence (2026-06-15, fresh APK with the SEQUENCE de-dup, AFTER a full re-provision):
+- A manual buzz from Settings (fresh session, no button press) → `WRITE 03 00 09 ... 4f 00 00 00`
+  (PUT_FILE open, handle 0x0900, size 0x4f=79 bytes) → `NOTIFY 83 00 09 86 00`. FIRST open fails.
+- A notification "Play" from the Notifications tab (package com.ageofconquest...) → identical
+  `03 00 09 ... 4f ...` → `83 00 09 86 00`.
+So it is NOT the button/de-dup path and NOT a transient storm: EVERY NOTIFICATION_PLAY open is
+rejected up-front for lack of memory.
+
+WHY: every buzz/notification play does a FULL FilePUT of a fresh ~79-byte notification file to
+0x0900 (`buildOfficialNotificationFile(...) -> FilePutRequest(NOTIFICATION_PLAY, ...)`). We NEVER
+delete the old play file; the watch reclaims it only when a put completes (EOF -> VERIFY -> SUCCESS).
+The earlier 18-per-press storm opened many play files that never reached VERIFY, so each orphan
+squats on the 0x0900 area until it is full. After that, every new open gets NOT_ENOUGH_MEMORY.
+
+WHY the re-provision did NOT clear it: a BLE re-pair / re-provision re-seeds CONFIG files but does
+not run the watch's file-area garbage collection. Only a WATCH-SIDE reset reclaims the play area.
+NEXT: confirm by resetting the watch itself (not just re-pairing) — expect the first buzz to get
+`83 00 09 00 00`. The proper fix is to stop leaking play files: delete/overwrite the play file the
+way the OFFICIAL app does (to be captured via btsnoop) instead of PUT-ing a brand-new file per buzz.
+
+The (now-superseded) original note is kept below for context; treat its "NOT_SUPPORT" / "wedged
+handle" framing as INCORRECT and its "re-provision clears it" recovery as UNCONFIRMED/likely wrong.
 
 ---
 
@@ -2648,11 +2680,10 @@ FIXES, in priority order (none applied yet):
    it from a btsnoop: what does the phone WRITE back to `3dda0006` in the ~tens of ms after a button
    event, echoing eventType+sequence). Replicate in `handleButtonEvent` for opCode 0x01. This stops
    the re-send at the source, so the handle never wedges. (Already on TODO.)
-2. DEFENSIVE (narrow) — extend `handlePutAccept` to ABORT_FILE(9)+reopen on `0x86` for the
-   NOTIFICATION_PLAY handle only, with a hard retry cap. CAVEAT: 0x86 = NOT_SUPPORT is semantically
-   different from 0x02 OPERATION_IN_PROGRESS; only add this AFTER a hardware capture confirms an
-   ABORT_FILE actually clears the play handle (the way it did for 0x0A). Do NOT broaden recovery to
-   all non-success codes.
+2. DEFENSIVE (narrow) — see the 2026-06-15 CORRECTION above: 0x86 is NOT_ENOUGH_MEMORY (134), not
+   NOT_SUPPORT. An ABORT_FILE(9)+reopen will NOT help if the area is genuinely full; the real fix is
+   to delete/overwrite the play file (stop leaking one file per buzz) so the area never fills. Do
+   NOT broaden recovery to all non-success codes.
 3. KEEP the de-dup (shipped, a2d1db1) — the seatbelt: even mid-storm, one press = one effect.
 
 ---

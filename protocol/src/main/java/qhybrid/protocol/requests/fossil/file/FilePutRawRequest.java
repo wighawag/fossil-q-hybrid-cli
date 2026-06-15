@@ -214,6 +214,12 @@ public class FilePutRawRequest extends FossilRequest {
                 abortThenReopen();
                 return;
             }
+            // NOTE: 0x86 = 134 = FIRMWARE_INTERNAL_ERROR_NOT_ENOUGH_MEMORY (NOT "NOT_SUPPORT",
+            // which is 0x88 = 136). On the NOTIFICATION_PLAY handle (0x0900) this means the watch's
+            // file area is FULL of orphaned play files (e.g. left by an earlier storm of half-open
+            // puts that never reached VERIFY/SUCCESS). A BLE re-pair does NOT reclaim it; only the
+            // watch's own file-area GC (a watch reset) does. Proper fix: delete/overwrite the play
+            // file the way the official app does instead of PUT-ing a new file per buzz.
             PUTLOG.warn("FilePut[0x{}] PUT_FILE rejected: status {} ({}) — not transmitting; failing fast",
                     String.format("%04X", handle), acceptCode, acceptStatus);
             state = UploadState.FAILED;
