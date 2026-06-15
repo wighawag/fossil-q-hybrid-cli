@@ -2610,6 +2610,38 @@ downstream symptom of the missing de-dup; collapsing 14 -> 1 press removes the t
 
 ---
 
+## ROOT CAUSE + FIX (2026-06-15, from official-app disassembly): rotate the NOTIFICATION_PLAY handle low byte
+
+The official app does NOT reuse a fixed play-file handle. In
+`tmp/FossilOfficialApp-deobf/.../device/logic/FileHandleManager.java` (`getFileHandleToPut`,
+method `m11016b`), the file handle is `(fileTypeId << 8) | index`. For `FileType.NOTIFICATION`
+(id = 9, i.e. our NOTIFICATION_PLAY) it falls in the ROTATING group together with UI_SCRIPT /
+LUTS_FILE / RATE_FILE / DATA_COLLECTION_FILE / etc., which does:
+```
+index = map.get((mac, fileType)) ?: 0
+map.put((mac, fileType), (byte)((index + 1) % 255))   // increment, wrap at 0xFF
+return (9 << 8) | index                                // 0x0900, 0x0901, 0x0902, ... 0x09FE, wrap
+```
+So each notification/play PUT goes to a NEW handle index: `0x0900`, then `0x0901`, `0x0902`, ...
+wrapping `% 255`. By contrast NOTIFICATION_FILTER (id 12) and the other CONFIG/singleton types use
+a FIXED index 0. The firmware keeps a small ring of NOTIFICATION file slots; rotating the low byte
+lets it reclaim/overwrite cleanly, so a fast burst of buzzes never exhausts the area.
+
+OUR BUG: `qhybrid.protocol.file.FileHandle.NOTIFICATION_PLAY(0x09, 0x00)` is a FIXED handle
+(subHandle always 0x00) and `playNotificationByPackageName` / `playNotificationWithPattern` PUT
+every single buzz to `0x0900`. Reusing the same slot while the watch still holds the prior file
+there fills it → `0x86` NOT_ENOUGH_MEMORY (and is the same family as the `0x02`
+OPERATION_IN_PROGRESS we saw earlier on the ALARMS 0x0A handle).
+
+FIX (next task, no btsnoop needed for this part — disassembly is authoritative): give the play path
+a rotating per-(watch, fileType) index for NOTIFICATION_PLAY, mirroring FileHandleManager: keep a
+counter, PUT to `(0x09 << 8) | (index++ % 255)` each buzz. Scope the rotation to the play/notification
+file type only; leave NOTIFICATION_FILTER + the config/alarm singletons on fixed index 0. Add a
+golden/unit test that consecutive buzzes use 0x0900, 0x0901, ... and wrap. This should remove the
+NOT_ENOUGH_MEMORY entirely and is the durable replacement for the watch-reset workaround below.
+
+---
+
 ## CORRECTION (2026-06-15): 0x86 = NOT_ENOUGH_MEMORY, not a "wedged handle" — the play file area is FULL
 
 The code below mislabeled `0x86`. Against `ResultCode.java`: 0x86 = 134 =
