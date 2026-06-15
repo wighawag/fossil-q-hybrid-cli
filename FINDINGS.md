@@ -941,13 +941,59 @@ in GadgetBridge's `ConfigPayload` enum. To support it, we'd need to either:
 The header bytes likely follow the same pattern: `[type] [variant] [appId LE]` where
 the app ID would correspond to the mode toggle declaration.
 
+#### UPDATE (2026-06-15): the mode-toggle button-config payload WAS captured
+
+The `bugreport-eventack` btsnoop
+(`tmp/eventack-extract/FS/data/misc/bluetooth/logs/btsnoop_hci.log`) was taken while a watch
+configured by the OFFICIAL app had a mode-toggle button set. During connect the app PUT the full
+button-config file (FileHandle **`SETTINGS_BUTTONS` = major `0x06`**; control on `3dda0003` handle
+`0x0045`, data on `3dda0004` handle `0x0048`). So item 1 above ("capture the payload") is DONE -
+the bytes are on disk; what remains is a careful field-by-field DECODE, not a new capture.
+
+The PUT data chunks (phone->watch on handle `0x0048`, each prefixed by the file-data-frame header
+`00 00 06 <offset:2LE>`) were, in order (t=51.293..51.326 s):
+
+```
+chunk0 (off 0x0000): 02 04 00 00 01 00 00 03 10 03 01 06 12 00 00 01 06 12 00 00 01 06 12 00 00 20 05
+                     01 02 16 00 00 01 02 18 00 00 01 02 1a 00 00 01 02 1e 00 00 01 02 14 00 00 30
+                     03 01 01 10 00 00 01 01 10 00 00 01 01 10 00 00 0b 01 00 01 06 12 63 ... (cont)
+chunk1 (off 0x...) : 01 12 63 00 00 00 01 00 06 00 01 01 01 03 00 05 01 1d 00 85 01 f6 00 00 85 01 42 02
+                     00 85 01 43 03 00 85 01 44 04 00 08 01 1e 00 01 00 02 0d 00 8c 01 cd 00 ... (cont)
+... (chunks at t=51.307, 51.313, 51.320 carry per-app entries 01 16 36..., 01 18 36..., 01 1a 36...,
+    01 1e 34... (0x1e = 30 = TWENTY_FOUR_HOUR), 01 10 5e... (0x10 = 16))
+last chunk (t=51.326): ...0b 01 06 12 00 0a 00 01 02 01 00 01 06 12 00 0a 00 01 02 01 00 01 06 12 00
+                       0a 00 01 02 01 00 01 02 16 00 0a 00 01 02 01 00 01 02 18 00 0a 00 01 02 01 00
+                       01 02 1a 00 0a ... 01 02 1e 00 0a ... 01 02 14 00 0a ... 01 01 10 00 0a ...
+                       01 01 10 00 0a ... 01 01 10 00 0a 00 01 02 01 00 <crc>
+```
+
+(Full untruncated bytes: re-run
+`tshark -r <btsnoop> -Y 'btatt.handle==0x0048 && (btatt.opcode==0x52||btatt.opcode==0x12) && frame.time_relative>=51 && frame.time_relative<=51.4' -T fields -e btatt.value`.
+The btsnoop itself stays under gitignored `tmp/`.)
+
+**What is already legible (NOT a full decode - bytes preserved above so the decode is verifiable):**
+- The file is the standard `SETTINGS_BUTTONS` (0x06) microapp config, same family as
+  `ButtonConfigBuilder` entries (header pattern `01 <variant> <appId> 00`).
+- It contains a `TWENTY_FOUR_HOUR` entry: `01 1e ...` (appId `0x1e` = 30), confirming our
+  by-analogy `ButtonConfigBuilder.TWENTY_FOUR_HOUR_*` targets the right appId.
+- The mode-toggle button appears as a **cycle/sequence list** keyed `0b 01 06 12 ...` enumerating
+  several display modes in order: `06 12` (music?), `02 16`, `02 18`, `02 1a`, `02 1e` (24h),
+  `02 14`, `01 10` - i.e. one button that steps the sub-eye through these modes. This is the
+  `TOGGLE_MODE` payload we lacked.
+
+**STILL TODO (decode, not capture):** map each `<group><appId>` pair in the toggle list to its
+mode name, confirm the per-entry length bytes (`0x36`/`0x34`/`0x5e`), verify the data-frame
+offset/reassembly, and reconcile against `ButtonConfigBuilder` so we can EMIT a mode-toggle entry.
+Do NOT wire a mode-toggle builder from the partial decode above until the field boundaries are
+confirmed against the full reassembled file. The raw bytes are the authoritative source.
+
 ### Functions in the official Fossil app vs our CLI
 
 | Fossil app | Our CLI | Status |
 |-----------|---------|--------|
 | Date | `date` | ✅ Working |
 | Goal tracking | `step_goal` | ✅ Working |
-| Mode toggle | — | ❌ Not yet (needs binary payload capture) |
+| Mode toggle | — | 🟡 Payload CAPTURED (2026-06-15, see above); decode + builder pending |
 | Music control | `music` | ✅ Working |
 | Volume up | `volume_up` | ✅ Working |
 | Volume down | `volume_down` | ✅ Working |
