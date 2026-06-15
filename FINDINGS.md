@@ -1528,8 +1528,9 @@ positions varies by watch model:
 both decode to appId 0x18. GadgetBridge calls it "LAST_NOTIFICATION"; the official
 app dial labels it "Alert". On 5-position dials, it has a dedicated sub-eye position.
 
-**TWENTY_FOUR_HOUR** (appId 0x1E) is untested. Given it has a labeled dial position
-on 5-position watches, it likely shows the current hour in 24h format on the sub-eye.
+**TWENTY_FOUR_HOUR** (appId 0x1E): the SEQUENCED variant is now CAPTURED + corrected (see
+§28 "Captured SEQUENCED payload"); it uses display position `B0 07 00`. STANDARD still uncaptured.
+Likely shows the current hour in 24h format on the labeled "24HR" sub-eye of 5-position watches.
 
 Positions are **hardwired to specific display functions**, not to
 entry position within the toggle list:
@@ -1851,9 +1852,11 @@ fossil-q -d <MAC> position-test --positions "60/300,180/0,330/30"  # custom list
    ALERT has its own labeled sub-eye position. On Q Commuter (3-position: A/B/C),
    LAST_NOTIFICATION has no labeled position (sub-eye goes to home/zero, hands move
    to notification position). **Resolved — no further testing needed.**
-5. **TWENTY_FOUR_HOUR (appId 0x1E, declarationId 7681/7682)** — untested. Has a
-   labeled sub-eye position ("24HR") on 5-position dial watches. Likely shows
-   current hour in 24h format on sub-eye. Construct payload and test in toggle.
+5. **TWENTY_FOUR_HOUR (appId 0x1E, declarationId 7681/7682)** — SEQUENCED variant CAPTURED
+   from the official app and corrected 2026-06-15 (display position `B0 07 00`, len 0x34); the
+   old by-analogy guess was malformed, which is why the firmware skipped it. See §28. Has a
+   labeled sub-eye position ("24HR") on 5-position dial watches. 24h is toggle-only (no
+   standalone button), so the STANDARD variant is moot — the app never emits it.
 
 ---
 
@@ -2365,6 +2368,11 @@ behavior issue with duplicate display modes, not a file size or entry count reje
 
 ## 28. TWENTY_FOUR_HOUR Function (appId 0x1E) — Accepted but Invisible (2026-05-22)
 
+> **CORRECTED 2026-06-15:** the SEQUENCED variant's payload below was a wrong by-analogy
+> guess, which is exactly why the firmware accepted-but-skipped it. The real SEQUENCED entry
+> was captured from the official app; see the "Captured SEQUENCED payload" block at the end of
+> this section. The STANDARD variant is still uncaptured (likely also wrong).
+
 **Date:** 2026-05-22
 
 **Source:** Real-hardware testing on Fossil Q Commuter (HW.0.0), firmware HW0.0.2.9r.v3.
@@ -2372,9 +2380,10 @@ behavior issue with duplicate display modes, not a file size or entry count reje
 ### Summary
 
 The TWENTY_FOUR_HOUR function (appId 0x1E, MicroAppId 9) is recognized by the firmware
-but produces no visible output on the Q Commuter's 3-position dial.
+but produces no visible output on the Q Commuter's 3-position dial. (Original hypothesis;
+note the SEQUENCED payload was also malformed, see the correction below.)
 
-### Payload construction
+### Payload construction (ORIGINAL by-analogy guess — superseded)
 
 Constructed by analogy with SECOND_TIMEZONE (47-byte STANDARD pattern):
 
@@ -2387,7 +2396,7 @@ Payload: 47 bytes — identical structure to SECOND_TIMEZONE with:
 ```
 
 Also constructed SEQUENCED variant (54 bytes, header `01 02 1E 00`) by analogy
-with ALARM_SEQUENCED.
+with ALARM_SEQUENCED. **This guess was WRONG** (see correction below).
 
 ### Test results
 
@@ -2429,6 +2438,49 @@ Added `24hr` and `24hr_seq` as button function names:
 fossil-q buttons 24hr second_timezone forward_to_phone      # standalone
 fossil-q buttons "tz+date+alarm_seq+step_goal+last_notification+24hr" ...  # in toggle
 ```
+
+### Captured SEQUENCED payload (CORRECTION, 2026-06-15)
+
+**Source:** official-app btsnoop `tmp/eventack-extract/FS/data/misc/bluetooth/logs/btsnoop_hci.log`,
+file-PUT on SETTINGS_BUTTONS data char `3dda0004` (handle `0x0048`), chunks at t=51.30-51.31s.
+The official app had a mode-toggle cycle that included the 24HR position. Re-derive with:
+```
+tshark -r <btsnoop> -Y 'btatt.handle==0x0048 && btatt.opcode==0x52' -T fields -e btatt.value
+```
+Data chunks carry a 1-byte sequence prefix (00,01,02,...); strip it, concatenate, and the
+SEQUENCED entries appear in order `01 02 16 36` (TZ), `01 02 18 36` (alert), `01 02 1a 36`
+(alarm), then `01 02 1e 34` (24HR), then `01 02 14 34` (date).
+
+The captured 24HR SEQUENCED entry follows the **DATE_TOGGLE** shape, NOT ALARM:
+
+```
+Wire entry (50 bytes, header 01 02 1E + len 0x34=52 incl. the 01 00 file prefix):
+  01 02 1E 34 00 00 00 01 00 06 00 02 00 00 07 00 01 01 1D 00
+  89 02 01 04 B0 07 00 89 05 01 07 B0 07 00 B0 07 00 B0 07 00
+  08 01 50 00 01 00 E0 19 B8 E8
+
+ButtonConfigBuilder.TWENTY_FOUR_HOUR_SEQ_DATA (52 bytes = 01 00 prefix + the above):
+  01 00 01 02 1E 34 00 00 00 01 00 06 00 02 00 00 07 00 01 01
+  1D 00 89 02 01 04 B0 07 00 89 05 01 07 B0 07 00 B0 07 00 B0
+  07 00 08 01 50 00 01 00 E0 19 B8 E8
+```
+
+**Diffs vs the old by-analogy guess (which copied ALARM_SEQUENCED):**
+
+| Field | Old (wrong) | Captured |
+|-------|-------------|----------|
+| total length / len byte | 54 / `0x36` | 52 / `0x34` |
+| group byte | `08` | `06` |
+| data-source byte | `02` | `00` |
+| display-mode position | `B0 04 00` | `B0 07 00` |
+| trailing CRC | `A9 21 D4 C7` | `E0 19 B8 E8` |
+
+The wrong display position (`04` vs `07`) and malformed length are why the firmware accepted
+the entry but rendered nothing. Locked as a golden vector in
+`protocol/.../golden/Wp7ButtonCompilerTest.java`. **STANDARD variant is moot:** 24h is a
+toggle-only sub-eye mode — there is realistically no standalone "24h button" to assign, so the
+official app never emits a STANDARD (`01 01 1E 00`) 24h entry. The `TWENTY_FOUR_HOUR_DATA`
+guess is kept only for API symmetry and should not be trusted (it was not captured).
 
 ---
 

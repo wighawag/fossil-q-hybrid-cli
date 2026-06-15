@@ -216,36 +216,21 @@ Watch: Fossil Q Commuter (HW.0.0), Firmware HW0.0.2.9r.v3, Fossil protocol (2.x)
         * only 1 adapter line but 7 downstream ⇒ the fan-out is in the Android routing layer.
     - also note how many distinct `AndroidBleTransport`/controller instances appear.
   Do NOT re-add the old switch-buzz debounce — it only masked this; fix the duplicate delivery.
-- [ ] **Capture the real TWENTY_FOUR_HOUR (24h) dial-mode bytes from the official Fossil app.**
-  The 24h sub-eye position does NOT trigger in a mode-toggle cycle on a 5-position dial: on a
-  cycle like `time2, alert, alarm, 24h, date`, the 24h press makes the dial return but the
-  hour/minute hands do NOT move (the entry is silently skipped), then the next press shows date.
-  ROOT CAUSE: the 24h entries in `protocol/.../ButtonConfigBuilder.java`
-  (`TWENTY_FOUR_HOUR_DATA` / `TWENTY_FOUR_HOUR_SEQ_DATA`, headers `01 01 1E 00` / `01 02 1E 00`)
-  were **"constructed by analogy" with ALARM/SECOND_TIMEZONE, never captured from the official
-  app** — FINDINGS.md says *"TWENTY_FOUR_HOUR (appId 0x1E) is untested."* Every dial entry that
-  works (Time2, Date, Alarm, Alert) is marked *"Captured from official Fossil app BLE trace."*
-  HOW TO CAPTURE (mirrors the existing FINDINGS captures, e.g. bugreport5 DATE/ALARM):
-    1. On a 5-position-dial watch (Q Activist or similar that HAS a labelled 24HR position),
-       use the **official Fossil app** to assign a button a mode-toggle cycle that INCLUDES the
-       24-hour position (ideally `Time 2 → Alert → Alarm → 24HR → Date` to match the repro).
-    2. Enable Android Bluetooth HCI snoop log (Developer options → "Enable Bluetooth HCI snoop
-       log"), reproduce the app pushing the button config, then pull the btsnoop log
-       (`adb bugreport` or `/sdcard/.../btsnoop_hci.log`).
-    3. In Wireshark, find the `SETTINGS_BUTTONS` (file handle 0x0600 / 0x0C00) file-put to the
-       data characteristic; isolate the per-entry payload whose header is `01 02 1E 00`
-       (SEQUENCED, used inside a toggle) — note its exact byte length + bytes incl. the trailing
-       CRC. Also grab `01 01 1E 00` (STANDARD) if a standalone 24h button was captured.
-    4. Replace `TWENTY_FOUR_HOUR_SEQ_DATA` (and `_DATA`) in `ButtonConfigBuilder.java` with the
-       captured bytes; update `protocol/.../golden/Wp7ButtonCompilerTest.java` lengths
-       (currently asserts 47 STANDARD / 54 SEQUENCED — verify against the capture) and add a
-       golden assertion of the captured bytes. Update FINDINGS.md (#1205-ish dial-entry table +
-       the "TWENTY_FOUR_HOUR is untested" note) with the verified payload + provenance.
-    5. Sanity-check on hardware: the documented repro cycle should now show the 24h sub-eye
-       position instead of being skipped.
-  Until captured, consider hiding/flagging 24h as experimental in the Android dial-mode picker so
-  it doesn't silently break a user's configured cycle (see `ButtonDialModes` /
-  `ButtonsScreen.DialModeOrderEditor`).
+- [x] **Capture the real TWENTY_FOUR_HOUR (24h) dial-mode bytes from the official Fossil app.**
+  DONE 2026-06-15: the SEQUENCED bytes were already on disk in the `bugreport-eventack` btsnoop
+  (`tmp/eventack-extract/...btsnoop_hci.log`, file-PUT on handle 0x0048, t≈51.3s) — the official
+  app had a mode-toggle cycle including the 24HR position. Extracted via tshark, isolated the
+  `01 02 1E 34` SEQUENCED entry, and replaced `TWENTY_FOUR_HOUR_SEQ_DATA` in
+  `protocol/.../ButtonConfigBuilder.java`. The old by-analogy guess (copied from ALARM_SEQUENCED)
+  was wrong in 4 fields: len 0x36→0x34, group 08→06, source 02→00, display position
+  `B0 04 00`→`B0 07 00` — the wrong position is why the firmware accepted-but-skipped it.
+  Golden vector locked in `protocol/.../golden/Wp7ButtonCompilerTest.java` (now 52 bytes + exact
+  bytes asserted); FINDINGS.md §28 updated with the capture + provenance + diff table.
+  - NOTE: the STANDARD variant (`01 01 1E 00`, `TWENTY_FOUR_HOUR_DATA`) is moot — 24h is a
+    toggle-only sub-eye mode, there is no standalone "24h button" to assign, so the official app
+    never emits a STANDARD 24h entry. The guess is kept only for API symmetry; not worth capturing.
+  - [ ] FOLLOW-UP: sanity-check on a 5-position-dial watch (Q Activist) that the repro cycle
+    `Time 2 → Alert → Alarm → 24HR → Date` now shows the 24h sub-eye instead of skipping it.
 
 ### Watch Events & Monitoring
 - [x] `monitor` command — long-running NDJSON event stream to stdout, Ctrl+C to stop

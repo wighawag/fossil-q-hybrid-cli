@@ -104,12 +104,15 @@ public class ButtonConfigBuilder {
             new ButtonEntry(GOAL_TRACKING_HEADER, GOAL_TRACKING_DATA);
 
     // ========== TWENTY_FOUR_HOUR STANDARD (appId 0x001E, variant 0x01) ==========
-    // Constructed by analogy with SECOND_TIMEZONE (same 47-byte STANDARD pattern).
-    // MicroAppId: declarationId 7681 = TWENTY_FOUR_HOUR STANDARD.
-    // On 5-position dial watches (Q Activist), the sub-eye has a labeled "24HR" position.
-    // On Q Commuter (3-position dial: A/B/C), there's no labeled 24HR position;
-    // behavior depends on whether the firmware maps display mode 4 to a sub-eye position.
-    // Display mode byte B0 04 00 chosen as next sequential after ALARM (B0 03 00).
+    // STILL BY ANALOGY (NOT captured) - and likely never observable: 24h is a toggle-only
+    // sub-eye mode, there is realistically no standalone "24h button" to assign, so the official
+    // app never emits a STANDARD (variant 0x01) 24h entry. Only the SEQUENCED variant (below,
+    // used inside a mode-toggle cycle) is real, and it is now captured + corrected.
+    // Kept here only for API symmetry; do NOT trust these bytes. Constructed by analogy with
+    // SECOND_TIMEZONE (47-byte STANDARD pattern). MicroAppId declarationId 7681.
+    // On 5-position dial watches (Q Activist), the sub-eye has a labeled "24HR" position; on
+    // Q Commuter (3-position dial: A/B/C) there's none. Note the display-mode byte here is
+    // B0 04 00, but the CAPTURED SEQUENCED variant uses position B0 07 00. See FINDINGS.md #28.
 
     static final byte[] TWENTY_FOUR_HOUR_HEADER = {0x01, 0x01, 0x1E, 0x00};
 
@@ -133,27 +136,33 @@ public class ButtonConfigBuilder {
             new ButtonEntry(TWENTY_FOUR_HOUR_HEADER, TWENTY_FOUR_HOUR_DATA);
 
     // ========== TWENTY_FOUR_HOUR SEQUENCED (appId 0x001E, variant 0x02) ==========
-    // Constructed by analogy with ALARM_SEQUENCED (same 54-byte SEQUENCED pattern).
+    // Captured from official Fossil app BLE trace (bugreport-eventack, t=51.3s, mode-toggle
+    // cycle TZ -> ALERT -> ALARM -> 24HR -> DATE on a button). See FINDINGS.md #19/#28.
     // MicroAppId: declarationId 7682 = TWENTY_FOUR_HOUR SEQUENCED.
     // For use inside multi-entry toggle.
+    //
+    // Supersedes the earlier by-analogy guess (which copied ALARM_SEQUENCED). The real
+    // entry follows the DATE_TOGGLE shape, NOT ALARM: 52 bytes (len 0x34), group 0x06,
+    // data-source 0x00, and display-mode position B0 07 00 (not B0 04 00). The wrong guess
+    // is why 24h was silently skipped on hardware: the firmware accepted a malformed entry
+    // and showed nothing. Captured bytes verified on the wire (file-PUT, handle 0x0048).
 
     static final byte[] TWENTY_FOUR_HOUR_SEQ_HEADER = {0x01, 0x02, 0x1E, 0x00};
 
     static final byte[] TWENTY_FOUR_HOUR_SEQ_DATA = {
             (byte) 0x01, (byte) 0x00, (byte) 0x01, (byte) 0x02,
-            (byte) 0x1E, (byte) 0x36, (byte) 0x00, (byte) 0x00,
-            (byte) 0x00, (byte) 0x01, (byte) 0x00, (byte) 0x08,
-            (byte) 0x00, (byte) 0x04, (byte) 0x00, (byte) 0x00,
-            (byte) 0x07, (byte) 0x02, (byte) 0x00, (byte) 0x00,
-            (byte) 0x01, (byte) 0x01, (byte) 0x1D, (byte) 0x00,
-            (byte) 0x89, (byte) 0x02, (byte) 0x01, (byte) 0x04,
-            (byte) 0xB0, (byte) 0x04, (byte) 0x00, (byte) 0x89,
-            (byte) 0x05, (byte) 0x01, (byte) 0x07, (byte) 0xB0,
-            (byte) 0x04, (byte) 0x00, (byte) 0xB0, (byte) 0x04,
-            (byte) 0x00, (byte) 0xB0, (byte) 0x04, (byte) 0x00,
-            (byte) 0x08, (byte) 0x01, (byte) 0x50, (byte) 0x00,
-            (byte) 0x01, (byte) 0x00, (byte) 0xA9, (byte) 0x21,
-            (byte) 0xD4, (byte) 0xC7
+            (byte) 0x1E, (byte) 0x34, (byte) 0x00, (byte) 0x00,
+            (byte) 0x00, (byte) 0x01, (byte) 0x00, (byte) 0x06,
+            (byte) 0x00, (byte) 0x02, (byte) 0x00, (byte) 0x00,
+            (byte) 0x07, (byte) 0x00, (byte) 0x01, (byte) 0x01,
+            (byte) 0x1D, (byte) 0x00, (byte) 0x89, (byte) 0x02,
+            (byte) 0x01, (byte) 0x04, (byte) 0xB0, (byte) 0x07,
+            (byte) 0x00, (byte) 0x89, (byte) 0x05, (byte) 0x01,
+            (byte) 0x07, (byte) 0xB0, (byte) 0x07, (byte) 0x00,
+            (byte) 0xB0, (byte) 0x07, (byte) 0x00, (byte) 0xB0,
+            (byte) 0x07, (byte) 0x00, (byte) 0x08, (byte) 0x01,
+            (byte) 0x50, (byte) 0x00, (byte) 0x01, (byte) 0x00,
+            (byte) 0xE0, (byte) 0x19, (byte) 0xB8, (byte) 0xE8
     };
 
     /** TWENTY_FOUR_HOUR SEQUENCED entry — for use in toggle. */

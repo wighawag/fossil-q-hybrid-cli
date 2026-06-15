@@ -119,9 +119,20 @@ public class Wp7ButtonCompilerTest {
 
     @Test
     void golden_twentyFourHour_sequenced_header_and_data() {
+        // Captured from the official app (bugreport-eventack, t=51.3s) and verified on the wire.
+        // 52 bytes (len 0x34), DATE_TOGGLE shape with appId 0x1E + display position B0 07 00.
         assertArrayEquals(b(0x01, 0x02, 0x1E, 0x00),
                 ButtonConfigBuilder.TWENTY_FOUR_HOUR_SEQ_ENTRY.header());
-        assertEquals(54, ButtonConfigBuilder.TWENTY_FOUR_HOUR_SEQ_ENTRY.data().length);
+        assertEquals(52, ButtonConfigBuilder.TWENTY_FOUR_HOUR_SEQ_ENTRY.data().length);
+        assertArrayEquals(b(
+                0x01, 0x00, 0x01, 0x02, 0x1E, 0x34, 0x00, 0x00,
+                0x00, 0x01, 0x00, 0x06, 0x00, 0x02, 0x00, 0x00,
+                0x07, 0x00, 0x01, 0x01, 0x1D, 0x00, 0x89, 0x02,
+                0x01, 0x04, 0xB0, 0x07, 0x00, 0x89, 0x05, 0x01,
+                0x07, 0xB0, 0x07, 0x00, 0xB0, 0x07, 0x00, 0xB0,
+                0x07, 0x00, 0x08, 0x01, 0x50, 0x00, 0x01, 0x00,
+                0xE0, 0x19, 0xB8, 0xE8),
+                ButtonConfigBuilder.TWENTY_FOUR_HOUR_SEQ_ENTRY.data());
     }
 
     // ===================================================== single-entry assignment golden
