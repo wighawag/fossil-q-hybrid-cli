@@ -123,9 +123,18 @@ Watch: Fossil Q Commuter (HW.0.0), Firmware HW0.0.2.9r.v3, Fossil protocol (2.x)
   - The ACK is now understood for `0x05` (`02 05 <action> 00*5`, write-with-response, FINDINGS §18a)
     and is worth sending for fidelity, but must NOT be expected to stop the storm. De-dup stays as
     the storm-of-effects mitigation.
-  - The REAL open question is now "what drifts the watch into the re-send / buttons-dead state, and
-    what does the official app do (periodic keep-alive / time push / sync) over a long idle
-    connection that we omit?" -> see the new storm-drift task below.
+  - The REAL open question is "what drifts the watch into the re-send / buttons-dead state?"
+    UPDATE 2026-06-15: BOTH leading hypotheses are now FALSIFIED by the captures - it is NOT the
+    missing ack (above), and it is NOT auth (the official app authenticates byte-identically to us:
+    `02 06 30 75 00 00 01` PROCESS_USER_AUTHORIZATION_V2 on `3dda0005`, no secret-key exchange on
+    this Q Hybrid - FINDINGS "AUTH/provisioning drift (investigated 2026-06-15)"). Cause UNKNOWN.
+    De-dup stays the mitigation; re-provision the recovery. Remaining cheap leads, none yet done
+    (FINDINGS "AUTH/provisioning drift" tail): (1) diff connect-time CONFIG (file 0x08) / DEVICE_INFO
+    / button bytes official-vs-us; (2) diff connection-params / MTU / subscription order at connect
+    (official app SETs `02 09`/`02 0c` on `3dda0002` - do we?); (3) the periodic background-sync
+    experiment (weak, deferred - WP-PERIODIC-SYNC-EXPERIMENT-PLAN.md); (4) accept it may be a
+    firmware quirk with only mitigation + recovery. Both strong theories are gone, so (4) is a
+    respectable stopping point.
 - [x] **FIXED: TIMER-mode press kicked a FULL alarm-file upload PER press (latency / timeouts).**
   Confirmed on the clean reinstall (logcat 20:06): the de-dup now works (one press → one gesture),
   but each press still fired a full `SyncSection.ALARMS` 32-slot upload (~1.5s), so two presses
