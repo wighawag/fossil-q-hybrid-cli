@@ -2808,6 +2808,46 @@ same firmware re-send, the rotation advanced several steps (one per duplicate), 
 mode's pattern. Removing the switch-buzz debounce was still correct — the duplication is upstream
 of it, and is now fixed at the source.
 
+### RECONCILIATION (2026-06-15): the storm is NOT caused by the missing ack
+
+After capturing the OFFICIAL app (three btsnoop sessions, see §18a) we can test the earlier
+hypothesis that "the watch storms because we never send the ack the official app sends." The
+evidence says that hypothesis is WRONG, or at best incomplete:
+
+1. **The official app did NOT ack a `0x08` event, and the watch still did NOT storm.** In capture 2
+   two RING_PHONE (`0x08`) presses produced exactly TWO events; the official app sent NO `3dda0006`
+   ack for either (it wrote a SETTINGS_BUTTONS file instead). If "no ack -> retransmit" were the
+   mechanism, the unacked `0x08` should have stormed under the official app too. It did not. So a
+   missing ack does not, by itself, trigger the storm.
+2. **The storm timing is wrong for an ack-timeout retransmit.** Our storm was ~10 identical frames
+   in **~6 ms**. A firmware waiting for an app ack would retransmit on a timeout of tens to
+   hundreds of ms, not at ~0.6 ms spacing. ~10 frames in 6 ms looks like a burst/flush, not a
+   wait-and-retry loop.
+3. **The storm correlated with DRIFT, not with every press.** It was "intermittent, worse after
+   the watch has been used a while", tied to the "Buttons go dead" drift state, and cleared by a
+   re-provision - i.e. a watch-state condition, not a property of an un-acked press. In a fresh,
+   healthy session (our de-dup APK after re-provision, and all three official captures) one press =
+   one event.
+
+**Revised understanding.** The ~10-18x re-send is a symptom of the watch's drifted/wedged state
+(same family as "buttons go dead" and the wedged `0x0900`/alarm handles), NOT of a missing
+3dda0006 ack. Sending the ack the official app sends (for `0x05`) is still worth doing for protocol
+fidelity and may matter for OTHER reasons, but it should NOT be expected to stop the storm. The
+de-dup (commit a2d1db1) remains the correct mitigation for the storm-of-effects; the real cure for
+the storm itself is preventing the drift (the open "Buttons go dead" root-cause question), not
+acking.
+
+**Corrects** the note later in this file ("Wedged play handle ... the watch ... EXPECTS an app
+acknowledgement ... so under drift the firmware re-requests the same frame ~14x"): the "expects an
+ack" framing is contradicted by capture 2 (unacked `0x08` did not storm). Treat that line's
+"missing-ack -> re-send" causal claim as SUPERSEDED by this reconciliation; the re-send is a
+drift symptom.
+
+**Still OPEN (the real question):** what drifts the watch into the re-send/buttons-dead state, and
+how to prevent it (auth/provisioning drift? a file-handle wedge? a missing periodic write the
+official app does that we omit?). The official-app captures are the place to look next - diff the
+periodic/background writes the official app makes during a long idle connection against ours.
+
 ---
 
 ## File-PUT 12s stall: watch rejects the open (status 0x02 OPERATION_IN_PROGRESS), we ignored it (2026-06-14)
@@ -2996,6 +3036,12 @@ documented for the ALARMS 0x0A handle.
 RECOVERY (confirmed working): a plain reconnect did NOT clear it. The user cleared it by a full
 re-provision — export watch settings, remove the watch in-app, "Forget" in Android Bluetooth,
 re-add, re-import settings. After that buzzes worked again.
+
+> SUPERSEDED (2026-06-15): the "EXPECTS an app acknowledgement ... missing ack -> re-requests ~14x"
+> causal claim below is contradicted by the official-app capture (§18a) where an UNACKED `0x08`
+> event did NOT storm, and by the ~6 ms burst timing (too fast for an ack-timeout retry). See
+> "RECONCILIATION (2026-06-15): the storm is NOT caused by the missing ack". The re-send is a
+> DRIFT symptom, not a missing-ack consequence. Kept below for history.
 
 WHAT TRIGGERS THE STORM (root cause, still un-acked): the watch sends button/event frames on
 `3dda0006` with `opCode = 0x01 = REQUEST` (the storm frames were `01 08 ...` / `01 05 ...`), i.e. it
