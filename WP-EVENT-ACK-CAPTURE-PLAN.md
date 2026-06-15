@@ -374,10 +374,21 @@ only confirm/deny the mechanism, not the wire format.
 
 ## 5. Where/how the ack would later be wired in (proposal, not implemented)
 
-**Ack bytes are now known** (section 0a / FINDINGS §18a): write `02 <eventType> <sequence>` (3 bytes,
-empty payload for our action events) to `3dda0006` as write-without-response. The remaining gate to
-confirm before wiring is the TRIGGER (ack-all vs ack-`0x01`-only); the conservative default below is
-ack-`0x01`-only.
+**Ack model is now confirmed on the wire (two captures, FINDINGS §18a) and it is PER-EVENT-TYPE:**
+- **MUSIC (`0x05`), incl. volume:** ack = `02 05 <action> 00 00 00 00 00` on `3dda0006`,
+  **write-WITH-response** (`0x12`), ~tens of ms after the event. The 3rd byte echoes the music
+  ACTION (not the sequence). This is the one to replicate for music.
+- **MICRO_APP (`0x08`), e.g. mode-switch / RING_PHONE:** the official app sends NO `3dda0006` ack at
+  all. It instead writes a `SETTINGS_BUTTONS` (file `0x06`) file back (PUT/VERIFY on
+  `3dda0003`/`3dda0004`) echoing the event payload. So do NOT wire a guessed `02 08 <seq>` ack for
+  `0x08`; there is no such frame. The `0x08` mitigation is either replicate that buttons-file
+  write-back or keep the existing de-dup (see FINDINGS §18a OPEN item - in capture the `0x08` did
+  not storm even unacked, so reconcile with the earlier on-device storm before choosing).
+- **NOTIFY (`0x02`) events:** not acked.
+
+The section below was written for the generic `02 <type> <seq>` shape; treat it as the MUSIC-path
+wiring (correct the ack bytes to `02 05 <action> 00*5`, write-WITH-response). The `0x08` path needs a
+separate decision, not this generic ack.
 
 **Method:** `FossilQAdapter.handleButtonEvent(byte[] value)`
 (protocol/src/main/java/qhybrid/protocol/FossilQAdapter.java, ~line 1995).

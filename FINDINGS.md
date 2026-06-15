@@ -838,12 +838,60 @@ empty-payload base `AsyncEvent.m10799a()`. So **the ack layout is per-event-type
 - **One ack per press** (no storm) - because the ack is sent, the watch did NOT re-send. This
   supports the hypothesis that the missing ack is what causes our ~10-18x re-send.
 
-**STILL NOT captured: the MICRO_APP (`0x08`) ack.** No `0x08` event occurred (the user's MIDDLE =
-switch-mode is internal/no-BLE; the volume press produced no `3dda0006` event either). Only `0x05`
-MUSIC events appeared. So the `0x08` ack shape (the one most central to the mode-switch storm) is
-STILL unconfirmed. Given MUSIC overrides the base shape, do NOT assume `0x08` is `02 08 <seq>` -
-capture a real MICRO_APP press (temporarily set a button to RING_PHONE / FORWARD_TO_PHONE, which
-DOES emit `0x08`) to confirm its exact ack bytes before wiring the `0x08` path.
+**STILL NOT captured (in that first capture): the MICRO_APP (`0x08`) ack.** No `0x08` event
+occurred there. Captured in the follow-up below.
+
+#### MICRO_APP (0x08) is NOT acked on 3dda0006 - the app writes a BUTTON-CONFIG FILE back (2026-06-15)
+
+Second capture `tmp/bugreport-eventack2.zip` (btsnoop
+`tmp/eventack2-extract/FS/data/misc/bluetooth/logs/btsnoop_hci.log`, ~13:29 BST). User pressed the
+MIDDLE button = **RING_PHONE** (rang the phone, then pressed again to stop), then volume-up
+(BOTTOM) twice. All on handle `0x004e` = `3dda0006`:
+
+```
+t=31.705  NOTIF 01 08 22 01 01 0c 00 6d 01 20 b7 00   (REQUEST, MICRO_APP, seq=22, RING_PHONE)
+t=34.358  NOTIF 01 08 23 01 01 0c 00 6f 01 20 ba 00   (REQUEST, MICRO_APP, seq=23)
+t=37.509  NOTIF 01 05 0c 05                            (MUSIC, seq=0c, action=05 VOLUME_UP)
+t=37.588  WRITE 02 05 05 00 00 00 00 00                (music ack, action 05 echoed)
+t=39.774  NOTIF 01 05 0d 05                            (MUSIC, seq=0d, VOLUME_UP)
+t=39.829  WRITE 02 05 05 00 00 00 00 00
+```
+
+**KEY RESULT: the two `0x08` RING_PHONE events got NO `02 08 ...` ack on `3dda0006`.** There is no
+phone->watch write on `3dda0006` after either `0x08` event. So the ack model is per-event-type, and
+MICRO_APP is NOT acked the way MUSIC is.
+
+**Instead, the app responds to each RING_PHONE press with a BUTTON-CONFIG FILE write** (FileHandle
+`SETTINGS_BUTTONS` = `0x06`; control `3dda0003`/`0x0045`, data `3dda0004`/`0x0048`):
+
+```
+t=31.866  WRITE 0x0045  03 0006 00000000 24000000 24000000   (PUT_FILE open, file 0x06, size 0x24)
+t=32.613  WRITE 0x0048  00 0006 02 00000000 00 14000000 01 00 08 01010c006d0120b7 ff 05 0001 00 ...
+                                                          ^^^^^^^^^^^^^^^^^^ echoes the event payload
+t=32.638  WRITE 0x0045  04 0006                              (VERIFY_FILE)
+```
+
+The data frame embeds the event's own micro-app bytes (`01 01 0c 00 6d 01 20 b7`) plus a trailer
+`ff 05 00 01 00`. This matches our existing note that **RING_PHONE uses software gesture detection**:
+the watch reports the raw press, the PHONE decides the gesture and writes a buttons/micro-app file
+back (not a lightweight 3dda0006 ack). VOLUME_UP, by contrast, is a MUSIC variant (action `0x05`)
+and gets the normal `02 05 05 ...` music ack.
+
+**Implications for our re-send / ack work (re-frames the root cause):**
+- For MUSIC events: replicate the `02 05 <action> 00 00 00 00 00` ack on `3dda0006`
+  (write-with-response). Confirmed by both captures.
+- For MICRO_APP `0x08` events: there is NO simple `3dda0006` ack to copy. The official app's
+  response is a SETTINGS_BUTTONS file write. So the fix for the mode-switch/RING_PHONE `0x08`
+  re-send is NOT "send an ack frame"; it is either (a) replicate the buttons-file write-back the
+  app does, or (b) confirm whether our existing de-dup is the only practical mitigation for `0x08`.
+  Do NOT wire a guessed `02 08 <seq>` ack - the capture shows the official app does not send one.
+- The `0x08` data payload format `01 01 0c 00 <microAppId:2?> 01 20 <decl?>` is now captured for
+  RING_PHONE; decode against `MicroAppEvent.java` if we pursue option (a).
+
+**OPEN:** what does the buttons-file write-back actually achieve (does it stop the `0x08` re-send,
+or is it RING_PHONE-specific gesture bookkeeping)? Our captures show only TWO `0x08` events here (no
+10-18x storm), so on THIS firmware/config the `0x08` did not storm even without a 3dda0006 ack -
+worth reconciling with the earlier on-device storm reports before deciding the `0x08` fix.
 
 ---
 
