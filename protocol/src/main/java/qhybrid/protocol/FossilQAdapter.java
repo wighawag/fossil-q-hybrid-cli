@@ -127,6 +127,14 @@ public class FossilQAdapter {
     private int lastAsyncEventKey = Integer.MIN_VALUE;
     private long lastAsyncEventAtMs;
 
+    // Rotating low byte for the NOTIFICATION_PLAY file handle. The official app
+    // (FileHandleManager.getFileHandleToPut) PUTs each NOTIFICATION (play) file to a NEW handle
+    // index — 0x0900, 0x0901, ... incremented % 255 — so the watch's small notification-file ring
+    // is reclaimed cleanly and a burst of buzzes never exhausts it. Reusing a FIXED 0x0900 fills the
+    // ring and the watch then rejects the open with status 0x86 = NOT_ENOUGH_MEMORY. We mirror that
+    // here. See FINDINGS "rotate the NOTIFICATION_PLAY handle low byte".
+    private int notificationPlayIndex = 0;
+
     // Callbacks for CLI
     private Runnable onInitialized;
     private java.util.function.Consumer<byte[]> onActivityData;
@@ -387,7 +395,19 @@ public class FossilQAdapter {
         byte[] notifData = buildOfficialNotificationFile(
                 "Notification", "fossil-q", "Notification", packageName);
         queueWrite(new FilePutRequest(
-                FileHandle.NOTIFICATION_PLAY, notifData, fossilAdapter), false);
+                nextNotificationPlayHandle(), FileHandle.NOTIFICATION_PLAY, notifData, fossilAdapter), false);
+    }
+
+    /**
+     * Next NOTIFICATION_PLAY handle, rotating the low byte 0x0900, 0x0901, ... and wrapping (% 255,
+     * never 0xFF) exactly like the official app's FileHandleManager.getFileHandleToPut for
+     * FileType.NOTIFICATION. Each buzz/notification-play goes to a fresh handle so the watch's
+     * notification-file ring is reclaimed and never returns NOT_ENOUGH_MEMORY (0x86).
+     */
+    private short nextNotificationPlayHandle() {
+        int index = notificationPlayIndex;
+        notificationPlayIndex = (index + 1) % 0xFF;   // 0..254, matches official (NumberExtensionKt %)
+        return (short) ((FileHandle.NOTIFICATION_PLAY.getMajorHandle() << 8) | (index & 0xFF));
     }
 
     /**
@@ -421,7 +441,7 @@ public class FossilQAdapter {
             byte[] notifData = buildOfficialNotificationFile(
                     "Notification", "fossil-q", "Notification");
             queueWrite(new FilePutRequest(
-                    FileHandle.NOTIFICATION_PLAY, notifData, fossilAdapter), false);
+                    nextNotificationPlayHandle(), FileHandle.NOTIFICATION_PLAY, notifData, fossilAdapter), false);
 
             // Note: if auth handshake was completed during init, the lbl=12 file
             // above is sufficient — the watch will vibrate AND move hands per the
@@ -464,7 +484,7 @@ public class FossilQAdapter {
         byte[] notifData = buildOfficialNotificationFile(
                 "Notification", "fossil-q", "Notification");
         queueWrite(new FilePutRequest(
-                FileHandle.NOTIFICATION_PLAY, notifData, fossilAdapter), false);
+                nextNotificationPlayHandle(), FileHandle.NOTIFICATION_PLAY, notifData, fossilAdapter), false);
     }
 
     private long getVibrationDuration(PlayNotificationRequest.VibrationType vibration) {

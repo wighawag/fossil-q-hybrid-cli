@@ -2633,12 +2633,18 @@ every single buzz to `0x0900`. Reusing the same slot while the watch still holds
 there fills it → `0x86` NOT_ENOUGH_MEMORY (and is the same family as the `0x02`
 OPERATION_IN_PROGRESS we saw earlier on the ALARMS 0x0A handle).
 
-FIX (next task, no btsnoop needed for this part — disassembly is authoritative): give the play path
-a rotating per-(watch, fileType) index for NOTIFICATION_PLAY, mirroring FileHandleManager: keep a
-counter, PUT to `(0x09 << 8) | (index++ % 255)` each buzz. Scope the rotation to the play/notification
-file type only; leave NOTIFICATION_FILTER + the config/alarm singletons on fixed index 0. Add a
-golden/unit test that consecutive buzzes use 0x0900, 0x0901, ... and wrap. This should remove the
-NOT_ENOUGH_MEMORY entirely and is the durable replacement for the watch-reset workaround below.
+FIX (SHIPPED 2026-06-15, no btsnoop needed — disassembly is authoritative): the play path now
+rotates the NOTIFICATION_PLAY handle low byte, mirroring FileHandleManager. `FossilQAdapter` keeps a
+`notificationPlayIndex` and PUTs each buzz/notification-play to `(0x09 << 8) | (index++ % 255)` via a
+new `FilePutRequest(short explicitHandle, FileHandle, ...)` constructor; NOTIFICATION_FILTER + the
+config/alarm singletons stay on fixed index 0. Covered by `NotificationPlayHandleRotationTest`
+(consecutive play puts open 0x0900, 0x0901, 0x0902; the counter wraps %255 and never emits 0x09FF).
+This should remove NOT_ENOUGH_MEMORY in normal use; a watch-side reset is still the way to reclaim a
+ring that is ALREADY full from before this fix.
+
+NOTE: this fix is per-CONNECTION (the index resets to 0 on a fresh adapter), which matches the
+official app's per-(mac,fileType) map being seeded at 0; if a single connection ever PUTs > 254
+play files it wraps back through 0x0900, by which point the early ones are long reclaimed.
 
 ---
 

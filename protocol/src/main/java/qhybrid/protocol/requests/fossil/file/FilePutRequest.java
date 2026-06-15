@@ -36,14 +36,27 @@ import qhybrid.protocol.util.CRC32C;
 
 public class FilePutRequest extends FilePutRawRequest {
     public FilePutRequest(FileHandle fileHandle, byte[] file, FossilWatchAdapter adapter) {
-        super(fileHandle, createFilePayload(fileHandle, file, adapter.getSupportedFileVersion(fileHandle)), adapter);
+        super(fileHandle, createFilePayload(fileHandle.getHandle(), fileHandle, file,
+                adapter.getSupportedFileVersion(fileHandle)), adapter);
     }
 
-    private static byte[] createFilePayload(FileHandle fileHandle, byte[] file, short fileVersion){
+    /**
+     * Put a file to an EXPLICIT 16-bit handle (major<<8 | minor) while keeping the [fileHandle]'s
+     * semantics for the payload header. Used by the NOTIFICATION_PLAY path to ROTATE the low byte
+     * (0x0900, 0x0901, ...) the way the official app does (FileHandleManager.getFileHandleToPut),
+     * so a burst of buzzes never exhausts the watch's notification-file ring (NOT_ENOUGH_MEMORY,
+     * status 0x86). The file VERSION is keyed on the MAJOR handle, so a rotated minor keeps it.
+     */
+    public FilePutRequest(short explicitHandle, FileHandle fileHandle, byte[] file, FossilWatchAdapter adapter) {
+        super(explicitHandle, createFilePayload(explicitHandle, fileHandle, file,
+                adapter.getSupportedFileVersion(fileHandle)), adapter);
+    }
+
+    private static byte[] createFilePayload(short handle, FileHandle fileHandle, byte[] file, short fileVersion){
         ByteBuffer buffer = ByteBuffer.allocate(file.length + 12 + 4);
         buffer.order(ByteOrder.LITTLE_ENDIAN);
 
-        buffer.putShort(fileHandle.getHandle());
+        buffer.putShort(handle);
         buffer.putShort(fileVersion);
         if (fileHandle == FileHandle.REPLY_MESSAGES) {
             buffer.put(new byte[]{(byte) 0x00, (byte) 0x00, (byte) 0x0d, (byte) 0x00});
