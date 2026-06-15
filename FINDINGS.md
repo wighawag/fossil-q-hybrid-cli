@@ -922,6 +922,31 @@ or is it RING_PHONE-specific gesture bookkeeping)? Our captures show only TWO `0
 10-18x storm), so on THIS firmware/config the `0x08` did not storm even without a 3dda0006 ack -
 worth reconciling with the earlier on-device storm reports before deciding the `0x08` fix.
 
+#### Third capture confirms VOLUME_DOWN + which buttons are internal (2026-06-15)
+
+`tmp/bugreport-eventack3` (btsnoop
+`tmp/bugreport-eventack3/FS/data/misc/bluetooth/logs/btsnoop_hci.log`, ~13:42 BST). Config: TOP =
+goal tracking, MIDDLE = volume down, BOTTOM = take-a-picture. Pressed TOP several times, MIDDLE
+twice, BOTTOM once+. Only the MIDDLE presses produced `3dda0006` events:
+
+```
+t=26.516  NOTIF 01 05 0e 06   ->  t=26.626 WRITE 02 05 06 00 00 00 00 00   (VOLUME_DOWN, action 06)
+t=28.105  NOTIF 01 05 0f 06   ->  t=28.159 WRITE 02 05 06 00 00 00 00 00
+```
+
+Confirmations:
+- **VOLUME_DOWN = action `0x06`**, acked `02 05 06 00*5` (write-with-response). Completes the volume
+  pair (UP=`05`, DOWN=`06`); both share the `0x05` event type and the standard music ack.
+- **GOAL_TRACKING (TOP) emitted nothing on `3dda0006`** - internal/firmware-only, as expected for a
+  built-in tracker micro-app.
+- **TAKE-A-PICTURE (BOTTOM) emitted nothing on `3dda0006`** either - the camera trigger is a
+  HID/system path, not a Fossil micro-app event. (User noted it acts as volume-down inside the
+  camera UI - that is the phone's camera app mapping a volume key, not a watch `0x05` event.)
+- **No `SETTINGS_BUTTONS` (0x06) write-back** accompanied the volume presses, UNLIKE RING_PHONE.
+  So the buttons-file write-back is specific to software-gesture micro-apps (RING_PHONE), not a
+  generic `0x05`/button response.
+- Again **no storm**: two presses = two events, each acked once.
+
 ---
 
 ## 19. Button Configuration & Built-in Watch Functions (2026-05-20)
