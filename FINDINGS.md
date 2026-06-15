@@ -940,8 +940,10 @@ Confirmations:
 - **GOAL_TRACKING (TOP) emitted nothing on `3dda0006`** - internal/firmware-only, as expected for a
   built-in tracker micro-app.
 - **TAKE-A-PICTURE (BOTTOM) emitted nothing on `3dda0006`** either - the camera trigger is a
-  HID/system path, not a Fossil micro-app event. (User noted it acts as volume-down inside the
+  HID/system path, not a Fossil micro-app event. (User noted it acts as a volume key inside the
   camera UI - that is the phone's camera app mapping a volume key, not a watch `0x05` event.)
+  CONFIRMED 2026-06-15 (capture 4, §26a): it fires a HID consumer-control report (`08`/`00`) on
+  the HID Report char `0x2a4d` (handle `0x007a`), NOT on `3dda0006`.
 - **No `SETTINGS_BUTTONS` (0x06) write-back** accompanied the volume presses, UNLIKE RING_PHONE.
   So the buttons-file write-back is specific to software-gesture micro-apps (RING_PHONE), not a
   generic `0x05`/button response.
@@ -1956,6 +1958,12 @@ fossil-q -d <MAC> alarm list
 
 ## 26. BLE HID Service (0x1812) — Dormant, Not Used by Watch Firmware (2026-05-22)
 
+> **CORRECTED 2026-06-15: the HID service is NOT dormant. It DOES fire when a button is configured
+> for a HID action.** See "26a. HID consumer-control DOES fire" below. The original
+> "firmware never sends HID reports / ZERO consumer events" conclusion was an artifact of testing
+> with buttons that had NO HID action assigned. The body below is kept for history; treat its
+> "dormant/vestigial" framing as WRONG.
+
 **Date:** 2026-05-22
 
 **Source:** Direct GATT enumeration via BlueZ + gdbus monitor + BLE capture analysis
@@ -2134,6 +2142,42 @@ On the Q Commuter (and likely all Fossil Q Hybrid models), the firmware uses the
 proprietary Fossil protocol exclusively. The HID service structure remains in the
 GATT server but the firmware never populates the reports.
 
+### 26a. CORRECTION (2026-06-15): HID consumer-control DOES fire for HID-action buttons
+
+Capture `tmp/bugreport-eventack4` directly contradicts the "never sends HID reports" conclusion.
+With a button configured (in the official app) as **take-a-picture / volume** (which acts as a
+volume key), pressing it produced HID consumer-control reports - NOT a `3dda0006` event:
+
+```
+handle 0x007a (UUID 0x2a4d = HID Report, the Consumer Control report), btatt opcode 0x1b NOTIFY:
+  t=11.0754  08   (key down: consumer usage volume-up)
+  t=11.0765  00   (key up)
+  t=12.5747  08
+  t=12.5756  00
+  ... 4 press/release pairs total, matching the 4 button presses
+```
+
+(Handle->UUID confirmed from bugreport5 discovery: `0x007a` -> `0x2a4d` HID Report, under the
+Consumer Control report reference `0x2a4c`/`0x2803` group.)
+
+**So the corrected model is:**
+- A button assigned a **Fossil micro-app** action (MUSIC_CONTROL, RING_PHONE, etc.) sends a
+  **proprietary `3dda0006`** event (`0x05` / `0x08`).
+- A button assigned a **HID action** (volume up/down, camera shutter via volume key) sends a
+  **standard HID-over-GATT report** on the Consumer Control report char (`0x2a4d`, handle `0x007a`
+  here), `08` = volume-up-down / `00` = release. The earlier captures saw ZERO HID events only
+  because no button was assigned a HID action at the time.
+- This explains the user observation that the "take a picture" button moves the phone volume: it
+  IS a HID volume key; Android's camera app maps volume keys to the shutter.
+
+**Why the earlier note in §18a ("take-a-picture emitted nothing on 3dda0006") was right but
+misleading:** it emits nothing on the FOSSIL channel, but it DOES emit on the HID channel. Both
+statements hold; the HID path was simply not being watched.
+
+**Implication for us:** if we want to consume volume/camera buttons in our Linux/Android companion,
+we read them from the **HID Report characteristic `0x2a4d`** (consumer control), not from
+`3dda0006`. The watch firmware is NOT HID-dormant; it routes HID-action buttons through HID.
+
 ### Could we make it work?
 
 The HID service is **read-only from our perspective** — there are no Output or Feature
@@ -2162,7 +2206,7 @@ in BLE captures), but the Fossil app never reads or processes HID data.
 
 | Question | Answer |
 |----------|--------|
-| Does the watch send HID media key events on MUSIC_CONTROL? | **No.** Only proprietary Fossil events on 3dda0006. |
+| Does the watch send HID media key events on MUSIC_CONTROL? | **No.** A MUSIC_CONTROL button uses proprietary Fossil events on 3dda0006. (But a button assigned a HID *volume/camera* action DOES send HID - see §26a.) |
 | Does FORWARD_TO_PHONE produce HID output? | **No.** Only MICRO_APP_EVENT on 3dda0006. |
 | Are there Feature Reports to configure HID behavior? | **No.** Only Input reports (read+notify). No Output or Feature reports. |
 | Could the HID profile make the watch a standard BLE media controller? | **Not directly.** The firmware never sends HID reports. A proxy translating Fossil events → synthetic HID input would work. |
