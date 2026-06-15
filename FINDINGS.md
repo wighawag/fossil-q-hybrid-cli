@@ -2178,6 +2178,42 @@ statements hold; the HID path was simply not being watched.
 we read them from the **HID Report characteristic `0x2a4d`** (consumer control), not from
 `3dda0006`. The watch firmware is NOT HID-dormant; it routes HID-action buttons through HID.
 
+### 26b. How to SET the take-picture button (config payload captured 2026-06-15)
+
+Capture `tmp/bugreport-eventack5` was taken WHILE setting TOP=volume-up, MIDDLE=volume-down,
+BOTTOM=take-picture in the official app, so it contains the `SETTINGS_BUTTONS` (file `0x06`) PUT for
+all three. On pressing them: TOP -> `01 05 10 05` (Fossil VOLUME_UP), MIDDLE -> `01 05 11 06`
+(Fossil VOLUME_DOWN), BOTTOM -> HID `08`/`00` on `0x2a4d` (take-picture). Confirms the three are
+distinct button actions.
+
+**The take-picture button = the SELFIE micro-app, declarationId 4097 (`0x1001`), header `01 01 10`.**
+Its config entry is **byte-identical to VOLUME_UP except the declarationId**. Diffing the captured
+VOLUME_UP entry against the captured take-picture entry, the ONLY differing bytes are the
+declarationId (header bytes 1-2): `04 12` (=`0x1204`=4612 VOLUME_UP) vs `01 10` (=`0x1001`=4097
+SELFIE). The body is the same template:
+
+```
+captured VOLUME_UP    : 01 04 12 5e 0000 0001 0006 0001 0101 0300 05 011d00 8501f60000 85014202 00 85014303 00 85014804 00 08011e0001 00 020d008c01 e9 000193000101 00 030b008c01 e9 0000930001 040a008c0100 000101 00 fe0800930002 0100 <crc>
+captured TAKE_PICTURE : 01 01 10 5e 0000 0001 0006 0001 0101 0300 05 011d00 8501f60000 85014202 00 85014303 00 85014804 00 08011e0001 00 020d008c01 e9 000193000101 00 030b008c01 e9 0000930001 040a008c0100 000101 00 fe0800930002 0100 <crc>
+                          ^^ ^^ ^^ only the declarationId differs (04 12 -> 01 10)
+```
+
+**So we do NOT need a fresh capture to add take-picture** - build a `ConfigPayload.TAKE_PICTURE`
+(or `SELFIE`) from the existing `VOLUME_UP` entry by swapping the declarationId to `01 01 10`
+(header `01 01 10 00`) and RE-COMPUTING the trailing CRC (last 4 bytes; the file/entry uses the
+same CRC32 the rest of the button config uses - confirm against `ButtonConfigBuilder`'s CRC helper,
+do not copy VOLUME_UP's CRC). The per-button gesture/index map in the file header also showed the
+assignment: `... 30 03 01 01 10 ...` = BOTTOM button (`0x30`) -> declId `01 10` (selfie).
+
+**Also validated:** our existing `ConfigPayload.VOLUME_UP` (declId 4612) and `VOLUME_DOWN` (4613)
+match the official app's bytes exactly (same body `8c01 e9` / `8c01 ea`, same trailer) - they were
+correct, not guesses.
+
+**STILL TODO (impl, not capture):** add the TAKE_PICTURE/SELFIE `ConfigPayload` entry + CLI keyword,
+verify the CRC recompute against a round-trip, and (separately) wire READING the HID `0x2a4d` report
+so our companion can act on a take-picture/volume press. The payload bytes are now known; only the
+builder + CRC + read-path remain.
+
 ### Could we make it work?
 
 The HID service is **read-only from our perspective** — there are no Output or Feature
