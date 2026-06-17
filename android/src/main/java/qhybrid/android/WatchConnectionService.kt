@@ -1679,11 +1679,20 @@ class WatchConnectionService : Service() {
         override fun uploadAlarms(alarmFile: ByteArray): Boolean {
             val future = CompletableFuture<Boolean>()
             controller.setAlarms(alarmFile, future)
-            return runCatching { future.get(UPLOAD_TIMEOUT_MS, TimeUnit.MILLISECONDS) }
+            // A timeout / failed put must surface as a SyncError (the orchestrator records the
+            // throw), NOT a silent `false` — `false` means "skipped: nothing to push", which would
+            // be mis-reported as a clean SUCCESS that never stamps `alarmsSyncedAt` (rows stay
+            // "not synced" with NO error shown). Throw so the failure is honest.
+            val ok = runCatching { future.get(UPLOAD_TIMEOUT_MS, TimeUnit.MILLISECONDS) }
                 .getOrElse {
                     Log.w(TAG, "alarm upload timed out / failed", it)
-                    false
+                    throw IllegalStateException("Alarm upload timed out / failed", it)
                 }
+            if (!ok) {
+                Log.w(TAG, "alarm upload rejected by watch")
+                throw IllegalStateException("Alarm upload rejected by watch")
+            }
+            return true
         }
 
         override fun uploadNotificationFilter(entries: List<NotificationFilterEntry>): Boolean {
@@ -1717,13 +1726,17 @@ class WatchConnectionService : Service() {
             // WAIT on the file-put (bounded) so the BLE link is held open until the watch acks.
             val future = CompletableFuture<Boolean>()
             controller.setButtons(buttonConfigFile, future)
+            // Same honesty rule as uploadAlarms: a timeout / rejected put THROWS (→ SyncError →
+            // ERROR/partial-failure UI) instead of returning `false`, which the orchestrator would
+            // read as a clean "skipped: nothing to push" and report as a misleading SUCCESS.
             val ok = runCatching { future.get(UPLOAD_TIMEOUT_MS, TimeUnit.MILLISECONDS) }
                 .getOrElse {
                     Log.w(TAG, "button upload timed out / failed", it)
-                    false
+                    throw IllegalStateException("Button upload timed out / failed", it)
                 }
             Log.i(TAG, "uploadButtons result=$ok")
-            return ok
+            if (!ok) throw IllegalStateException("Button upload rejected by watch")
+            return true
         }
 
         override fun applyVibrationStrength(strength: Int): Boolean {

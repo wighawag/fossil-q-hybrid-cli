@@ -13,8 +13,17 @@ import qhybrid.protocol.model.NotificationFilterEntry
  * `FossilController` settings methods) — the orchestrator invents NO new wire bytes; it only
  * hands already-compiled bytes / typed config to the uploader.
  *
- * Every method returns whether the upload was actually *performed* (true) vs. skipped/not
- * wired (false), so [SyncOrchestrator] can build an honest [SyncResult] for logging.
+ * Every method returns whether the upload was actually *performed* (true) vs. *intentionally
+ * skipped because there was nothing to push* (false), so [SyncOrchestrator] can build an honest
+ * [SyncResult].
+ *
+ * **Contract (do NOT conflate the two failure-ish outcomes):** `false` means ONLY "I had nothing
+ * to upload" — it MUST NOT be used for a write that was attempted and failed/timed out. A genuine
+ * upload FAILURE must THROW, so [SyncOrchestrator.runSection] records it as a [SyncError] (→
+ * SyncState ERROR / partial-failure UI) instead of misclassifying it as a clean skip. A silent
+ * `false` on a failed BLE put would be reported as SUCCESS, never stamp the section's
+ * `…SyncedAt`, and leave the row "not synced" with NO error shown — the exact bug this contract
+ * prevents.
  */
 interface Uploader {
 

@@ -42,6 +42,11 @@ class SyncOrchestratorTest {
         private val filterWired: Boolean = true,
         private val buttonsWired: Boolean = true,
         private val settingsWired: Boolean = true,
+        // Mirrors the production ServiceUploader contract: a real BLE put FAILURE/timeout THROWS
+        // (so the orchestrator records a SyncError), it does NOT return `false` (which means
+        // "skipped: nothing to push"). Lets a test prove the failed-upload path is an error,
+        // not a misleading clean skip.
+        private val alarmsThrow: Boolean = false,
     ) : Uploader {
         val order = mutableListOf<SyncSection>()
         var alarmBytes: ByteArray? = null
@@ -56,7 +61,9 @@ class SyncOrchestratorTest {
         )
 
         override fun uploadAlarms(alarmFile: ByteArray): Boolean {
-            order.add(SyncSection.ALARMS); alarmBytes = alarmFile; return alarmsWired
+            order.add(SyncSection.ALARMS); alarmBytes = alarmFile
+            if (alarmsThrow) throw IllegalStateException("Alarm upload timed out / failed")
+            return alarmsWired
         }
 
         override fun uploadNotificationFilter(entries: List<NotificationFilterEntry>): Boolean {
@@ -673,6 +680,25 @@ class SyncOrchestratorTest {
         // Alarms errored, but the filter still uploaded.
         assertTrue(result.errors.any { it.section == SyncSection.ALARMS })
         assertTrue(SyncSection.NOTIFICATION_FILTER in up.order)
+    }
+
+    @Test
+    fun failedAlarmUploadIsErrorNotSilentSkip() {
+        // Regression: a failed/timed-out alarm put must surface as a SyncError, NOT be swallowed as
+        // a clean "skip". Previously the production uploader returned `false` on timeout, which the
+        // orchestrator classified as skipped → the pass reported SUCCESS, never stamped
+        // `alarmsSyncedAt`, and left the row "not synced" with NO error shown. The uploader now
+        // THROWS on a real failure; assert that becomes an error and is NOT counted as performed.
+        val up = FakeUploader(alarmsThrow = true)
+        val result = SyncOrchestrator.sync(
+            SyncInput(watch = watch(), alarms = listOf(alarm(0)), rules = listOf(rule("com.whatsapp"))),
+            up,
+        )
+        assertTrue(result.errors.any { it.section == SyncSection.ALARMS })
+        assertFalse(SyncSection.ALARMS in result.performed)
+        assertFalse(SyncSection.ALARMS in result.skipped)
+        // A failure in one section must not abort the rest of the pass.
+        assertTrue(SyncSection.NOTIFICATION_FILTER in result.performed)
     }
 
     @Test
