@@ -56,11 +56,27 @@ FIX, in priority order:
    handle). The watch's erase-ack (0x8B for 0x09FF) is suppressed during recovery. Covered by
    `NotificationPlayMemoryRecoveryTest` (erase-area+reopen+succeed, and bounded-to-one).
    v1 (deleting the rotated index 0x09xx) was INERT — the watch returned NOT_FOUND because that index
-   was never created; v2 erases the AREA instead. NEXT on-device: wedge the watch, then expect
-   logcat `erase NOTIFICATION area (DELETE 09FF) + retry open` and ideally a subsequent
-   `NOTIFY 83 .. 09 00 00` (accept) proving the area erase reclaimed the space and the buzz
-   self-heals. If the 0x09FF erase is ALSO not honoured (re-open still 0x86), the area handle may
-   differ on this firmware — try the major-only 0x0900 form, or fall back to prevention (#1).
+   was never created. v2 (erasing the AREA handle 0x09FF) is ALSO inert on-device (2026-06-17,
+   second test): `WRITE 0b ff 09` -> `NOTIFY 8b ff 09 83` (status 0x83 = NOT_FOUND), re-open still
+   0x86. So 0x09FF is NOT the area-wipe handle on this firmware (HW0.0.2.9r.v3).
+
+   DECISIVE NEW EVIDENCE (same log): DELETE_FILE(0x0B) DOES work on this watch — but only for a
+   handle that EXISTS. Right before the buzzes, the activity-file read did
+   `WRITE 0b 01 01` (delete activity file 0x0101) -> `NOTIFY 8b 01 01 00` (status 0x00 = SUCCESS).
+   So the op is honoured; our two targets just don't exist: the fresh rotated index (never created)
+   and 0x09FF (not a real minor). The orphans that DO exist are the PREVIOUSLY-USED minors
+   (0x0900, 0x0901, ... up to the last opened index). FIX v3 (IMPLEMENTED 2026-06-17): on 0x86,
+   `FilePutRawRequest.sweepPriorPlayMinorsThenReopen()` DELETE-sweeps a bounded window
+   (`MEMORY_RECOVERY_SWEEP = 16`) of the play minors just BELOW the current handle's minor on major
+   0x09 (wrapping mod 0xFF to match the rotation, skipping the current/never-created minor), then
+   retries the open ONCE. Each existing orphan -> SUCCESS + reclaimed; absent ones -> NOT_FOUND
+   harmlessly. Stayed inside `FilePutRawRequest` (derives the window from `this.handle`'s minor, no
+   adapter history needed). Acks (0x8B) suppressed during recovery; still bounded to one attempt.
+   Covered by `NotificationPlayMemoryRecoveryTest` (sweep targets prior minors, never 0x0900/0x09FF;
+   bounded-to-one). NEXT on-device: wedge the watch, expect logcat
+   `delete-sweep 16 prior play minors + retry open`, several `8b 09 .. 00` SUCCESS acks for the real
+   orphans, then ideally `83 .. 09 00 00` (accept) = self-healed buzz. If 16 is too small (area
+   still full), raise the window; if even a wide sweep can't reclaim it, fall back to prevention (#1).
    ON-DEVICE RESULT (2026-06-17, fresh APK): the prototype FIRES correctly but the experiment's
    answer is NO — deleting THIS handle does not reclaim the area. Per-buzz trace:
        WRITE  03 01 09 ...      PUT_FILE open 0x0901
