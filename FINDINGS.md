@@ -27,16 +27,25 @@ buzzes, multiplying the orphaned PUTs. The Bug 1 fix should sharply cut how ofte
 NOT a full cure: even clean single buzzes still leak one file each and never delete the old one.
 
 FIX, in priority order:
-1. PROPER FIX — stop leaking: do what the official app does, delete/overwrite the prior play file (or
-   reuse a slot the way it frees it) instead of PUT-ing a brand-new file per buzz. REQUIRES a btsnoop
-   capture of the official app's buzz: what it WRITEs to `3dda0003` around a buzz (FileDelete? a
-   fixed-handle overwrite?). Capture FIRST, then replicate.
-2. AUTO-RECOVERY (can prototype WITHOUT the capture) — on a play-PUT `0x86` for the NOTIFICATION_PLAY
-   handle, issue a `FileDeleteRequest` for the play handle (and/or older rotated indices) to reclaim
-   the area, then retry the open ONCE. If the watch honours FileDelete on 0x0900 the buzz self-heals
-   with no manual re-provision. NEXT on-device experiment: confirm whether FileDelete on 0x0900 is
-   honoured (it may be the missing GC trigger). Keep the recovery NARROW (only 0x86 on the play
-   handle, bounded retries); do NOT broaden to all non-success codes.
+1. PROPER FIX (still OPEN) — stop leaking: do what the official app does, delete/overwrite the prior
+   play file (or reuse a slot the way it frees it) instead of PUT-ing a brand-new file per buzz.
+   REQUIRES a btsnoop capture of the official app's buzz: what it WRITEs to `3dda0003` around a buzz
+   (FileDelete? a fixed-handle overwrite?). Capture FIRST, then replicate.
+2. AUTO-RECOVERY (PROTOTYPE IMPLEMENTED 2026-06-17, awaiting on-device confirmation) — on a play-PUT
+   `0x86` for the NOTIFICATION_PLAY handle, `FilePutRawRequest` now sends `FileDelete(0x0B)` for the
+   play handle then retries the open ONCE (`deleteThenReopen`), bounded to one attempt, scoped to
+   the 0x09xx major + status 0x86 only. The watch's delete-ack (0x8B) is suppressed during recovery.
+   Covered by `NotificationPlayMemoryRecoveryTest` (delete+reopen+succeed, and bounded-to-one).
+   NEXT (on-device EXPERIMENT): fire enough buzzes to wedge the area, then watch the logcat — expect
+   `FileDelete(0x0B) + retry open` and ideally a subsequent `83 .. 09 00 00` (accept) proving the
+   delete reclaimed the area. If delete on 0x09xx is NOT honoured (re-open still 0x86), fall back to
+   fix #1. Recovery is deliberately NARROW; do NOT broaden to all non-success codes.
+
+   SIDE FIX shipped with the prototype: `handlePutAccept` was calling `ResultCode.fromCode` with a
+   sign-extended `byte`, so every firmware-internal status (0x80..0x8D, incl. 0x86) resolved to
+   UNKNOWN instead of its real code. Now masked to unsigned (`value[3] & 0xFF`). Fail-fast behaviour
+   is unchanged for genuinely-unrecoverable codes; only the classification/logging is now correct
+   (and the 0x86 recovery branch can actually match).
 
 LOG TELL for a recurrence (tags FossilQ-Svc AndroidBleTransport): `NOTIFY 3dda0003 <- 83 .. 09 86 00`
 on a buzz = the play area is full/wedged.

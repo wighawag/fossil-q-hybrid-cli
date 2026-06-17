@@ -111,6 +111,20 @@ public class FilePutRawRequest extends FossilRequest {
     private int busyRetries = 0;
     private boolean recoveringFromBusy = false;
 
+    // Bug 3 PROTOTYPE — auto-recover a wedged NOTIFICATION_PLAY area. If a PUT_FILE open on the play
+    // handle is rejected with NOT_ENOUGH_MEMORY (0x86) the watch's small notification-file ring is
+    // full of orphaned play files (left by earlier puts that never reached VERIFY/SUCCESS). Today
+    // that fails fast and only a re-provision/watch-reset recovers it. EXPERIMENT: send
+    // FileDelete(0x0B) for this handle to reclaim the area, then retry the open ONCE. If the watch
+    // honours delete on 0x09xx the buzz self-heals with no manual re-provision. NARROW: only on
+    // 0x86, only for the NOTIFICATION_PLAY major handle (0x09), bounded to one attempt.
+    // recoveringFromMemory suppresses the self-inflicted delete-ack (0x8B) so it isn't mis-read.
+    private static final int MEMORY_RECOVERY_THRESHOLD = 1;
+    /** Major byte of the NOTIFICATION_PLAY handle (0x09xx); see FilePutRequest rotation note. */
+    private static final int NOTIFICATION_PLAY_MAJOR = 0x09;
+    private int memoryRetries = 0;
+    private boolean recoveringFromMemory = false;
+
     public FilePutRawRequest(short handle, byte[] file, FossilWatchAdapter adapter) {
         this.handle = handle;
         this.adapter = adapter;
@@ -181,6 +195,13 @@ public class FilePutRawRequest extends FossilRequest {
             case 9:
                 handleAbort(value);
                 break;
+            case 11:  // DELETE_FILE ack (0x8B) — Bug 3 prototype: our OWN delete during memory-
+                      // recovery. Ignore it and wait for the re-opened PUT(3) accept.
+                if (recoveringFromMemory) {
+                    PUTLOG.info("FilePut[0x{}] DELETE ack during memory-recovery — ignoring (awaiting re-open accept)",
+                            String.format("%04X", handle));
+                }
+                break;
             default:
                 break;
         }
@@ -199,7 +220,10 @@ public class FilePutRawRequest extends FossilRequest {
         // (observed on-device 2026-06-14 for the timer ALARMS upload: accept = 83 .. 02). Fail FAST
         // instead so the caller gets an honest, immediate failure (and the next attempt — once the
         // watch's stale handle clears — can succeed) rather than a 12s stall.
-        byte acceptStatus = value[3];
+        // Mask to UNSIGNED: the status byte for firmware-internal errors is 0x80..0x8D (128..141),
+        // which sign-extends to a NEGATIVE int as a raw byte and would never match ResultCode's
+        // positive codes (so 0x86 would wrongly resolve to UNKNOWN instead of NOT_ENOUGH_MEMORY).
+        int acceptStatus = value[3] & 0xFF;
         ResultCode acceptCode = ResultCode.fromCode(acceptStatus);
         if (!acceptCode.inidicatesSuccess()) {
             // OPERATION_IN_PROGRESS: the watch still holds this handle half-open (a prior put never
@@ -220,6 +244,21 @@ public class FilePutRawRequest extends FossilRequest {
             // puts that never reached VERIFY/SUCCESS). A BLE re-pair does NOT reclaim it; only the
             // watch's own file-area GC (a watch reset) does. Proper fix: delete/overwrite the play
             // file the way the official app does instead of PUT-ing a new file per buzz.
+            //
+            // Bug 3 PROTOTYPE auto-recovery: for a play-handle 0x86, try FileDelete(0x0B) on this
+            // handle to reclaim the area, then retry the open ONCE before failing. Scoped narrow
+            // (only 0x86, only the 0x09xx major, bounded). On-device this tells us whether delete
+            // on 0x09xx triggers the watch's GC (self-healing buzz) or not.
+            if (acceptCode == ResultCode.FIRMWARE_INTERNAL_ERROR_NOT_ENOUGH_MEMORY
+                    && ((handle >> 8) & 0xFF) == NOTIFICATION_PLAY_MAJOR
+                    && memoryRetries < MEMORY_RECOVERY_THRESHOLD) {
+                memoryRetries++;
+                recoveringFromMemory = true;
+                PUTLOG.warn("FilePut[0x{}] open NOT_ENOUGH_MEMORY — FileDelete(0x0B) + retry open ({}/{}) [Bug3 prototype]",
+                        String.format("%04X", handle), memoryRetries, MEMORY_RECOVERY_THRESHOLD);
+                deleteThenReopen();
+                return;
+            }
             PUTLOG.warn("FilePut[0x{}] PUT_FILE rejected: status {} ({}) — not transmitting; failing fast",
                     String.format("%04X", handle), acceptCode, acceptStatus);
             state = UploadState.FAILED;
@@ -227,6 +266,7 @@ public class FilePutRawRequest extends FossilRequest {
             return;
         }
         recoveringFromBusy = false;
+        recoveringFromMemory = false;
         state = UploadState.UPLOADING;
 
         WriteBatch transactionBuilder = adapter.getDeviceSupport().createWriteBatch("file upload");
@@ -393,6 +433,30 @@ public class FilePutRawRequest extends FossilRequest {
         open.putInt(11, (int) this.totalLength);
         adapter.getDeviceSupport().createWriteBatch("file abort+reopen")
                 .write(CONTROL_CHARACTERISTIC, abort.array())
+                .write(CONTROL_CHARACTERISTIC, open.array())
+                .queue();
+    }
+
+    /**
+     * Bug 3 PROTOTYPE — send FileDelete(0x0B) for this handle to reclaim a FULL notification-file
+     * area, then immediately re-send the PUT_FILE(3) open. Frames are queued in order on 3dda0003.
+     * The watch's delete-ack (0x8B) is suppressed via {@link #recoveringFromMemory} (see
+     * handleResponse). Used only on a play-handle NOT_ENOUGH_MEMORY (0x86), bounded to one attempt.
+     */
+    private void deleteThenReopen() {
+        ByteBuffer delete = ByteBuffer.allocate(3).order(ByteOrder.LITTLE_ENDIAN);
+        delete.put((byte) 0x0B);
+        delete.putShort(this.handle);
+        // Re-send the original PUT_FILE(3) open (full file, offset 0) — same framing as the first try.
+        this.resumeOffset = 0;
+        ByteBuffer open = ByteBuffer.allocate(15).order(ByteOrder.LITTLE_ENDIAN);
+        open.put((byte) 0x03);
+        open.putShort(1, this.handle);
+        open.putInt(3, 0);
+        open.putInt(7, (int) this.totalLength);
+        open.putInt(11, (int) this.totalLength);
+        adapter.getDeviceSupport().createWriteBatch("file delete+reopen")
+                .write(CONTROL_CHARACTERISTIC, delete.array())
                 .write(CONTROL_CHARACTERISTIC, open.array())
                 .queue();
     }
