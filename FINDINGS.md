@@ -5,6 +5,59 @@ firmware HW0.0.2.9r.v3, on Linux (BlueZ 5.82).
 
 ---
 
+## SCHEDULED / OPEN (do not forget)
+
+### Bug 3 (OPEN, scheduled) — stop the NOTIFICATION_PLAY area wedging (0x86 = no buzz)
+
+Symptom: after a while every buzz fails. Each buzz write on `3dda0003` gets `NOTIFY <- 83 .. 09 86 00`
+(PUT-accept status `0x86 = NOT_ENOUGH_MEMORY`), the buzz bytes leave the phone but the watch refuses
+the open, so the user feels nothing. A plain reconnect does NOT clear it; today the only confirmed
+recovery is a full re-provision (or a watch-side reset).
+
+ROOT CAUSE (confirmed by the 0x86 + the buzz code): every buzz does a FULL FilePUT of a fresh ~79-byte
+play file (`playNotification*` -> `FilePutRequest(NOTIFICATION_PLAY, ...)`), and we NEVER delete the
+old one. The watch reclaims a play file's space only when a PUT reaches VERIFY -> SUCCESS. PUTs that
+get cut short (queue churn / reconnect / the next buzz interrupting) never VERIFY and leave an orphan
+squatting on the 0x0900 area. After enough orphans the area is FULL and every new open returns 0x86.
+The handle low-byte rotation (0900, 0901, ...) only SPREADS the files, it frees nothing, so the ring
+still fills. A BLE re-pair does not run the watch's file-area GC; only a watch reset reclaims it.
+
+WHY IT KEEPS HAPPENING: the de-dup RACE (Bug 1, fixed 2026-06-17) let one press fire a storm of
+buzzes, multiplying the orphaned PUTs. The Bug 1 fix should sharply cut how often we wedge, but it is
+NOT a full cure: even clean single buzzes still leak one file each and never delete the old one.
+
+FIX, in priority order:
+1. PROPER FIX — stop leaking: do what the official app does, delete/overwrite the prior play file (or
+   reuse a slot the way it frees it) instead of PUT-ing a brand-new file per buzz. REQUIRES a btsnoop
+   capture of the official app's buzz: what it WRITEs to `3dda0003` around a buzz (FileDelete? a
+   fixed-handle overwrite?). Capture FIRST, then replicate.
+2. AUTO-RECOVERY (can prototype WITHOUT the capture) — on a play-PUT `0x86` for the NOTIFICATION_PLAY
+   handle, issue a `FileDeleteRequest` for the play handle (and/or older rotated indices) to reclaim
+   the area, then retry the open ONCE. If the watch honours FileDelete on 0x0900 the buzz self-heals
+   with no manual re-provision. NEXT on-device experiment: confirm whether FileDelete on 0x0900 is
+   honoured (it may be the missing GC trigger). Keep the recovery NARROW (only 0x86 on the play
+   handle, bounded retries); do NOT broaden to all non-success codes.
+
+LOG TELL for a recurrence (tags FossilQ-Svc AndroidBleTransport): `NOTIFY 3dda0003 <- 83 .. 09 86 00`
+on a buzz = the play area is full/wedged.
+
+See the deeper write-ups below: "Wedged play handle (0x86)" and the 2026-06-15 NOT_ENOUGH_MEMORY
+correction.
+
+### Bug 1 (FIXED 2026-06-17) — de-dup race let one press switch the mode twice + storm the buzz
+
+The watch repeats one button press as ~2 byte-identical frames `01 08 <seq> ...` a few ms apart.
+`FossilQAdapter.isDuplicateAsyncEvent` de-dups them on `(opcode,eventType,sequence)`, but its
+check-then-update of `lastAsyncEventKey`/`lastAsyncEventAtMs` was NOT atomic. On Android,
+`onCharacteristicChanged` is dispatched on a binder thread POOL, so the two repeats ran CONCURRENTLY,
+both read the stale key, both passed the duplicate check, and one press advanced the rotation TWICE
+(observed: `[3] TIMER` then `[0] MUSIC_PHONE` from a single press) while doubling the buzz PUTs that
+wedge the play area (Bug 3). FIX: `isDuplicateAsyncEvent` is now `synchronized` so the
+check-and-update is atomic and the second copy is reliably dropped. The old "single-threaded on the
+BLE callback, no locking needed" comment was WRONG for this transport.
+
+---
+
 ## 1. BLE Read Values from busctl are Decimal
 
 **Problem:** First run showed garbled firmware/model strings (`r‡HFHFPFWFQ`).

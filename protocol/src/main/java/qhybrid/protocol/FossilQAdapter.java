@@ -2111,9 +2111,17 @@ public class FossilQAdapter {
      * {@link #ASYNC_EVENT_DEDUP_WINDOW_MS} of it — i.e. a retransmit/firmware-repeat of the same
      * press (same opcode+eventType+sequence+data). Records [frame] as the new "last" either way so
      * a genuine next press (different sequence/data, or after the window) is always handled.
-     * Single-threaded on the BLE notification callback, so no locking is needed.
+     *
+     * THREAD-SAFETY: the read-modify-write of {@link #lastAsyncEventKey}/{@link #lastAsyncEventAtMs}
+     * MUST be atomic. On the Android transport two byte-identical firmware repeats of one press
+     * arrive ~2 ms apart and Android dispatches `onCharacteristicChanged` on a binder thread POOL,
+     * so the two callbacks can run CONCURRENTLY. Without synchronisation both read the stale key
+     * before either writes it, both pass the duplicate check, and one press switches the mode twice
+     * (and storms the play-file area, wedging the 0x0900 handle). `synchronized` serialises the
+     * check-and-update so the second copy is reliably dropped. (The earlier "single-threaded, no
+     * locking needed" assumption was WRONG for this transport.)
      */
-    private boolean isDuplicateAsyncEvent(byte[] frame) {
+    private synchronized boolean isDuplicateAsyncEvent(byte[] frame) {
         // Key = opcode<<16 | eventType<<8 | sequence (the three leading bytes). Ignores trailing
         // payload/checksum bytes that can vary between retransmits of the SAME press.
         int key = ((frame[0] & 0xFF) << 16) | ((frame[1] & 0xFF) << 8) | (frame[2] & 0xFF);
