@@ -26,20 +26,67 @@ WHY IT KEEPS HAPPENING: the de-dup RACE (Bug 1, fixed 2026-06-17) let one press 
 buzzes, multiplying the orphaned PUTs. The Bug 1 fix should sharply cut how often we wedge, but it is
 NOT a full cure: even clean single buzzes still leak one file each and never delete the old one.
 
+OFFICIAL-APP SOURCE CHECK (2026-06-17, tmp/FossilOfficialApp-deobf): the official app does the SAME
+thing we do and NO delete/erase around a buzz. `FileHandleManager.getFileHandleToPut` (m11016b) for
+`FileType.NOTIFICATION` ROTATES the low byte exactly like us: `index = (index + 1) % 255`, returning
+the CURRENT index before increment (so 0x0900, 0x0901, ...). The play itself is
+`SendAppNotificationPhase extends TransmitDataPhase` — a single file PUT to that rotated handle, with
+NO EraseFile/Delete before or after. So the official app frees the area purely by (a) rotating and
+(b) each PUT reliably reaching VERIFY -> SUCCESS, which is when the watch reclaims the slot. It never
+deletes. CONCLUSION: there is no secret "delete/overwrite" move to copy. Our wedge is a RELIABILITY
+problem, not a missing-command problem — orphaned PUTs that never VERIFY (storms + cut-short puts)
+accumulate faster than rotation reclaims, until the area is full. A btsnoop capture is NO LONGER
+needed to choose the approach (the source already answers it); it would only confirm timing.
+
 FIX, in priority order:
-1. PROPER FIX (still OPEN) — stop leaking: do what the official app does, delete/overwrite the prior
-   play file (or reuse a slot the way it frees it) instead of PUT-ing a brand-new file per buzz.
-   REQUIRES a btsnoop capture of the official app's buzz: what it WRITEs to `3dda0003` around a buzz
-   (FileDelete? a fixed-handle overwrite?). Capture FIRST, then replicate.
-2. AUTO-RECOVERY (PROTOTYPE IMPLEMENTED 2026-06-17, awaiting on-device confirmation) — on a play-PUT
-   `0x86` for the NOTIFICATION_PLAY handle, `FilePutRawRequest` now sends `FileDelete(0x0B)` for the
-   play handle then retries the open ONCE (`deleteThenReopen`), bounded to one attempt, scoped to
-   the 0x09xx major + status 0x86 only. The watch's delete-ack (0x8B) is suppressed during recovery.
-   Covered by `NotificationPlayMemoryRecoveryTest` (delete+reopen+succeed, and bounded-to-one).
-   NEXT (on-device EXPERIMENT): fire enough buzzes to wedge the area, then watch the logcat — expect
-   `FileDelete(0x0B) + retry open` and ideally a subsequent `83 .. 09 00 00` (accept) proving the
-   delete reclaimed the area. If delete on 0x09xx is NOT honoured (re-open still 0x86), fall back to
-   fix #1. Recovery is deliberately NARROW; do NOT broaden to all non-success codes.
+1. PROPER FIX (still OPEN) — make every buzz PUT reliably reach VERIFY -> SUCCESS so the watch
+   reclaims each rotated slot (the official app's actual mechanism), AND stop ever leaving a play
+   PUT half-open. Concretely: (a) ensure the play PUT is not interrupted/abandoned by the NEXT buzz
+   or by queue churn before VERIFY (serialize / drop-if-busy rather than open-and-abandon); (b)
+   confirm our FilePut drives EOF -> VERIFY -> SUCCESS for the play file the same way it does for
+   other files; (c) once an area is ALREADY wedged, reclaim it (see #2 — needs the RIGHT delete
+   target or a watch-side erase of the whole NOTIFICATION area, since deleting the about-to-open
+   index returns NOT_FOUND). No btsnoop required; the official source (above) is the reference.
+2. AUTO-RECOVERY (IMPLEMENTED 2026-06-17, awaiting on-device confirmation of the ERASE variant) — on
+   a play-PUT `0x86` for the NOTIFICATION_PLAY handle, `FilePutRawRequest` now ERASES the whole
+   NOTIFICATION area then retries the open ONCE (`eraseAreaThenReopen`), bounded to one attempt,
+   scoped to the 0x09xx major + status 0x86 only. The erase is a FileControl `DELETE_FILE(0x0B)` of
+   the file-TYPE handle `0x09FF` (major 0x09, minor 0xFF = all minors), mirroring the official app's
+   `CleanUpDevicePhase` / `EraseFileRequest` (which is the SAME 0x0B op, just targeting the area
+   handle). The watch's erase-ack (0x8B for 0x09FF) is suppressed during recovery. Covered by
+   `NotificationPlayMemoryRecoveryTest` (erase-area+reopen+succeed, and bounded-to-one).
+   v1 (deleting the rotated index 0x09xx) was INERT — the watch returned NOT_FOUND because that index
+   was never created; v2 erases the AREA instead. NEXT on-device: wedge the watch, then expect
+   logcat `erase NOTIFICATION area (DELETE 09FF) + retry open` and ideally a subsequent
+   `NOTIFY 83 .. 09 00 00` (accept) proving the area erase reclaimed the space and the buzz
+   self-heals. If the 0x09FF erase is ALSO not honoured (re-open still 0x86), the area handle may
+   differ on this firmware — try the major-only 0x0900 form, or fall back to prevention (#1).
+   ON-DEVICE RESULT (2026-06-17, fresh APK): the prototype FIRES correctly but the experiment's
+   answer is NO — deleting THIS handle does not reclaim the area. Per-buzz trace:
+       WRITE  03 01 09 ...      PUT_FILE open 0x0901
+       NOTIFY 83 01 09 86 00    reject 0x86 NOT_ENOUGH_MEMORY
+       WRITE  0b 01 09          our FileDelete(0x0B) of 0x0901
+       WRITE  03 01 09 ...      our re-open of 0x0901
+       NOTIFY 8b 01 09 83       delete response status 0x83 = 131 = NOT_FOUND
+       NOTIFY 83 01 09 86 00    re-open STILL 0x86
+   The delete returns NOT_FOUND because we delete the FRESH rotated index (0x0901) that was never
+   created — the orphans squat on OTHER indices. So FileDelete may be honoured, but we point it at
+   the wrong (empty) slot. The area stays full; the buzz still fails. (Also confirmed Bug 1 is fixed:
+   each of the 4 presses gave exactly ONE press + ONE advance, rotation 2->3->0 clean, no doubles.)
+
+   IMPLICATIONS / NEXT (pick one, needs the btsnoop to choose well):
+   - The rotating-handle scheme is the LEAK: each buzz opens a NEW index and the failed/never-
+     VERIFIED ones pile up across 0x0900..0x09FE. Deleting the about-to-open index is useless.
+   - Option A: STOP rotating — reuse a FIXED play handle (e.g. 0x0900) and DELETE-then-PUT it each
+     buzz, so there is only ever ONE play file and it is overwritten in place. Needs to confirm the
+     watch lets a fixed handle be deleted+reopened repeatedly (the official app may do exactly this).
+   - Option B: on 0x86, delete a RANGE/the PRIOR indices (0x0900..lastUsed) to GC the orphans, then
+     open. Heavier; only if A is not what the official app does.
+   - DECIDE from the official-app btsnoop (tmp/bug3-buzz-capture-steps.md): does it rotate at all,
+     or reuse+overwrite a fixed handle, and does it DELETE before the play PUT?
+   The current prototype (delete the rotated index) is INERT on a wedged watch — keep it for now (it
+   is harmless: one extra delete+reopen that fails the same way) or revert the rotated-index delete
+   once the proper fix lands. Recovery stays NARROW; do NOT broaden to all non-success codes.
 
    SIDE FIX shipped with the prototype: `handlePutAccept` was calling `ResultCode.fromCode` with a
    sign-extended `byte`, so every firmware-internal status (0x80..0x8D, incl. 0x86) resolved to
