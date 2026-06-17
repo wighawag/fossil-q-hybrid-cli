@@ -73,10 +73,33 @@ FIX, in priority order:
    harmlessly. Stayed inside `FilePutRawRequest` (derives the window from `this.handle`'s minor, no
    adapter history needed). Acks (0x8B) suppressed during recovery; still bounded to one attempt.
    Covered by `NotificationPlayMemoryRecoveryTest` (sweep targets prior minors, never 0x0900/0x09FF;
-   bounded-to-one). NEXT on-device: wedge the watch, expect logcat
-   `delete-sweep 16 prior play minors + retry open`, several `8b 09 .. 00` SUCCESS acks for the real
-   orphans, then ideally `83 .. 09 00 00` (accept) = self-healed buzz. If 16 is too small (area
-   still full), raise the window; if even a wide sweep can't reclaim it, fall back to prevention (#1).
+   bounded-to-one).
+
+   v3 ON-DEVICE RESULT (2026-06-17): FAILED. Every swept delete returned NOT_FOUND (`8b .. 09 83`),
+   ZERO successes, re-open still 0x86. Two problems: (1) our window sweeps minors BELOW the current
+   index, but the rotation index is LOW (0x00/0x01), so `floorMod(currentMinor - i, 0xFF)` wrapped
+   UP into 0xEF..0xFE — minors that were NEVER used. The real orphans are the LOW minors at/near
+   where we open (0x00, 0x01, ...). (2) The sweep is ~16 sequential control writes at ~400ms each =
+   ~6.5s of BLE per buzz — unacceptably slow even if it worked. THIS APPROACH IS WRONG; reverted /
+   superseded — do not ship a per-buzz multi-delete sweep.
+
+   WHAT WE NOW KNOW FOR CERTAIN (firmware HW0.0.2.9r.v3): DELETE_FILE(0x0B) is honoured ONLY for a
+   file that exists (proved: `0b 01 01` -> `8b 01 01 00` SUCCESS for the just-read activity file).
+   THREE delete targets all returned NOT_FOUND: the fresh rotated index, 0x09FF, and a downward
+   sweep of high minors. Yet a freshly-opened play minor 0x0900/0x0901 clearly EXISTS enough to
+   wedge the area, but a DELETE of it returns NOT_FOUND — i.e. a half-open / never-VERIFIED play
+   file is NOT a normally-addressable deletable file. STRONG IMPLICATION: you cannot delete your way
+   out of this from the app; the orphan is firmware-internal scratch, reclaimed only by the watch's
+   own GC (a watch reset / re-provision). So AUTO-RECOVERY via delete is likely a DEAD END on this
+   firmware.
+
+   PIVOT (next): stop trying to RECOVER and focus on PREVENTION (#1) so the area never wedges:
+   ensure every play PUT reaches EOF -> VERIFY -> SUCCESS (so the watch reclaims each slot) and is
+   NEVER left half-open by the next buzz / queue churn / a reconnect. With Bug 1 (storm) fixed the
+   leak rate is already much lower; the remaining work is to guarantee no play PUT is ever abandoned
+   before VERIFY. Also: a FULL btsnoop of the OFFICIAL app's buzz is still worth capturing to confirm
+   it never deletes and to see exactly how its play PUT completes (timing/sequencing) — see
+   tmp/bug3-buzz-capture-steps.md. The current wedged watch needs a one-time re-provision to recover.
    ON-DEVICE RESULT (2026-06-17, fresh APK): the prototype FIRES correctly but the experiment's
    answer is NO — deleting THIS handle does not reclaim the area. Per-buzz trace:
        WRITE  03 01 09 ...      PUT_FILE open 0x0901

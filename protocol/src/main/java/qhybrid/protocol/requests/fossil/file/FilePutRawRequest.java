@@ -111,28 +111,14 @@ public class FilePutRawRequest extends FossilRequest {
     private int busyRetries = 0;
     private boolean recoveringFromBusy = false;
 
-    // Bug 3 — auto-recover a wedged NOTIFICATION_PLAY area. If a PUT_FILE open on the play handle is
-    // rejected with NOT_ENOUGH_MEMORY (0x86) the watch's small notification-file area is FULL of
-    // orphaned play files (left by earlier puts that never reached VERIFY/SUCCESS). Today that fails
-    // fast and only a re-provision/watch-reset recovers it.
-    //
-    // On-device (2026-06-17) we learned DELETE_FILE(0x0B) is HONOURED on this firmware but ONLY for a
-    // handle that EXISTS: the activity read did `0b 01 01` -> `8b 01 01 00` (SUCCESS). Two earlier
-    // recovery targets both returned 0x83 = NOT_FOUND and left the area full:
-    //   v1 the FRESH rotated index (e.g. 0x0901) — never created;
-    //   v2 the area handle 0x09FF — not a real minor on this firmware.
-    // The orphans that actually EXIST are the PREVIOUSLY-USED play minors (0x0900, 0x0901, ... up to
-    // the last opened index). v3: on 0x86, DELETE-SWEEP a bounded window of prior minors on this
-    // major (each real one -> SUCCESS + reclaimed; each absent one -> NOT_FOUND, harmless), then
-    // retry the open ONCE. NARROW: only on 0x86, only the NOTIFICATION_PLAY major (0x09), one attempt.
-    // recoveringFromMemory suppresses the self-inflicted delete-acks (0x8B) so they aren't mis-read.
-    private static final int MEMORY_RECOVERY_THRESHOLD = 1;
-    /** Major byte of the NOTIFICATION_PLAY handle (0x09xx); see FilePutRequest rotation note. */
-    private static final int NOTIFICATION_PLAY_MAJOR = 0x09;
-    /** How many PRIOR play minors to delete-sweep on a 0x86 (bounded; rotation wraps % 0xFF). */
-    private static final int MEMORY_RECOVERY_SWEEP = 16;
-    private int memoryRetries = 0;
-    private boolean recoveringFromMemory = false;
+    // Bug 3 NOTE — a NOTIFICATION_PLAY open rejected with NOT_ENOUGH_MEMORY (0x86) means the watch's
+    // notification-file area is FULL of orphaned play files (puts that never reached VERIFY/SUCCESS).
+    // We do NOT try to auto-recover by deleting: on-device (2026-06-17, firmware HW0.0.2.9r.v3)
+    // DELETE_FILE(0x0B) is honoured ONLY for a file that exists, and THREE delete targets all
+    // returned NOT_FOUND (the fresh rotated index, the 0x09FF area handle, and a sweep of prior
+    // minors). A half-open play file is firmware-internal scratch the app cannot address, so it is
+    // reclaimed only by the watch's own GC (a reset/re-provision). The real fix is PREVENTION (never
+    // leave a play put half-open). So on 0x86 we fail fast (below). See FINDINGS "Bug 3".
 
     public FilePutRawRequest(short handle, byte[] file, FossilWatchAdapter adapter) {
         this.handle = handle;
@@ -204,14 +190,6 @@ public class FilePutRawRequest extends FossilRequest {
             case 9:
                 handleAbort(value);
                 break;
-            case 11:  // DELETE_FILE ack (0x8B) — Bug 3: one of our OWN delete-sweep frames (a prior
-                      // play minor) during memory-recovery. Ignore it (it targets a swept minor, not
-                      // this put's handle) and wait for the re-opened PUT(3) accept.
-                if (recoveringFromMemory) {
-                    PUTLOG.debug("FilePut[0x{}] delete-sweep ack during memory-recovery — ignoring (awaiting re-open accept)",
-                            String.format("%04X", handle));
-                }
-                break;
             default:
                 break;
         }
@@ -255,22 +233,10 @@ public class FilePutRawRequest extends FossilRequest {
             // watch's own file-area GC (a watch reset) does. Proper fix: delete/overwrite the play
             // file the way the official app does instead of PUT-ing a new file per buzz.
             //
-            // Bug 3 auto-recovery (v3): for a play-handle 0x86, DELETE-SWEEP the prior play minors
-            // (the orphans that actually exist) to reclaim the area, then retry the open ONCE before
-            // failing. Scoped narrow (only 0x86, only the 0x09xx major, bounded). Deleting the
-            // about-to-open index (v1) or the 0x09FF area handle (v2) both returned NOT_FOUND on
-            // this firmware; the prior used minors are the real orphans (verified 2026-06-17).
-            if (acceptCode == ResultCode.FIRMWARE_INTERNAL_ERROR_NOT_ENOUGH_MEMORY
-                    && ((handle >> 8) & 0xFF) == NOTIFICATION_PLAY_MAJOR
-                    && memoryRetries < MEMORY_RECOVERY_THRESHOLD) {
-                memoryRetries++;
-                recoveringFromMemory = true;
-                PUTLOG.warn("FilePut[0x{}] open NOT_ENOUGH_MEMORY — delete-sweep {} prior play minors + retry open ({}/{})",
-                        String.format("%04X", handle), MEMORY_RECOVERY_SWEEP,
-                        memoryRetries, MEMORY_RECOVERY_THRESHOLD);
-                sweepPriorPlayMinorsThenReopen();
-                return;
-            }
+            // Bug 3: a play-handle 0x86 = the notification-file area is wedged full of orphans. We do
+            // NOT auto-recover (delete is a dead end on this firmware — see the note above + FINDINGS);
+            // fail fast and let PREVENTION keep the area from wedging. A wedged watch needs a
+            // re-provision/reset to reclaim the area.
             PUTLOG.warn("FilePut[0x{}] PUT_FILE rejected: status {} ({}) — not transmitting; failing fast",
                     String.format("%04X", handle), acceptCode, acceptStatus);
             state = UploadState.FAILED;
@@ -278,7 +244,6 @@ public class FilePutRawRequest extends FossilRequest {
             return;
         }
         recoveringFromBusy = false;
-        recoveringFromMemory = false;
         state = UploadState.UPLOADING;
 
         WriteBatch transactionBuilder = adapter.getDeviceSupport().createWriteBatch("file upload");
@@ -447,41 +412,6 @@ public class FilePutRawRequest extends FossilRequest {
                 .write(CONTROL_CHARACTERISTIC, abort.array())
                 .write(CONTROL_CHARACTERISTIC, open.array())
                 .queue();
-    }
-
-    /**
-     * Bug 3 (v3) — DELETE-SWEEP the prior play minors (the orphaned files that fill the area) to
-     * reclaim it, then immediately re-send the PUT_FILE(3) open for THIS (rotated) play handle.
-     * Issues {@link #MEMORY_RECOVERY_SWEEP} FileControl DELETE_FILE(0x0B) frames for the minors just
-     * BELOW this handle's minor on the same major (wrapping mod 0xFF to match the rotation), skipping
-     * this handle's own minor. Each existing file is reclaimed (SUCCESS); absent ones return
-     * NOT_FOUND harmlessly. All frames are queued in order on 3dda0003; the watch's delete-acks
-     * (0x8B) are suppressed via {@link #recoveringFromMemory} (see handleResponse). Used only on a
-     * play-handle NOT_ENOUGH_MEMORY (0x86), bounded to one attempt.
-     */
-    private void sweepPriorPlayMinorsThenReopen() {
-        int major = (this.handle >> 8) & 0xFF;
-        int currentMinor = this.handle & 0xFF;
-        WriteBatch batch = adapter.getDeviceSupport().createWriteBatch("file sweep+reopen");
-        // Delete the SWEEP minors immediately below the current one (rotation wraps % 0xFF, so minors
-        // live in 0x00..0xFE). Skip the current minor (never created → NOT_FOUND, pointless).
-        for (int i = 1; i <= MEMORY_RECOVERY_SWEEP; i++) {
-            int minor = Math.floorMod(currentMinor - i, 0xFF);
-            short delHandle = (short) ((major << 8) | minor);
-            ByteBuffer del = ByteBuffer.allocate(3).order(ByteOrder.LITTLE_ENDIAN);
-            del.put((byte) 0x0B);
-            del.putShort(delHandle);
-            batch.write(CONTROL_CHARACTERISTIC, del.array());
-        }
-        // Re-send the original PUT_FILE(3) open (full file, offset 0) — same framing as the first try.
-        this.resumeOffset = 0;
-        ByteBuffer open = ByteBuffer.allocate(15).order(ByteOrder.LITTLE_ENDIAN);
-        open.put((byte) 0x03);
-        open.putShort(1, this.handle);
-        open.putInt(3, 0);
-        open.putInt(7, (int) this.totalLength);
-        open.putInt(11, (int) this.totalLength);
-        batch.write(CONTROL_CHARACTERISTIC, open.array()).queue();
     }
 
     /** ABORT_FILE(0x89): the watch aborted the transfer — honest failure (unless it's the ack to
