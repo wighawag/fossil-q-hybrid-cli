@@ -194,6 +194,46 @@ thread=<name>`. On the next recurrence this discriminates:
   window/key check itself is being defeated; re-open `isDuplicateAsyncEvent`.
 The INFO log is TEMPORARY — remove once the mechanism is pinned.
 
+NOTE: the protocol's slf4j logs reach logcat under the ABBREVIATED tag `q.p.FossilQAdapter` (the
+slf4j-android binding shortens the package), NOT `FossilQAdapter`. Filter with
+`adb logcat -d | grep async-action` or `-s q.p.FossilQAdapter`, not `-s FossilQAdapter`.
+
+### Bug 1 ROOT CAUSE FOUND (2026-06-18) — MULTIPLE live FossilQAdapter instances, NOT a de-dup bug
+
+The storm-diag log settled it. One press, 4 byte-identical frames `01 08 22 ...` (seq `0x22`):
+```
+async-action op=0x01 type=0x08 seq=0x22 dedup=false adapter=0720ad5a thread=ble-gatt
+async-action op=0x01 type=0x08 seq=0x22 dedup=false adapter=04a96b50 thread=ble-gatt
+async-action op=0x01 type=0x08 seq=0x22 dedup=false adapter=0ab54149 thread=ble-gatt
+async-action op=0x01 type=0x08 seq=0x22 dedup=false adapter=00873a4e thread=ble-gatt
+```
+FOUR DISTINCT `adapter=` identity hashes, each `dedup=false`, all on `ble-gatt`. So:
+- The de-dup is NOT broken. Each FossilQAdapter instance sees the frame exactly ONCE, so its
+  per-instance de-dup correctly returns false. The earlier 13x / 10x counts were just more leaked
+  instances; the count == number of live adapters at the time.
+- NOT binder-pool concurrency (H1 falsified): every copy is on the single `ble-gatt` thread — but a
+  DIFFERENT ble-gatt thread per leaked transport.
+- The real bug (H2 confirmed): multiple `FossilController`/`AndroidBleTransport`/`FossilQAdapter`
+  instances are alive at once, each with its OWN BluetoothGatt client still connected to the same
+  watch, its OWN `lastAsyncEventKey`, and its OWN ButtonGestureDetector. Every notification is
+  delivered to ALL of them, and the per-instance de-dup cannot collapse across instances. N live
+  adapters => one press => N effects (N buzzes, N rotation advances). This also matches the +400 ms
+  batch (N independent gesture-detector SINGLE timers) seen earlier.
+
+WHY the count grows after the watch sits unused: each drop/reconnect (or auto-connect link-up
+promotion) builds a fresh transport+controller but does NOT reliably tear down the previous one's
+GATT/notification wiring, so live adapters ACCUMULATE across reconnect cycles. "After not using it
+for a while" == several reconnect cycles == several leaked adapters == a bigger storm. A fresh
+install/restart resets to 1 (one beep), consistent with the observations.
+
+FIX DIRECTION (not yet applied): guarantee old controller/transport teardown so exactly ONE adapter
+is ever wired to the live link. Audit `WatchConnectionService` connect/promote/drop paths
+(`connectAndInit`, `onAutoConnectLinkUp`, `armAutoReconnect`, `cancelReconnect`, the drop callback)
+and `AndroidBleTransport.disconnect()` for: (a) a `getAndSet`-replaced controller whose
+`disconnect()`+`close()` is skipped or races, (b) a promoted auto-connect controller leaving the old
+foreground GATT open, (c) `setNotificationCallback`/`onEventJson` wiring on an adapter that outlives
+its intended link. The de-dup stays as the seatbelt but the cure is single-adapter ownership.
+
 ---
 
 ## 1. BLE Read Values from busctl are Decimal
