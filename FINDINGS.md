@@ -151,6 +151,49 @@ wedge the play area (Bug 3). FIX: `isDuplicateAsyncEvent` is now `synchronized` 
 check-and-update is atomic and the second copy is reliably dropped. The old "single-threaded on the
 BLE callback, no locking needed" comment was WRONG for this transport.
 
+### Bug 1 RECURRENCE (2026-06-18, OPEN) — 13x switch-button storm despite the synchronized de-dup
+
+After the watch sat unused for a while, ONE switch-button press produced a fresh storm. Logcat
+(tags FossilQ-Tracker FossilQ-Svc AndroidBleTransport FossilQAdapter):
+- 13 BYTE-IDENTICAL frames on `3dda0006`: `01 08 0d 01 01 0c 00 35 01 30 5a 00` (same opcode `01`,
+  type `08`, sequence `0d`, same trailing bytes) in ~11 ms (15:08:23.644 -> .655, ~0.85 ms apart).
+- 13 `Path-2 button press: 0x30` + 13 `Path-2 action: SwitchMultiFunctionMode` effects, fired as a
+  batch at ~+400 ms (15:08:24.059 -> .071) — i.e. via the gesture detector's 400 ms SINGLE timer,
+  with NO immediate DOUBLE emits. Rotation advanced ~13 times; the buzz PUTs THIS time succeeded
+  (`83 .. 00`, not `0x86`), so the play area was not full — the only fault was the 13x storm.
+
+WHAT IS RULED OUT (static analysis, 2026-06-18):
+- NOT a stale APK. The installed APK (2026-06-17 18:01) was built AFTER the synchronized-de-dup
+  commit cf87042; `javap -p` on the compiled `FossilQAdapter.class` in the build confirms
+  `private synchronized boolean isDuplicateAsyncEvent`. The fix IS in the running code.
+- NOT distinct presses. All 13 raw frames are identical incl. sequence `0d` (verified by counting
+  the pasted NOTIFY lines). The unit test `microAppButtonRepeats_sameSeq_varyingTrailingBytes_...`
+  feeds exactly this and correctly collapses 14 -> <=1, so the de-dup LOGIC is right for serial,
+  single-instance input.
+- NOT a logging artifact. The 13 effect lines are at INFO; only the "Dropping duplicate" line is at
+  DEBUG (suppressed by slf4j-android's default INFO level), so the 13 INFO effects are real, not
+  hidden drops.
+- A single working adapter MUST collapse 13 -> 1; two adapters each receiving all 13 would give 2,
+  not 13. So neither the single-adapter nor the simple dual-adapter model reproduces 13. The 13x
+  needs runtime facts the current logs hide (adapter instance id, callback thread, per-frame de-dup
+  decision). Structural note: each FossilController/FossilQAdapter has its OWN `lastAsyncEventKey`
+  AND its OWN ButtonGestureDetector, and BOTH the foreground and auto-connect controllers wire
+  `onEventJson` to the same `routeEventJson` — so the de-dup is per-adapter and CANNOT dedup across
+  instances. The ~+400 ms batch of 13 independent SINGLE timers is the fingerprint of either
+  concurrent (binder-pool) delivery to one adapter or several short-lived adapters mid-reconnect.
+
+NEXT (instrumentation shipped this commit): `handleButtonEvent` now logs at INFO, for every
+discrete-action async frame, `async-action op=.. type=.. seq=.. dedup=<bool> adapter=<identityHash>
+thread=<name>`. On the next recurrence this discriminates:
+- >1 distinct `adapter=` in one storm  -> multiple live FossilQAdapter instances (promotion/teardown
+  leak in the auto-connect path).
+- one `adapter=` but burst across >1 `thread=`  -> callbacks NOT serialized on the single ble-gatt
+  HandlerThread (the Handler arg to connectGatt ignored; binder-pool delivery — same family as the
+  original Bug 1 race, which `synchronized` alone may not fully cover here).
+- one adapter, one thread, repeated `dedup=false` for the same seq within the window  -> the
+  window/key check itself is being defeated; re-open `isDuplicateAsyncEvent`.
+The INFO log is TEMPORARY — remove once the mechanism is pinned.
+
 ---
 
 ## 1. BLE Read Values from busctl are Decimal

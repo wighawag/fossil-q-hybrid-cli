@@ -2021,9 +2021,27 @@ public class FossilQAdapter {
 
         // Drop a duplicate of the SAME frame (opcode+eventType+sequence+data) within the de-dup
         // window, but ONLY for discrete-action event types (the watch repeats these on one press).
-        if (isDedupedActionEvent(eventType) && isDuplicateAsyncEvent(value)) {
-            LOG.debug("Dropping duplicate async event (seq={}, {} bytes)", sequence, value.length);
-            return;
+        if (isDedupedActionEvent(eventType)) {
+            boolean duplicate = isDuplicateAsyncEvent(value);
+            // STORM-DIAG (temporary, INFO): the on-device 13x switch-button storm passes the de-dup
+            // even though every frame is byte-identical (same opcode/type/sequence) within ~11ms,
+            // which is impossible for a single adapter with a working synchronized de-dup. Log the
+            // discriminating runtime facts on EVERY action frame so a recurrence pins the cause:
+            //   - adapter = System.identityHashCode(this): if a storm shows >1 distinct adapter id,
+            //     multiple FossilQAdapter instances are receiving the same link (promotion leak).
+            //   - thread: if the same adapter id shows the burst across >1 thread name, callbacks
+            //     are NOT serialized on the single ble-gatt HandlerThread (binder-pool delivery).
+            //   - dedup=false repeated for one adapter+seq within the window means the window/key
+            //     check itself is being defeated.
+            // Remove once the mechanism is identified (see FINDINGS storm-diag).
+            LOG.info("async-action op=0x{} type=0x{} seq=0x{} dedup={} adapter={} thread={}",
+                    String.format("%02X", opCode), String.format("%02X", eventType),
+                    String.format("%02X", sequence), duplicate,
+                    String.format("%08x", System.identityHashCode(this)),
+                    Thread.currentThread().getName());
+            if (duplicate) {
+                return;
+            }
         }
         byte[] eventData = (value.length > 3) ? java.util.Arrays.copyOfRange(value, 3, value.length) : new byte[0];
 
