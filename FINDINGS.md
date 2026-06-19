@@ -234,6 +234,43 @@ and `AndroidBleTransport.disconnect()` for: (a) a `getAndSet`-replaced controlle
 foreground GATT open, (c) `setNotificationCallback`/`onEventJson` wiring on an adapter that outlives
 its intended link. The de-dup stays as the seatbelt but the cure is single-adapter ownership.
 
+### Bug 1 — QUANTIFIED + leak located (2026-06-18, second capture)
+
+Two presses in ONE app process (PID unchanged, 24862; NOT process restarts) showed SEVEN distinct,
+STABLE adapter ids, identical across both presses:
+```
+seq 0x27: 00873a4e 0199e060 04854c63 04a96b50 0720ad5a 0ab54149 0b21f919   (7)
+seq 0x28: 00873a4e 0199e060 04854c63 04a96b50 0720ad5a 0ab54149 0b21f919   (7, SAME ids)
+```
+Four of these ids were ALSO present the prior evening (4-adapter capture), so leaked adapters
+ACCUMULATE across reconnect cycles WITHIN a single app lifetime (4 -> 7). Each holds a live GATT to
+the watch and receives every notification on its own `ble-gatt` HandlerThread; one press -> 7 effects
+-> 7 buzz PUTs that re-wedged the play area (this capture's buzz opens returned `83 .. 86 00` =
+NOT_ENOUGH_MEMORY again, confirming the storm refills 0x0900).
+
+LEAK SITE (WatchConnectionService): a `FossilController`/`AndroidBleTransport` is constructed in only
+two places — `connectAndInit` (foreground) and `armAutoReconnect` (auto keep-alive). The teardown
+discipline is incomplete:
+- `armAutoReconnect` disconnects only the IMMEDIATELY preceding `autoReconnectController`
+  (`getAndSet`). Once an auto controller LINKS UP it is promoted into `controllerRef` and
+  `autoReconnectController` is set null (`onAutoConnectLinkUp`, ~L885), so a subsequent
+  `armAutoReconnect` disconnects null — the promoted-then-dropped controller is only ever torn down
+  if ANOTHER controller later replaces it in `controllerRef` via `getAndSet`.
+- The OS `connectGatt(autoConnect=true)` GATT can re-deliver `STATE_CONNECTED` and keep its
+  transport's HandlerThread alive/receiving notifications without re-running the app promote path,
+  so transports that are no longer the current `transportRef` keep getting NOTIFYs.
+Net: controllers that leave `controllerRef`/`autoReconnectController` without a guaranteed
+`disconnect()` (or whose underlying OS GATT keeps notifying) survive as live, notifying adapters.
+
+PROPOSED FIX (single-adapter ownership, defence in depth):
+1. Track EVERY live controller/transport in one registry; on any promotion/drop/forget, force
+   `disconnect()` on all that are not the current `transportRef`.
+2. Self-heal guard: when `onCharacteristicChanged` arrives on a transport that is not the service's
+   current transport, that transport disconnects itself (kills the leaked GATT at the source).
+3. Keep the per-adapter de-dup as the seatbelt.
+The storm-diag INFO log + the `dedup`/`adapter`/`thread` fields stay until the fix is verified to
+hold one adapter (expect: one `adapter=` id per storm, count returns to 1 effect per press).
+
 ---
 
 ## 1. BLE Read Values from busctl are Decimal
