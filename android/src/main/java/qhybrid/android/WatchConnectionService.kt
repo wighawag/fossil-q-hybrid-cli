@@ -363,6 +363,40 @@ class WatchConnectionService : Service() {
     private val controllerRef = AtomicReference<FossilController?>(null)
     private val transportRef = AtomicReference<AndroidBleTransport?>(null)
 
+    // SINGLE-ADAPTER-OWNERSHIP (Bug 1, FINDINGS "multiple live FossilQAdapter instances"): every
+    // transport we ever build is registered here so we can force-disconnect any that is NOT the
+    // current [transportRef]. The on-device storm was caused by leaked controllers/transports
+    // (auto-connect promote/drop paths failing to tear down the prior GATT) accumulating across
+    // reconnect cycles — each kept a live GATT delivering NOTIFYs to its OWN FossilQAdapter, so one
+    // press drove N effects (observed N grow 4 -> 7 in one app lifetime). The per-adapter de-dup
+    // cannot collapse across instances, so the cure is to guarantee exactly ONE live transport.
+    // Weak set: we never want this registry to keep a dead transport alive for GC.
+    private val liveTransports: MutableSet<AndroidBleTransport> =
+        java.util.Collections.newSetFromMap(java.util.WeakHashMap<AndroidBleTransport, Boolean>())
+
+    /** Register a freshly-built transport as the (intended) current one. */
+    private fun registerTransport(t: AndroidBleTransport) {
+        synchronized(liveTransports) { liveTransports.add(t) }
+    }
+
+    /**
+     * Force-disconnect EVERY tracked transport that is not [keep] (the current [transportRef]).
+     * Idempotent and safe to call from any connect/promote/drop/forget path. This is the proactive
+     * half of single-adapter ownership; the reactive half is the self-heal guard in
+     * [wireConnectionCallbacks] (a NOTIFY arriving on a non-current transport self-disconnects it).
+     */
+    private fun reapStaleTransports(keep: AndroidBleTransport?) {
+        val stale = synchronized(liveTransports) {
+            val s = liveTransports.filter { it !== keep }
+            s.forEach { liveTransports.remove(it) }
+            s
+        }
+        for (t in stale) {
+            Log.w(TAG, "reaping stale transport ${System.identityHashCode(t).toString(16)} (not current)")
+            runCatching { t.disconnect() }
+        }
+    }
+
     // Guards against overlapping connect attempts (single-link device).
     private val connecting = AtomicBoolean(false)
 
@@ -559,6 +593,8 @@ class WatchConnectionService : Service() {
         reconnectScheduler.shutdownNow()
         runCatching { controllerRef.getAndSet(null)?.disconnect() }
         transportRef.set(null)
+        // Single-adapter ownership: reap any remaining tracked transports on teardown.
+        reapStaleTransports(keep = null)
         worker.shutdownNow()
     }
 
@@ -719,6 +755,7 @@ class WatchConnectionService : Service() {
             // auto-connect controller (get-and-disconnect-old) so only ONE pending GATT exists.
             val transport = AndroidBleTransport(applicationContext)
             val controller = FossilController(transport)
+            registerTransport(transport)
             wireConnectionCallbacks(controller, transport, mac, auto = true)
             autoReconnectController.getAndSet(controller)?.let { runCatching { it.disconnect() } }
 
@@ -763,6 +800,10 @@ class WatchConnectionService : Service() {
         pendingReconnect.getAndSet(null)?.cancel(false)
         autoReconnectArmed.set(false)
         autoReconnectController.getAndSet(null)?.let { runCatching { it.disconnect() } }
+        // Single-adapter ownership: reap any tracked transport that is not the current link. On
+        // link-up the current transport is preserved (it == transportRef); on forget/disconnect
+        // transportRef is cleared by the caller, so keep=null there reaps everything.
+        reapStaleTransports(keep = transportRef.get())
     }
 
     /**
@@ -802,6 +843,11 @@ class WatchConnectionService : Service() {
             controllerRef.compareAndSet(controller, null)
             autoReconnectController.compareAndSet(controller, null)
             if (auto) autoReconnectArmed.set(false)
+            // Single-adapter ownership: this transport just died — close it and drop it from the
+            // registry so its FossilQAdapter/GATT can never re-deliver events (the OS autoConnect
+            // GATT could otherwise keep the HandlerThread alive and notifying).
+            synchronized(liveTransports) { liveTransports.remove(transport) }
+            runCatching { transport.disconnect() }
             // WP-ONBOARD: do NOT re-arm auto-reconnect while removing a watch (Remove watch),
             // otherwise the just-removed watch immediately reconnects and appears un-removed.
             if (!forgetting.get()) {
@@ -838,7 +884,22 @@ class WatchConnectionService : Service() {
         //   - type:"button" (0x08, button-aware) → trackerDispatch Path-2 router (Part B).
         // The 0x05 role check is a single pref read per event; music keeps working unchanged in the
         // MUSIC role (the default). NEVER both for one 0x05 event.
-        controller.onEventJson { json -> routeEventJson(json) }
+        //
+        // SINGLE-ADAPTER-OWNERSHIP self-heal guard (Bug 1): a leaked/zombie controller whose GATT is
+        // still alive will deliver events on a transport that is NOT the service's current
+        // [transportRef]. Drop the event AND disconnect that transport at the source, so a leaked
+        // adapter can never drive an effect and is reaped the moment it speaks. The legitimate
+        // current transport always passes this check.
+        controller.onEventJson { json ->
+            if (transport !== transportRef.get()) {
+                Log.w(TAG, "dropping event from stale transport " +
+                        "${System.identityHashCode(transport).toString(16)} — self-disconnecting")
+                synchronized(liveTransports) { liveTransports.remove(transport) }
+                runCatching { transport.disconnect() }
+                return@onEventJson
+            }
+            routeEventJson(json)
+        }
     }
 
     /**
@@ -884,6 +945,9 @@ class WatchConnectionService : Service() {
             transportRef.set(transport)
             autoReconnectController.compareAndSet(controller, null)
             autoReconnectArmed.set(false)
+            // Single-adapter ownership: this auto controller is now THE link; reap every other
+            // tracked transport (the prior foreground/auto GATTs that the storm leaked).
+            reapStaleTransports(keep = transport)
             try {
                 publish(WatchState.LinkState.INITIALIZING, mac = mac, message = "Connected. Initializing…")
                 controller.init(false)
@@ -917,8 +981,11 @@ class WatchConnectionService : Service() {
 
         val transport = AndroidBleTransport(applicationContext)
         val controller = FossilController(transport)
+        registerTransport(transport)
         controllerRef.getAndSet(controller)?.let { runCatching { it.disconnect() } }
         transportRef.set(transport)
+        // Single-adapter ownership: reap any other live transport (leaked auto-connect GATTs etc.).
+        reapStaleTransports(keep = transport)
 
         // HYBRID-AUTOCONNECT: user-initiated / first connects use the FAST bounded (autoConnect=false)
         // path — an unreachable watch fails honestly + quickly. The background keep-alive after a
@@ -1773,6 +1840,8 @@ class WatchConnectionService : Service() {
         worker.execute {
             runCatching { controllerRef.getAndSet(null)?.disconnect() }
             transportRef.set(null)
+            // Single-adapter ownership: intentional disconnect tears down EVERY tracked transport.
+            reapStaleTransports(keep = null)
             publish(
                 WatchState.LinkState.DISCONNECTED,
                 message = "Disconnected",
