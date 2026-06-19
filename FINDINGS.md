@@ -271,6 +271,30 @@ PROPOSED FIX (single-adapter ownership, defence in depth):
 The storm-diag INFO log + the `dedup`/`adapter`/`thread` fields stay until the fix is verified to
 hold one adapter (expect: one `adapter=` id per storm, count returns to 1 effect per press).
 
+### Bug 1 FIXED + VERIFIED on-device (2026-06-19, commit 3987450)
+
+The single-adapter-ownership fix shipped (`WatchConnectionService`: a `liveTransports` registry +
+`reapStaleTransports(keep)` wired into connect/promote/drop/disconnect/forget/onDestroy, plus a
+self-heal guard in the per-controller `onEventJson` that drops + self-disconnects any event arriving
+on a non-current transport). On-device, three bottom-button presses now give EXACTLY one effect each:
+```
+async-action op=0x01 type=0x08 seq=0x12 dedup=false adapter=000c81a2 thread=ble-gatt
+async-action op=0x01 type=0x08 seq=0x13 dedup=false adapter=000c81a2 thread=ble-gatt
+async-action op=0x01 type=0x08 seq=0x14 dedup=false adapter=000c81a2 thread=ble-gatt
+```
+ONE adapter id (`000c81a2`) across all presses (was 7), distinct sequences (genuine distinct
+presses, correctly `dedup=false`), one `Path-2 action` + one `multi-function advanced` + one buzz per
+press, rotation stepping cleanly `[0]->[1]->[2]` with no skips/dupes. The storm is GONE.
+
+LEFTOVER (separate, pre-existing): the buzz PUTs in this same session returned `83 .. 86 00`
+(NOT_ENOUGH_MEMORY) — the `0x0900` play area is still wedged/full from the EARLIER storms, so no
+buzz is felt even though one is sent. This is the documented "wedged play handle survives reconnect,
+needs re-provision" condition, NOT a regression of this fix. Now that the storm is gone the area will
+no longer refill, but it needs a one-time clear (re-provision / watch reset) to recover buzzing.
+
+FOLLOW-UP: the storm-diag INFO log in `handleButtonEvent` can be removed now that the fix is
+verified (or kept as a cheap seatbelt-visibility log — decide before the next release).
+
 ---
 
 ## 1. BLE Read Values from busctl are Decimal
