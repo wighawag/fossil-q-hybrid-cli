@@ -92,6 +92,17 @@ public class FossilController {
         return adapter.waitForInit(timeoutMs);
     }
 
+    /**
+     * Whether this controller has already reached INITIALIZED on the CURRENT link. Lets the host
+     * skip a redundant re-init when a duplicate auto-connect link-up is delivered for a link that is
+     * already up + initialized (re-running init issues a second device-info GET that the watch
+     * answers empty, aborting with "Cannot read firmware version"). See FINDINGS "double auto-connect
+     * promotion".
+     */
+    public boolean isInitialized() {
+        return adapter.getDeviceState() == qhybrid.protocol.model.DeviceState.INITIALIZED;
+    }
+
     /** Supply the settings used during full init (no disk loading in :protocol). */
     public void setSyncSettings(SyncSettings settings) {
         adapter.setSyncSettings(settings);

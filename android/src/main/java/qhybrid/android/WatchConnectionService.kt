@@ -374,14 +374,6 @@ class WatchConnectionService : Service() {
     private val liveTransports: MutableSet<AndroidBleTransport> =
         java.util.Collections.newSetFromMap(java.util.WeakHashMap<AndroidBleTransport, Boolean>())
 
-    // IDEMPOTENT PROMOTION (FINDINGS "double auto-connect promotion"): true while an auto-connect
-    // promotion is running init for the current link. A second/third STATE_CONNECTED for the same
-    // physical link (the OS autoConnect GATT can fire it repeatedly, and our accept(true) re-enters)
-    // must NOT start a concurrent init — the racing device-info GETs collide and the loser aborts
-    // with "Cannot read firmware version" + 30s timeouts. Set when a promotion begins init, cleared
-    // when it finishes/fails.
-    private val autoPromoteInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
-
     /** Register a freshly-built transport as the (intended) current one. */
     private fun registerTransport(t: AndroidBleTransport) {
         synchronized(liveTransports) { liveTransports.add(t) }
@@ -851,11 +843,6 @@ class WatchConnectionService : Service() {
             controllerRef.compareAndSet(controller, null)
             autoReconnectController.compareAndSet(controller, null)
             if (auto) autoReconnectArmed.set(false)
-            // If the current link died, release the promotion guard so the next genuine reconnect
-            // can promote + init (otherwise a dropped mid-init link would block all future inits).
-            if (transportRef.get() === transport || controllerRef.get() == null) {
-                autoPromoteInFlight.set(false)
-            }
             // Single-adapter ownership: this transport just died — close it and drop it from the
             // registry so its FossilQAdapter/GATT can never re-deliver events (the OS autoConnect
             // GATT could otherwise keep the HandlerThread alive and notifying).
@@ -953,24 +940,35 @@ class WatchConnectionService : Service() {
         worker.execute {
             // IDEMPOTENT PROMOTION (FINDINGS "double auto-connect promotion"): the OS autoConnect
             // GATT can deliver STATE_CONNECTED more than once for one physical link (and our own
-            // post-connect accept(true) re-enters here), so onAutoConnectLinkUp fires 2-3x per
-            // reconnect. Without a guard each one runs a full init() concurrently — the second
-            // init's device-info GET collides with the first and comes back empty, aborting init
-            // with "Cannot read firmware version" and then 30s ConfigurationPut/FileLookup timeouts.
-            // Skip a re-entrant promotion for a controller/transport that is ALREADY the current
-            // link (it is being or has been promoted): the first promotion owns the init.
+            // post-connect accept(true) re-enters here), so onAutoConnectLinkUp is queued 2-3x per
+            // reconnect. These bodies run STRICTLY SERIALLY on the single-thread [worker] (never
+            // concurrently), so the only fix needed is to SKIP a queued promotion whose link is no
+            // longer the one we should init:
+            //  (a) this transport already became the current link AND init already ran (a later copy
+            //      for the SAME controller) — skip the redundant re-init.
+            //  (b) this transport is no longer connected (it dropped while queued) — skip + clean up.
+            // A genuinely newer, connected transport falls through and is promoted. No cross-
+            // promotion in-flight flag (that earlier flag could get stuck and wedge INITIALIZING).
             if (controllerRef.get() === controller && transportRef.get() === transport) {
-                Log.d(TAG, "auto-connect link up for $mac — already promoted this controller, skipping re-entrant init")
+                Log.d(TAG, "auto-connect link up for $mac — already the current link, skipping redundant init")
                 return@execute
             }
-            // Only ONE promotion may run init at a time. A concurrent link-up (a second distinct
-            // auto-connect GATT) must not race a second init — disconnect its transport and bail; the
-            // in-flight promotion owns the link. The reap below + the self-heal guard clean up the
-            // loser.
-            if (!autoPromoteInFlight.compareAndSet(false, true)) {
-                Log.d(TAG, "auto-connect link up for $mac — another promotion is initializing; dropping this one")
+            if (!transport.isConnected()) {
+                Log.d(TAG, "auto-connect link up for $mac — transport no longer connected, skipping")
                 synchronized(liveTransports) { liveTransports.remove(transport) }
                 runCatching { transport.disconnect() }
+                return@execute
+            }
+            // If THIS controller is already INITIALIZED on a still-current link, a duplicate link-up
+            // must NOT re-run init (the second device-info GET comes back empty -> "Cannot read
+            // firmware version"). Just (re)run the on-link-up work idempotently.
+            if (controller.isInitialized() && transport.isConnected()) {
+                Log.d(TAG, "auto-connect link up for $mac — controller already initialized, skipping re-init")
+                if (controllerRef.get() !== controller) {
+                    controllerRef.getAndSet(controller)?.let { prev -> if (prev !== controller) runCatching { prev.disconnect() } }
+                    transportRef.set(transport)
+                    reapStaleTransports(keep = transport)
+                }
                 return@execute
             }
             Log.i(TAG, "auto-connect link up for $mac — promoting + initializing")
@@ -991,6 +989,24 @@ class WatchConnectionService : Service() {
                         Log.w(TAG, "auto-connect init may not have completed fully")
                     }
                 }
+                // init() can return WITHOUT initializing (e.g. a failed firmware-version read logs
+                // "Cannot read firmware version - aborting init" and returns; isFossilProtocol stays
+                // false). runOnLinkUp() only publishes INITIALIZED when isFossilProtocol() is true,
+                // so an aborted init would otherwise leave the UI STUCK in INITIALIZING forever.
+                // Treat a not-initialized result as a failed promotion: disconnect this link so the
+                // OS auto-connect re-establishes a fresh one (which usually inits cleanly), instead
+                // of stranding the user in INITIALIZING. See FINDINGS "double auto-connect promotion".
+                if (!controller.isInitialized()) {
+                    Log.w(TAG, "auto-connect init did NOT complete (no firmware/protocol) — dropping link to retry")
+                    publish(
+                        WatchState.LinkState.DISCONNECTED,
+                        message = "Reconnecting…",
+                        clearDeviceInfo = true,
+                    )
+                    runCatching { controller.disconnect() }
+                    controllerRef.compareAndSet(controller, null)
+                    return@execute
+                }
                 runOnLinkUp(controller, mac)
             } catch (e: Exception) {
                 Log.e(TAG, "auto-connect init failed", e)
@@ -1002,8 +1018,6 @@ class WatchConnectionService : Service() {
                 failPendingSync("Could not sync: ${e.message ?: e.javaClass.simpleName}")
                 runCatching { controller.disconnect() }
                 controllerRef.compareAndSet(controller, null)
-            } finally {
-                autoPromoteInFlight.set(false)
             }
         }
     }
@@ -1058,6 +1072,23 @@ class WatchConnectionService : Service() {
                 if (!controller.waitForInit(INIT_TIMEOUT_MS)) {
                     Log.w(TAG, "init may not have completed fully")
                 }
+            }
+            // Guard against a non-initializing init() leaving the UI stuck in INITIALIZING (see the
+            // auto-connect path + FINDINGS "double auto-connect promotion"): if init did not reach
+            // INITIALIZED (e.g. firmware read failed), drop the link so it can be re-established
+            // cleanly rather than stranding the user.
+            if (!controller.isInitialized()) {
+                Log.w(TAG, "init did NOT complete (no firmware/protocol) — dropping link to retry")
+                publish(
+                    WatchState.LinkState.DISCONNECTED,
+                    message = "Reconnecting…",
+                    clearDeviceInfo = true,
+                )
+                failPendingSync("Could not sync: watch did not initialize")
+                runCatching { controller.disconnect() }
+                controllerRef.compareAndSet(controller, null)
+                if (!forgetting.get()) resolveTargetMac()?.let { armAutoReconnect(it) }
+                return
             }
             runOnLinkUp(controller, mac)
         } catch (e: Exception) {

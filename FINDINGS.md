@@ -306,12 +306,26 @@ That is the source of the long delay before the first buzz lands and the log spa
 turns the collision into a clean `file get [0x0B00] completed with NO data` instead of a crash).
 The single-adapter self-heal fired correctly here too (`dropping event from stale transport`).
 
-FIX (IMPLEMENTED 2026-06-20): `onAutoConnectLinkUp` is now idempotent — (a) it skips a re-entrant
-promotion for a controller/transport that is already the current link, and (b) an
-`autoPromoteInFlight` AtomicBoolean lets only ONE promotion run init at a time: a concurrent
-link-up disconnects its transport and bails (the in-flight promotion owns the link). The guard is
-released in a `finally` and on a drop of the current link. Expected effect on-device: one init per
-reconnect, no `Cannot read firmware version` aborts, no 30s timeout stall before the first buzz.
+FIX v1 (2026-06-20, SUPERSEDED — caused a STUCK "Initializing…"): an `autoPromoteInFlight`
+AtomicBoolean to let only one promotion init at a time. WRONG: promotions already run STRICTLY
+SERIALLY on the single-thread `worker`, so there was no concurrency to guard — and the boolean could
+get stuck `true` (a promotion whose `finally` didn't run, or a drop-reset that missed), wedging the
+UI in INITIALIZING because no later promotion could init. Removed.
+
+FIX v2 (2026-06-20): two stateless, un-stuck-able guards instead:
+1. `FossilController.isInitialized()` (DeviceState == INITIALIZED). A duplicate link-up for a
+   controller that is ALREADY initialized on a still-current link SKIPS the re-init (re-running
+   init issues a second device-info GET the watch answers empty -> the abort). Plus skip a queued
+   promotion whose transport is no longer connected.
+2. THE ACTUAL STUCK-STATE ROOT CAUSE (pre-existing, made frequent by the double-init): `init()` can
+   RETURN WITHOUT INITIALIZING — a failed firmware-version read logs "Cannot read firmware version -
+   aborting init" and returns, leaving `isFossilProtocol()` false. `runOnLinkUp()` only publishes
+   INITIALIZED when `isFossilProtocol()` is true, so an aborted init STRANDED the UI in INITIALIZING
+   forever. Now BOTH the auto-connect promotion and the blocking `connectAndInit` check
+   `controller.isInitialized()` after init and, if not initialized, DROP the link (publish
+   DISCONNECTED "Reconnecting…" + disconnect + re-arm) so the OS auto-connect re-establishes a fresh
+   link that usually inits cleanly — instead of stranding the user. This is the fix for the on-device
+   "Stuck in Initializing…".
 Protocol + android unit tests green; APK assembles.
 
 SOFTWARE FIXES this trace DOES justify (real bugs, even if not the wedge root):
