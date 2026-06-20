@@ -167,8 +167,38 @@ downstream of the EARLIER storms' damage to the watch flash (NOT a regression of
 ROOT CAUSE: same as the play-area wedge — the pre-fix storms left the watch's file area broadly
 wedged. CURE: a WATCH-SIDE reset (coin-cell pull / hard power-off runs the firmware's file-area GC);
 a BLE re-pair alone does NOT reclaim it. App-side delete is a confirmed dead end on this firmware
-(Bug 3, reverted c2ca0b7). Now that the storm is fixed the area will not re-wedge, so this is a
-ONE-TIME reset.
+(Bug 3, reverted c2ca0b7).
+
+UPDATE (2026-06-20): the wedge RE-APPEARS even after a watch reset AND with the storm fix holding
+(one adapter). So "one-time reset" was WRONG — there is a SECOND source that re-wedges the area at
+one-adapter, one-buzz-per-press. Per the official-app analysis the rotation only frees space because
+EACH play PUT reaches VERIFY -> SUCCESS (that is when the watch reclaims the slot). So the re-wedge
+means play PUTs are STILL being left incomplete (orphaned). Open hypotheses to settle with a clean
+post-reset trace (helper: /tmp/wedge-trace.sh — tags qprff.FilePutRawRequest q.p.FossilQAdapter
+AndroidBleTransport FossilQ-Svc FossilQ-Tracker):
+  H-a. HALF-OPEN PUT ORPHANED BY A MID-FLIGHT DISCONNECT. On disconnect, FossilQAdapter's connection
+       callback does `currentFossilRequest = null; requestQueue.clear()` WITHOUT aborting a play PUT
+       that was opened (status 00) but had not yet VERIFY->SUCCESS. The watch keeps that half-open
+       file as an orphan. With frequent reconnects, one orphan leaks per interrupted buzz -> the
+       area refills over time. (Strongest candidate; matches "comes back after a while".)
+  H-b. ROTATION INDEX RESETS PER CONNECT. `notificationPlayIndex` is an INSTANCE field on
+       FossilQAdapter (=0), and a fresh adapter is built per connect, so every reconnect restarts the
+       rotation at 0x0900. The official `FileHandleManager` persists its index across the session.
+       Re-PUTting low indices is only harmful in combination with H-a (re-opening a slot that still
+       holds a prior orphan), but the reset is a real divergence from the official app.
+  H-c. A watch-driven sync handshake re-floods the area. Observed in the same buffer the watch
+       spontaneously sends `02 01 .. {"req":{"id":43,"buddyChallengeApp":{"type":"sync_pkg"}}}` on
+       3dda0006 (a watch-app sync_pkg REQUEST). If the app answers such requests (or a periodic
+       sync) with file PUTs that do not complete, that is an independent orphan source.
+ALSO STILL OPEN: ALARMS 0x0A00 VERIFY returns 0x05 (VERIFICATION_FAIL) AFTER a successful open +
+full data + CRC match, retried x3, on a freshly-reset-then-rewedged watch — confirming the wedge is
+broad (commit/verify fails area-wide, not just play-open).
+
+NEXT (decisive): a CLEAN capture starting right after a watch reset, watching the FIRST buzzes
+succeed (84 .. 00) and catching the EXACT event just before the FIRST 0x86/0x05 — specifically
+whether a disconnect/reconnect straddles a half-open play PUT (would confirm H-a). Then fix the
+root: abort/await the in-flight play PUT across disconnect (don't orphan it), persist the rotation
+index, and/or stop answering watch sync requests with non-completing PUTs.
 
 TWO APP-SIDE UX BUGS observed in the same session (separate from the watch wedge, both fixable):
 - The Alarm screen lets you LEAVE on a failed save. "Save as part of leaving the tab" reported the
