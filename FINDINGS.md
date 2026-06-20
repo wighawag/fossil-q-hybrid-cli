@@ -289,6 +289,31 @@ FIX (IMPLEMENTED 2026-06-20, commit pending):
 Tests: ResultCodeTest (signed-byte 0x83 -> NOT_FOUND), BuzzPlayOnlyTest asserts the play file header
 version is 2 (never 0) without running init. All protocol + android unit tests green.
 
+### WEDGE FIX CONFIRMED on-device + double-promotion fixed (2026-06-20)
+
+On-device after the version-seeding fix (trace /tmp/wedge-20260620-090035.log, ~16 min): the wedge
+is GONE. Across the whole session: 0 VERIFICATION_FAILs. Every play/alarm/config PUT shipped version
+02 and reached VERIFY -> SUCCESS (84 .. 00) EVEN ON CONNECTIONS WHERE INIT ABORTED (`Cannot read
+firmware version`). Buzzes were felt again (one after a delay, the next immediately). So a failed
+init no longer wedges PUTs — the seeded defaults carry the correct header version.
+
+The trace also exposed the REMAINING reliability issue (not the wedge): a DOUBLE (sometimes triple)
+`auto-connect link up` per reconnect. The OS autoConnect GATT delivers STATE_CONNECTED more than once
+for one physical link (and our accept(true) re-enters), so `onAutoConnectLinkUp` fired 2-3x and each
+ran a full init concurrently. The SECOND init's device-info GET collided with the first and came back
+empty -> `Cannot read firmware version - aborting init` -> 30s ConfigurationPut/FileLookup timeouts.
+That is the source of the long delay before the first buzz lands and the log spam (the NPE guard now
+turns the collision into a clean `file get [0x0B00] completed with NO data` instead of a crash).
+The single-adapter self-heal fired correctly here too (`dropping event from stale transport`).
+
+FIX (IMPLEMENTED 2026-06-20): `onAutoConnectLinkUp` is now idempotent — (a) it skips a re-entrant
+promotion for a controller/transport that is already the current link, and (b) an
+`autoPromoteInFlight` AtomicBoolean lets only ONE promotion run init at a time: a concurrent
+link-up disconnects its transport and bails (the in-flight promotion owns the link). The guard is
+released in a `finally` and on a drop of the current link. Expected effect on-device: one init per
+reconnect, no `Cannot read firmware version` aborts, no 30s timeout stall before the first buzz.
+Protocol + android unit tests green; APK assembles.
+
 SOFTWARE FIXES this trace DOES justify (real bugs, even if not the wedge root):
 1. NPE in FileGetRawRequest.handleResponse (line ~118): guard `fileData == null` before
    `crc.update(...)`; a short/empty device-info response must fail cleanly, not throw NPE on the BLE

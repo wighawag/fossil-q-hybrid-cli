@@ -374,6 +374,14 @@ class WatchConnectionService : Service() {
     private val liveTransports: MutableSet<AndroidBleTransport> =
         java.util.Collections.newSetFromMap(java.util.WeakHashMap<AndroidBleTransport, Boolean>())
 
+    // IDEMPOTENT PROMOTION (FINDINGS "double auto-connect promotion"): true while an auto-connect
+    // promotion is running init for the current link. A second/third STATE_CONNECTED for the same
+    // physical link (the OS autoConnect GATT can fire it repeatedly, and our accept(true) re-enters)
+    // must NOT start a concurrent init — the racing device-info GETs collide and the loser aborts
+    // with "Cannot read firmware version" + 30s timeouts. Set when a promotion begins init, cleared
+    // when it finishes/fails.
+    private val autoPromoteInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
+
     /** Register a freshly-built transport as the (intended) current one. */
     private fun registerTransport(t: AndroidBleTransport) {
         synchronized(liveTransports) { liveTransports.add(t) }
@@ -843,6 +851,11 @@ class WatchConnectionService : Service() {
             controllerRef.compareAndSet(controller, null)
             autoReconnectController.compareAndSet(controller, null)
             if (auto) autoReconnectArmed.set(false)
+            // If the current link died, release the promotion guard so the next genuine reconnect
+            // can promote + init (otherwise a dropped mid-init link would block all future inits).
+            if (transportRef.get() === transport || controllerRef.get() == null) {
+                autoPromoteInFlight.set(false)
+            }
             // Single-adapter ownership: this transport just died — close it and drop it from the
             // registry so its FossilQAdapter/GATT can never re-deliver events (the OS autoConnect
             // GATT could otherwise keep the HandlerThread alive and notifying).
@@ -938,6 +951,28 @@ class WatchConnectionService : Service() {
         mac: String,
     ) {
         worker.execute {
+            // IDEMPOTENT PROMOTION (FINDINGS "double auto-connect promotion"): the OS autoConnect
+            // GATT can deliver STATE_CONNECTED more than once for one physical link (and our own
+            // post-connect accept(true) re-enters here), so onAutoConnectLinkUp fires 2-3x per
+            // reconnect. Without a guard each one runs a full init() concurrently — the second
+            // init's device-info GET collides with the first and comes back empty, aborting init
+            // with "Cannot read firmware version" and then 30s ConfigurationPut/FileLookup timeouts.
+            // Skip a re-entrant promotion for a controller/transport that is ALREADY the current
+            // link (it is being or has been promoted): the first promotion owns the init.
+            if (controllerRef.get() === controller && transportRef.get() === transport) {
+                Log.d(TAG, "auto-connect link up for $mac — already promoted this controller, skipping re-entrant init")
+                return@execute
+            }
+            // Only ONE promotion may run init at a time. A concurrent link-up (a second distinct
+            // auto-connect GATT) must not race a second init — disconnect its transport and bail; the
+            // in-flight promotion owns the link. The reap below + the self-heal guard clean up the
+            // loser.
+            if (!autoPromoteInFlight.compareAndSet(false, true)) {
+                Log.d(TAG, "auto-connect link up for $mac — another promotion is initializing; dropping this one")
+                synchronized(liveTransports) { liveTransports.remove(transport) }
+                runCatching { transport.disconnect() }
+                return@execute
+            }
             Log.i(TAG, "auto-connect link up for $mac — promoting + initializing")
             controllerRef.getAndSet(controller)?.let { prev ->
                 if (prev !== controller) runCatching { prev.disconnect() }
@@ -967,6 +1002,8 @@ class WatchConnectionService : Service() {
                 failPendingSync("Could not sync: ${e.message ?: e.javaClass.simpleName}")
                 runCatching { controller.disconnect() }
                 controllerRef.compareAndSet(controller, null)
+            } finally {
+                autoPromoteInFlight.set(false)
             }
         }
     }
