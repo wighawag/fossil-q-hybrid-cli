@@ -21,6 +21,38 @@ import androidx.compose.runtime.setValue
 object LeaveGuardLogic {
     /** Pure: prompt before leaving iff the current screen has unsaved-to-watch changes. */
     fun shouldPrompt(pendingCount: Int): Boolean = pendingCount > 0
+
+    /** The outcome of a settled save-then-leave, decided purely from the SyncState. */
+    enum class SaveThenLeave {
+        /** Still in flight (SYNCING) or a stale/pre-request publish — keep waiting. */
+        WAIT,
+        /** The save reached the watch with no section errors — navigate away. */
+        LEAVE,
+        /** The save failed or was rejected by the watch — stay + surface the error. */
+        STAY_ERROR,
+    }
+
+    /**
+     * Pure decision for a save-then-leave that was armed at [armedAtMillis]. Mirrors the honesty
+     * contract of [SyncState]: a SUCCESS phase only means the sync PASS completed; a per-section
+     * failure ([hadSectionErrors]) means the WATCH rejected the write (e.g. alarm VERIFY 0x05/0x86)
+     * and must NOT be treated as a successful save. Only a clean SUCCESS leaves; an ERROR or a
+     * SUCCESS-with-section-errors stays so the user sees the failure and can retry. A terminal phase
+     * older than [armedAtMillis] is a stale prior sync and is ignored (WAIT).
+     */
+    fun saveThenLeave(
+        phase: SyncState.SyncPhase,
+        lastUpdatedMillis: Long,
+        armedAtMillis: Long,
+        hadSectionErrors: Boolean,
+    ): SaveThenLeave {
+        if (lastUpdatedMillis < armedAtMillis) return SaveThenLeave.WAIT
+        return when (phase) {
+            SyncState.SyncPhase.SUCCESS -> if (hadSectionErrors) SaveThenLeave.STAY_ERROR else SaveThenLeave.LEAVE
+            SyncState.SyncPhase.ERROR -> SaveThenLeave.STAY_ERROR
+            SyncState.SyncPhase.SYNCING, SyncState.SyncPhase.IDLE -> SaveThenLeave.WAIT
+        }
+    }
 }
 
 /**

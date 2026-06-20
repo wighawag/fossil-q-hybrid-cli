@@ -54,4 +54,67 @@ class LeaveGuardTest {
         guard.publish(pendingCount = 0) { /* no-op */ }
         assertFalse(guard.shouldPrompt)
     }
+
+    // ---- save-then-leave outcome (FINDINGS "surface watch-side save failure") ----------------
+
+    private val ARMED = 1_000L
+
+    @Test
+    fun saveThenLeave_cleanSuccess_leaves() {
+        assertEquals(
+            LeaveGuardLogic.SaveThenLeave.LEAVE,
+            LeaveGuardLogic.saveThenLeave(
+                SyncState.SyncPhase.SUCCESS, lastUpdatedMillis = ARMED + 5,
+                armedAtMillis = ARMED, hadSectionErrors = false,
+            ),
+        )
+    }
+
+    @Test
+    fun saveThenLeave_successWithSectionErrors_staysAndSurfaces() {
+        // The watch REJECTED the write (e.g. alarm VERIFY 0x05/0x86): the pass "succeeded" but a
+        // section failed — must NOT leave. This is the exact bug: a rejected save let the user leave.
+        assertEquals(
+            LeaveGuardLogic.SaveThenLeave.STAY_ERROR,
+            LeaveGuardLogic.saveThenLeave(
+                SyncState.SyncPhase.SUCCESS, lastUpdatedMillis = ARMED + 5,
+                armedAtMillis = ARMED, hadSectionErrors = true,
+            ),
+        )
+    }
+
+    @Test
+    fun saveThenLeave_errorPhase_stays() {
+        assertEquals(
+            LeaveGuardLogic.SaveThenLeave.STAY_ERROR,
+            LeaveGuardLogic.saveThenLeave(
+                SyncState.SyncPhase.ERROR, lastUpdatedMillis = ARMED + 5,
+                armedAtMillis = ARMED, hadSectionErrors = false,
+            ),
+        )
+    }
+
+    @Test
+    fun saveThenLeave_syncing_waits() {
+        assertEquals(
+            LeaveGuardLogic.SaveThenLeave.WAIT,
+            LeaveGuardLogic.saveThenLeave(
+                SyncState.SyncPhase.SYNCING, lastUpdatedMillis = ARMED + 5,
+                armedAtMillis = ARMED, hadSectionErrors = false,
+            ),
+        )
+    }
+
+    @Test
+    fun saveThenLeave_stalePriorTerminalPhase_waits() {
+        // A SUCCESS/ERROR published BEFORE the user armed save-then-leave must be ignored, otherwise
+        // an earlier auto-save's outcome could prematurely leave (or block) on a stale signal.
+        assertEquals(
+            LeaveGuardLogic.SaveThenLeave.WAIT,
+            LeaveGuardLogic.saveThenLeave(
+                SyncState.SyncPhase.SUCCESS, lastUpdatedMillis = ARMED - 1,
+                armedAtMillis = ARMED, hadSectionErrors = false,
+            ),
+        )
+    }
 }

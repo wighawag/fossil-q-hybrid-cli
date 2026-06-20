@@ -158,24 +158,38 @@ class MainActivity : ComponentActivity() {
         // FRESH terminal phase (a newer publish) and never to a stale SUCCESS/ERROR left by an
         // earlier sync that happened before the user tapped "Save".
         var saveLeaveSince by remember { mutableStateOf(0L) }
+        // A watch-side save failure to surface to the user (a failed/rejected "Save to watch",
+        // including a SUCCESS-with-section-errors). Null = no error dialog. The user's edits are
+        // already in the app DB, so this is informational + a retry prompt, not data loss.
+        var saveErrorMessage by remember { mutableStateOf<String?>(null) }
         // Observe the process-wide sync signal so the save-then-leave can react to its outcome.
         val syncStatus by qhybrid.android.sync.SyncState.status.collectAsStateWithLifecycle()
         // Resolve a pending save-then-leave once the sync settles: navigate on SUCCESS, stay on ERROR.
         androidx.compose.runtime.LaunchedEffect(syncStatus.phase, syncStatus.lastUpdatedMillis, navAfterSave) {
             val nav = navAfterSave ?: return@LaunchedEffect
-            // Ignore a terminal phase that predates the save request (stale prior sync).
-            if (syncStatus.lastUpdatedMillis < saveLeaveSince) return@LaunchedEffect
-            when (syncStatus.phase) {
-                qhybrid.android.sync.SyncState.SyncPhase.SUCCESS -> {
+            // Pure decision (unit-tested in LeaveGuardTest): a SUCCESS-with-section-errors means the
+            // WATCH rejected the write (FINDINGS "surface watch-side save failure") — it is NOT a
+            // successful save, so we keep the user here + surface the error instead of leaving.
+            when (qhybrid.android.sync.LeaveGuardLogic.saveThenLeave(
+                phase = syncStatus.phase,
+                lastUpdatedMillis = syncStatus.lastUpdatedMillis,
+                armedAtMillis = saveLeaveSince,
+                hadSectionErrors = syncStatus.hadSectionErrors,
+            )) {
+                qhybrid.android.sync.LeaveGuardLogic.SaveThenLeave.LEAVE -> {
                     navAfterSave = null
                     nav()
                 }
-                qhybrid.android.sync.SyncState.SyncPhase.ERROR -> {
-                    // Save failed (e.g. watch not reachable): cancel the deferred leave and keep the
-                    // user on the screen so they see the error and can retry — never switch silently.
+                qhybrid.android.sync.LeaveGuardLogic.SaveThenLeave.STAY_ERROR -> {
                     navAfterSave = null
+                    saveErrorMessage = when {
+                        syncStatus.hadSectionErrors -> syncStatus.lastResult?.errors?.firstOrNull()?.message
+                            ?: "The watch rejected the save. Your changes are saved in the app; try again."
+                        else -> syncStatus.errorMessage
+                            ?: "Could not save to the watch. Your changes are saved in the app; try again."
+                    }
                 }
-                else -> Unit // SYNCING / IDLE — keep waiting.
+                qhybrid.android.sync.LeaveGuardLogic.SaveThenLeave.WAIT -> Unit // keep waiting
             }
         }
         // Gate a navigation through the leave-prompt: defer it when the current screen has pending
@@ -390,6 +404,21 @@ class MainActivity : ComponentActivity() {
                                 TextButton(onClick = { pendingNav = null; nav() }) { Text("Leave") }
                                 TextButton(onClick = { pendingNav = null }) { Text("Cancel") }
                             }
+                        },
+                    )
+                }
+
+                // Surface a watch-side save failure (rejected/unreachable save, incl. a
+                // SUCCESS-with-section-errors). The user's edits are safe in the app DB; this is an
+                // honest "it didn't reach the watch" notice + retry, so a failed save is never
+                // silent. Dismiss keeps them on the editable screen to retry.
+                saveErrorMessage?.let { msg ->
+                    AlertDialog(
+                        onDismissRequest = { saveErrorMessage = null },
+                        title = { Text("Couldn't save to watch") },
+                        text = { Text(msg) },
+                        confirmButton = {
+                            TextButton(onClick = { saveErrorMessage = null }) { Text("OK") }
                         },
                     )
                 }

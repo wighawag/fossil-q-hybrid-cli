@@ -336,7 +336,19 @@ TWO APP-SIDE UX BUGS observed in the same session (separate from the watch wedge
   It should block-or-warn (keep the user on the screen / surface the failure) instead of leaving.
 - More generally: a save that fails at the watch (0x05/0x86) should surface a clear, persistent
   error in the UI, not just a logcat line + a transient state.
-These are candidate tasks; capturing here so they are not lost.
+
+FIXED (2026-06-20): the leave-guard treated the sync's terminal phase naively. ROOT: a watch-side
+REJECTION (alarm VERIFY 0x05/0x86) does NOT throw — the sync pass completes and returns a SyncResult
+WITH per-section errors, so SyncStateReporter publishes phase=SUCCESS (errors live in
+result.errors / hadSectionErrors, per the SyncState honesty note). MainActivity's save-then-leave
+effect only checked `phase == SUCCESS` and navigated away, so a rejected save let the user leave.
+Fix: extracted a pure `LeaveGuardLogic.saveThenLeave(phase, lastUpdatedMillis, armedAtMillis,
+hadSectionErrors)` that returns LEAVE only on a CLEAN success, and STAY_ERROR on a
+SUCCESS-with-section-errors OR an ERROR phase (and WAIT for SYNCING / stale-prior publishes). On
+STAY_ERROR the host keeps the user on the screen AND shows a "Couldn't save to watch" dialog with
+the section error message (the per-screen SyncProgressUi already showed a WARNING note for this
+case; the leave path was the gap). Covered by LeaveGuardTest.saveThenLeave_* (clean success leaves;
+success-with-section-errors stays; error stays; syncing/stale wait).
 
 ### Bug 1 (FIXED 2026-06-17) — de-dup race let one press switch the mode twice + storm the buzz
 
