@@ -139,6 +139,45 @@ on a buzz = the play area is full/wedged.
 See the deeper write-ups below: "Wedged play handle (0x86)" and the 2026-06-15 NOT_ENOUGH_MEMORY
 correction.
 
+### Wedged file area broadened: ALARMS VERIFY now fails 0x05 too, not just play 0x86 (2026-06-20)
+
+After the storm fix (one adapter, confirmed) the watch is in the "buttons trigger but nothing
+happens, and cannot save anything" state. Logcat shows TWO distinct file-area failures, both
+downstream of the EARLIER storms' damage to the watch flash (NOT a regression of the storm fix):
+
+1. BUZZ / play handle 0x09xx — PUT open rejected up-front:
+   `WRITE 03 07 09 .. 4f ..` -> `NOTIFY 83 07 09 86 00` (0x86 = NOT_ENOUGH_MEMORY). The rotation IS
+   working (handles step 0907, 0908, ...) but EVERY fresh index is rejected => the whole play ring
+   is full of orphans, nowhere to rotate to. Documented condition.
+
+2. ALARMS handle 0x0A — a NEW, different failure (worth noting): the open SUCCEEDS and data
+   transfers, but VERIFY fails:
+   ```
+   WRITE 03 00 0a .. 22 ..        -> 83 00 0a 00 00   (open ACCEPTED, status 00)
+   WRITE 00 00 0a .. (data)       -> 88 00 0a 00 22 .. (EOF, all 0x22 bytes received)
+   WRITE 04 00 0a (VERIFY)        -> 84 00 0a 05       (status 0x05 = VERIFICATION_FAIL)
+   ... VERIFY retried x3 (VERIFY_RETRY_THRESHOLD), all 05 ...
+   W alarm upload rejected by watch;  errors=[ALARMS: Alarm upload rejected by watch]
+   ```
+   So unlike the play 0x86 (rejected at OPEN), ALARMS is rejected at COMMIT/VERIFY (0x05). On a
+   wedged/full flash the bytes land but the watch can't finalize the file. This is why "cannot save
+   anything" — saves to OTHER handles fail at VERIFY, not just buzz at open. The protocol code is
+   behaving correctly (honest bounded retry then fail); the WATCH is rejecting.
+
+ROOT CAUSE: same as the play-area wedge — the pre-fix storms left the watch's file area broadly
+wedged. CURE: a WATCH-SIDE reset (coin-cell pull / hard power-off runs the firmware's file-area GC);
+a BLE re-pair alone does NOT reclaim it. App-side delete is a confirmed dead end on this firmware
+(Bug 3, reverted c2ca0b7). Now that the storm is fixed the area will not re-wedge, so this is a
+ONE-TIME reset.
+
+TWO APP-SIDE UX BUGS observed in the same session (separate from the watch wedge, both fixable):
+- The Alarm screen lets you LEAVE on a failed save. "Save as part of leaving the tab" reported the
+  ALARMS error but still navigated away, so a rejected save is silently lost from the user's POV.
+  It should block-or-warn (keep the user on the screen / surface the failure) instead of leaving.
+- More generally: a save that fails at the watch (0x05/0x86) should surface a clear, persistent
+  error in the UI, not just a logcat line + a transient state.
+These are candidate tasks; capturing here so they are not lost.
+
 ### Bug 1 (FIXED 2026-06-17) — de-dup race let one press switch the mode twice + storm the buzz
 
 The watch repeats one button press as ~2 byte-identical frames `01 08 <seq> ...` a few ms apart.
