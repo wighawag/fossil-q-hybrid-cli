@@ -200,6 +200,53 @@ whether a disconnect/reconnect straddles a half-open play PUT (would confirm H-a
 root: abort/await the in-flight play PUT across disconnect (don't orphan it), persist the rotation
 index, and/or stop answering watch sync requests with non-completing PUTs.
 
+### DECISIVE post-reset trace (2026-06-20) — the wedge is the WATCH FAILING TO COMMIT, not our orphans
+
+Clean capture starting right after a watch reset (/tmp/wedge-20260620-063150.log). It FALSIFIES the
+orphan-accumulation theory and re-points the root cause:
+- Post-reset, buzzes WORKED cleanly: play PUTs 0x0900,01,02,03 each reached EOF + CRC-match + VERIFY
+  -> 0x84 SUCCESS. Rotation working, one adapter, one effect per press. So our side is healthy.
+- Then at 08:27 (after a bad reconnect, see below) the SAME handle 0x0900 — which had SUCCEEDED 90
+  min earlier — now: open ACCEPTED (83 .. 00), data + CRC MATCH (88 .. 79/79), but VERIFY returns
+  `84 00 09 05` (VERIFICATION_FAIL) then `84 00 09 83` (NOT_FOUND, = ResultCode UNKNOWN_1 -125) on
+  the retries. The NEXT play (0x0901, a real WhatsApp notification) does the IDENTICAL thing.
+- The area was FRESHLY reset with only ~4 tiny files written. It is NOT full of orphans. The watch
+  simply CANNOT COMMIT a flash write anymore — the bytes land (CRC matches) but the file-system
+  commit/VERIFY fails. Same area-wide failure the ALARMS 0x0A VERIFY 0x05 showed.
+
+WHAT PRECEDED THE FAILURE (the actual trigger, 08:18-08:20): a BAD reconnect cycle:
+  - `Cannot read firmware version — aborting init`
+  - `NullPointerException: Attempt to get length of null array` at FileGetRawRequest.java:118
+    (`crc.update(this.fileData)` with fileData == null — the device-info GET returned no data).
+  - first link came up at `mtu=23` (MTU negotiation failed), then a messy DOUBLE auto-connect
+    promotion (two `auto-connect link up` + `armAutoReconnect` interleaved).
+  - `ConfigurationPutRequest` and `FileLookupAndGetRequest` TIMED OUT.
+  - Battery 29% throughout.
+
+REVISED ROOT CAUSE: the re-wedge is the WATCH ITSELF failing to commit flash writes, NOT our app
+leaking orphans. The trace shows every buzz cleanly reaching EOF+CRC and the rotation working; the
+watch's VERIFY/commit is what fails (0x05 then 0x83/NOT_FOUND on a slot it accepted the open for).
+Strongly correlated with a DEGRADED watch state: failed device-info read (NPE), mtu=23, timeouts,
+battery 29% (a hybrid's coin cell sags under BLE flash-write load; flash writes are the most
+power-hungry op and fail first). So a reset only helps until the watch degrades again. This is
+likely a LOW-BATTERY / failing-flash condition on THIS unit, not a pure software bug.
+
+SOFTWARE FIXES this trace DOES justify (real bugs, even if not the wedge root):
+1. NPE in FileGetRawRequest.handleResponse (line ~118): guard `fileData == null` before
+   `crc.update(...)`; a short/empty device-info response must fail cleanly, not throw NPE on the BLE
+   callback thread (which aborts init mid-way and leaves the link half-initialized).
+2. ResultCode lacks 0x83: VERIFY returned status 0x83 (131) which mapped to UNKNOWN_1 (-125) via a
+   sign-extension fluke. 0x83 = 131 = FIRMWARE_INTERNAL_ERROR_NOT_FOUND. The byte is read SIGNED
+   somewhere (0x83 -> -125) — mask to unsigned so it resolves to NOT_FOUND, not UNKNOWN_1.
+3. The double auto-connect promotion (two link-ups + re-arm) suggests the OS autoConnect GATT can
+   come up twice; the single-adapter reap handled it (`reaping stale transport`), but the init ran
+   twice and one aborted on the NPE. Make promotion idempotent / guard re-entrant init.
+4. UX (already noted): surface a watch-side save/buzz failure (0x05/0x83/0x86) to the user instead
+   of only a logcat line + stacktrace.
+
+OPERATIONAL: try the unit on a FULL charge before concluding it is a software wedge — the 29%
+battery + commit failures + MTU=23 are classic low-power BLE flash-write symptoms on these hybrids.
+
 TWO APP-SIDE UX BUGS observed in the same session (separate from the watch wedge, both fixable):
 - The Alarm screen lets you LEAVE on a failed save. "Save as part of leaving the tab" reported the
   ALARMS error but still navigated away, so a rejected save is silently lost from the user's POV.
