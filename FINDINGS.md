@@ -223,13 +223,65 @@ WHAT PRECEDED THE FAILURE (the actual trigger, 08:18-08:20): a BAD reconnect cyc
   - `ConfigurationPutRequest` and `FileLookupAndGetRequest` TIMED OUT.
   - Battery 29% throughout.
 
-REVISED ROOT CAUSE: the re-wedge is the WATCH ITSELF failing to commit flash writes, NOT our app
-leaking orphans. The trace shows every buzz cleanly reaching EOF+CRC and the rotation working; the
-watch's VERIFY/commit is what fails (0x05 then 0x83/NOT_FOUND on a slot it accepted the open for).
-Strongly correlated with a DEGRADED watch state: failed device-info read (NPE), mtu=23, timeouts,
-battery 29% (a hybrid's coin cell sags under BLE flash-write load; flash writes are the most
-power-hungry op and fail first). So a reset only helps until the watch degrades again. This is
-likely a LOW-BATTERY / failing-flash condition on THIS unit, not a pure software bug.
+REVISED ROOT CAUSE: the re-wedge is the WATCH failing to commit flash writes, NOT our app leaking
+orphans (every buzz cleanly reaches EOF+CRC; rotation works; the watch's VERIFY/commit is what
+fails: 0x05 then 0x83/NOT_FOUND on a slot it accepted the open for).
+
+BATTERY THEORY — RETRACTED (the data does NOT support it). Battery read FLAT 29% at 06:32, 08:19,
+08:19 (never dropping), and a 0x0800 activity-config PUT SUCCEEDED at 08:20:21, only ~6 min before
+the 0x0900 play PUT failed at 08:27 — if power could not commit flash, 0x0800 would have failed too.
+So "low battery" was pattern-matching, not evidence. Dropped.
+
+WHAT THE TIMELINE ACTUALLY SHOWS (adapter id = a fresh FossilQAdapter, so notificationPlayIndex
+reset to 0 on each reconnect):
+  - adapter 0ced84e2 (after 06:32 reconnect): buzzed 0900,0901,0902,0903 -> ALL SUCCESS.
+  - adapter 0c282b6d (after 08:18 reconnect): buzzed 0900 (reused), 0901 (reused) -> BOTH FAIL
+    (VERIFY 0x05 then 0x83/NOT_FOUND).
+  KEY: the index reset to 0 (reusing 0900) ALSO happened at 06:32 and SUCCEEDED. So index-reuse is
+  NOT sufficient to cause the failure. The ONLY difference in the failing era is that it followed a
+  BROKEN reconnect/init at 08:18: `Cannot read firmware version - aborting init`, the FileGetRawRequest
+  NPE, mtu=23, a DOUBLE auto-connect promotion, and ConfigurationPut/FileLookup TIMEOUTS. After that
+  half-initialized connection the watch's file subsystem rejects play commits.
+
+ROOT CAUSE — PROVEN, app-side (2026-06-20): a FAILED init leaves the supported-file-versions map
+EMPTY, so play PUTs go out with file-header VERSION 0x00 instead of 0x02, and the watch rejects the
+VERIFY. Byte-level proof from the same trace — the PUT-data command on 3dda0004, offset 3 = the file
+header version:
+  GOOD (08:00, 0x0903, committed):  `00 03 09 02 00 00 ...`  (version 0x02)
+  BAD  (08:27, 0x0900, FAILED):     `00 00 09 00 00 00 ...`  (version 0x00)
+The ONLY difference is version 0x02 -> 0x00, and that is exactly what produces 0x05 VERIFICATION_FAIL
+then 0x83 NOT_FOUND.
+
+THE CHAIN (two bugs compounding):
+1. At 08:18 the device-info GET hit a NullPointerException in FileGetRawRequest.handleResponse
+   (`crc.update(this.fileData)` with fileData == null), so `firmwareVersion` came back null.
+2. `FossilQAdapter.init()` then logged `Cannot read firmware version - aborting init` and RETURNED
+   EARLY — BEFORE `initFossilProtocol()`, which is where the SupportedFileVersions response is read
+   and `fossilAdapter.setSupportedFileVersion(...)` is called (FossilQAdapter:~1458).
+3. So `FossilWatchAdapter.fileVersions` stayed EMPTY for that connection.
+4. Every later play PUT does `getSupportedFileVersion(NOTIFICATION_PLAY)` ->
+   `fileVersions.getOrDefault(majorHandle, (short) 0)` -> 0. The play file header is built with
+   version 0, the watch accepts open + data (CRC matches) but REJECTS the commit at VERIFY.
+
+So it is NOT battery, NOT orphan accumulation, NOT flash wear, NOT plain index-reuse. It is a
+failed/half init leaving stale (empty) session state, and the play PUT path silently defaulting the
+file version to 0 instead of refusing to send. A watch reset "helped" only because it forced a fresh,
+CLEAN init that repopulated the versions — until the next bad reconnect emptied them again.
+
+FIX (clear, app-side):
+1. Stop the NPE: guard `fileData == null` in FileGetRawRequest before `crc.update(...)` (a short/
+   empty device-info response must fail cleanly, not throw on the BLE thread and abort init).
+2. Make init ROBUST / re-runnable: a failed firmware read must not leave the adapter "initialized"
+   with an empty versions map. Either retry init, or block file PUTs until init truly completed.
+3. DEFENSIVE (most important): the play/alarm PUT path must NOT silently send file version 0. If
+   `getSupportedFileVersion(handle) == 0` (versions not loaded), refuse to PUT (and trigger a
+   re-init) rather than uploading a version-0 file the watch will reject and that wastes a rotated
+   slot. Optionally seed the known defaults (NOTIFICATION_PLAY=2 etc.) so a missing read degrades
+   gracefully.
+4. The double auto-connect promotion at 08:18 (two `auto-connect link up` + re-arm) likely caused
+   the racing/aborted init; make promotion + init idempotent and non-re-entrant.
+5. ResultCode: add 0x83 = 131 = NOT_FOUND and read the status byte UNSIGNED (0x83 currently
+   sign-extends to UNKNOWN_1 -125).
 
 SOFTWARE FIXES this trace DOES justify (real bugs, even if not the wedge root):
 1. NPE in FileGetRawRequest.handleResponse (line ~118): guard `fileData == null` before
