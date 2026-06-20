@@ -268,20 +268,26 @@ failed/half init leaving stale (empty) session state, and the play PUT path sile
 file version to 0 instead of refusing to send. A watch reset "helped" only because it forced a fresh,
 CLEAN init that repopulated the versions — until the next bad reconnect emptied them again.
 
-FIX (clear, app-side):
-1. Stop the NPE: guard `fileData == null` in FileGetRawRequest before `crc.update(...)` (a short/
-   empty device-info response must fail cleanly, not throw on the BLE thread and abort init).
-2. Make init ROBUST / re-runnable: a failed firmware read must not leave the adapter "initialized"
-   with an empty versions map. Either retry init, or block file PUTs until init truly completed.
-3. DEFENSIVE (most important): the play/alarm PUT path must NOT silently send file version 0. If
-   `getSupportedFileVersion(handle) == 0` (versions not loaded), refuse to PUT (and trigger a
-   re-init) rather than uploading a version-0 file the watch will reject and that wastes a rotated
-   slot. Optionally seed the known defaults (NOTIFICATION_PLAY=2 etc.) so a missing read degrades
-   gracefully.
-4. The double auto-connect promotion at 08:18 (two `auto-connect link up` + re-arm) likely caused
-   the racing/aborted init; make promotion + init idempotent and non-re-entrant.
-5. ResultCode: add 0x83 = 131 = NOT_FOUND and read the status byte UNSIGNED (0x83 currently
-   sign-extends to UNKNOWN_1 -125).
+FIX (IMPLEMENTED 2026-06-20, commit pending):
+1. DONE — seed the file-header VERSIONS with the known on-device defaults (every PUT handle = 2:
+   0x04/0x06/0x08/0x09/0x0A/0x0C/0x0E) in `FossilWatchAdapter` at construction, BEFORE init reads
+   the live SupportedFileVersions. So even if init aborts, a play/alarm PUT ships the CORRECT header
+   version 2, not 0 — the watch commits it. This is the primary cure. Verified: decoded the watch's
+   SupportedFileVersions response in the trace (handles 04,08,09,0a,0c,06,0e all = version 2).
+2. DONE — stop the NPE: `FileGetRawRequest` now guards `fileData == null` before `crc.update(...)`
+   and throws a clean RuntimeException, so a short/empty device-info response fails honestly instead
+   of throwing a raw NPE on the BLE thread (which is what aborted init mid-way in the first place).
+3. DONE (belt-and-suspenders) — `FossilQAdapter` gates the play + alarm PUT paths on
+   `ensureFilePutsReady(handle)`: if the version for that handle is still 0 (init genuinely
+   incomplete and not seeded), it logs, best-effort re-runs `initialize(false)`, and skips the PUT
+   rather than sending a doomed version-0 file / burning a rotated slot.
+4. DONE — `ResultCode.fromCode` now masks to unsigned (`& 0xFF`), so 0x83 resolves to NOT_FOUND
+   (131) instead of the bogus UNKNOWN_1(-125), which is removed. Covered by ResultCodeTest.
+5. NOT YET — the double auto-connect promotion at 08:18 (two `auto-connect link up` + re-arm). The
+   single-adapter reap handled the leaked transports, and the version-seeding makes a half-init
+   harmless for PUTs, so this is now lower priority; still worth making promotion/init idempotent.
+Tests: ResultCodeTest (signed-byte 0x83 -> NOT_FOUND), BuzzPlayOnlyTest asserts the play file header
+version is 2 (never 0) without running init. All protocol + android unit tests green.
 
 SOFTWARE FIXES this trace DOES justify (real bugs, even if not the wedge root):
 1. NPE in FileGetRawRequest.handleResponse (line ~118): guard `fileData == null` before

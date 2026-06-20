@@ -114,6 +114,19 @@ public abstract class FileGetRawRequest extends FossilRequest {
                     throw new RuntimeException("major handle: " + majorHandle + "   expected: " + this.majorHandle);
                 }
 
+                // A short/empty response (EOF control frame with no preceding data frame on
+                // 3dda0004) leaves fileData == null. Fail CLEANLY instead of throwing a
+                // NullPointerException on the BLE callback thread: an unguarded NPE here aborts the
+                // whole init mid-way (observed 2026-06-20: the device-info GET returned no body, the
+                // NPE killed init before SupportedFileVersions was read, leaving the file-version
+                // map empty so every later NOTIFICATION_PLAY PUT shipped header version 0 and the
+                // watch rejected its VERIFY). See FINDINGS "ROOT CAUSE PROVEN".
+                if (this.fileData == null) {
+                    throw new RuntimeException("file get [0x"
+                            + String.format("%02X%02X", this.majorHandle, this.minorHandle)
+                            + "] completed with NO data (empty/short response)");
+                }
+
                 CRC32 crc = new CRC32();
                 crc.update(this.fileData);
 

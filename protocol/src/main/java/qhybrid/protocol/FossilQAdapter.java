@@ -392,6 +392,7 @@ public class FossilQAdapter {
             LOG.warn("Notification play requires Fossil protocol");
             return;
         }
+        if (!ensureFilePutsReady("notification play (" + packageName + ")")) return;
         byte[] notifData = buildOfficialNotificationFile(
                 "Notification", "fossil-q", "Notification", packageName);
         queueWrite(new FilePutRequest(
@@ -408,6 +409,45 @@ public class FossilQAdapter {
         int index = notificationPlayIndex;
         notificationPlayIndex = (index + 1) % 0xFF;   // 0..254, matches official (NumberExtensionKt %)
         return (short) ((FileHandle.NOTIFICATION_PLAY.getMajorHandle() << 8) | (index & 0xFF));
+    }
+
+    /**
+     * Whether the watch's supported-file VERSIONS are loaded for this connection (non-zero for
+     * NOTIFICATION_PLAY). They are populated by initFossilProtocol() reading SupportedFileVersions.
+     * If init aborted early (e.g. a failed firmware-version read), this is FALSE and any file PUT
+     * would ship header version 0, which the watch ACCEPTS at open + data but REJECTS at VERIFY
+     * (0x05 VERIFICATION_FAIL, then 0x83 NOT_FOUND) — the "wedged watch / cannot save" symptom, and
+     * it silently burns a rotated NOTIFICATION_PLAY slot. Callers MUST gate file PUTs on this and
+     * trigger a re-init instead of uploading a doomed version-0 file. See FINDINGS "ROOT CAUSE
+     * PROVEN".
+     */
+    private boolean filePutsReady() {
+        return fossilAdapter.getSupportedFileVersion(FileHandle.NOTIFICATION_PLAY) != 0;
+    }
+
+    /**
+     * Gate a file PUT on the supported-file versions being loaded for [handle] (a non-zero version).
+     * Logs + (best-effort) re-runs init when they are missing, and returns false so the caller skips
+     * the doomed PUT. Returns true when it is safe to proceed. The whole versions map is populated
+     * together by init, so a zero here means init did not complete — the same condition that ships a
+     * version-0 file the watch rejects at VERIFY.
+     */
+    private boolean ensureFilePutsReady(FileHandle handle, String what) {
+        if (fossilAdapter.getSupportedFileVersion(handle) != 0) {
+            return true;
+        }
+        LOG.warn("Refusing {} — supported-file versions not loaded (init incomplete); re-running init", what);
+        try {
+            initialize(false);
+        } catch (Exception e) {
+            LOG.warn("re-init after missing file versions failed: {}", e.getMessage());
+        }
+        return fossilAdapter.getSupportedFileVersion(handle) != 0;
+    }
+
+    /** Convenience overload for the NOTIFICATION_PLAY path. */
+    private boolean ensureFilePutsReady(String what) {
+        return ensureFilePutsReady(FileHandle.NOTIFICATION_PLAY, what);
     }
 
     /**
@@ -434,6 +474,7 @@ public class FossilQAdapter {
 
     public void playNotification(PlayNotificationRequest.VibrationType vibration, int hourDeg, int minDeg) {
         if (useFossilProtocol) {
+            if (!ensureFilePutsReady("notification play")) return;
             // Send lbl=12 notification file (matching official Fossil app format).
             // This triggers hand animation + vibration IF the watch has been
             // authenticated by the official Fossil app. Without authentication,
@@ -478,6 +519,7 @@ public class FossilQAdapter {
             LOG.warn("Vibration pattern selection requires Fossil protocol");
             return;
         }
+        if (!ensureFilePutsReady("notification play (pattern " + (vibePattern & 0xFF) + ")")) return;
         // 1. Upload filter with the specified pattern + hand position
         uploadNotificationFilterWithPattern(vibePattern, hourDeg, minDeg);
         // 2. Send the notification play file (the filter determines the vibration pattern + hand position)
@@ -643,6 +685,11 @@ public class FossilQAdapter {
             return;
         }
         LOG.info("Setting raw alarm data: {} bytes (hex: {})", rawAlarmData.length, bytesToHex(rawAlarmData));
+        if (!ensureFilePutsReady(FileHandle.ALARMS, "alarm upload")) {
+            LOG.warn("Alarm upload refused — file versions not loaded");
+            result.complete(false);
+            return;
+        }
         queueWrite(new FilePutRequest(FileHandle.ALARMS, rawAlarmData, fossilAdapter) {
             private boolean errorOccurred = false;
 

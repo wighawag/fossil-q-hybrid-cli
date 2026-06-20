@@ -80,6 +80,15 @@ public class BuzzPlayOnlyTest {
         int packageCrc = pb.getInt(playFileStart + 12 + 4); // lbl header (12) + messageId (4)
         assertEquals(BuzzPatterns.crcForPattern(5), packageCrc,
                 "play file packageCrc must match reserved buzz5 package CRC");
+
+        // WEDGE FIX (FINDINGS "ROOT CAUSE PROVEN"): the FilePutRequest header VERSION (payload
+        // bytes 2-3, LE) MUST be the real value (2), NOT 0 — even though this test never ran init
+        // (so the watch's SupportedFileVersions were never read). A version-0 file is accepted at
+        // open + data but REJECTED at VERIFY by the watch. The seeded defaults in FossilWatchAdapter
+        // guarantee version 2 here.
+        short fileVersion = pb.getShort(2);
+        assertEquals((short) 2, fileVersion,
+                "NOTIFICATION_PLAY file header version must be 2 (seeded), never 0");
     }
 
     private static void forceFossilProtocol(FossilQAdapter adapter) {

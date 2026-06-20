@@ -45,10 +45,13 @@ public enum ResultCode {
     FIRMWARE_INTERNAL_ERROR_INPUT_DATA_INVALID(139, false),
     FIRMWARE_INTERNAL_NOT_AUTHENTICATE(140, false),
     FIRMWARE_INTERNAL_SIZE_OVER_LIMIT(141, false),
-    UNKNOWN(-1, false),
+    UNKNOWN(-1, false);
 
-    // no clue what there one mean
-    UNKNOWN_1(-125, false);
+    // NOTE: the firmware-internal codes are 128..141 (0x80..0x8D). The wire status byte is a single
+    // unsigned byte, but Java `byte` is SIGNED, so e.g. 0x83 read as a byte is -125. fromCode()
+    // below masks to unsigned (& 0xFF) so 0x83 resolves to NOT_FOUND (131), NOT a bogus negative.
+    // (A former UNKNOWN_1(-125) entry existed only to "catch" that sign-extended 0x83 — removed,
+    // since masking fixes it at the source. See FINDINGS "ROOT CAUSE PROVEN".)
 
     final boolean success;
     final int code;
@@ -63,8 +66,12 @@ public enum ResultCode {
     }
 
     public static ResultCode fromCode(int code) {
+        // Mask to an unsigned byte so a sign-extended status (e.g. 0x83 read as a Java byte = -125)
+        // still resolves to its real code (0x83 = 131 = NOT_FOUND) instead of falling through to
+        // UNKNOWN. All real status values are a single byte (0..255), so this is always safe.
+        int unsigned = code & 0xFF;
         for (ResultCode resultCode : ResultCode.values()) {
-            if (resultCode.code == code) {
+            if (resultCode.code == unsigned) {
                 return resultCode;
             }
         }
