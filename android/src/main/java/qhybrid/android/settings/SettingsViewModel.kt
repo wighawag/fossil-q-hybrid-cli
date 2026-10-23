@@ -179,6 +179,8 @@ open class SettingsViewModel(
     private val vibration: VibrationSync = NoopVibrationSync,
     // WP-PULLSYNC: the manual "Sync all" seam (fake in tests).
     private val fullSync: FullSync = NoopFullSync,
+    // WP-TZSYNC: the manual "Sync time now" seam (fake in tests).
+    private val timeSync: TimeSync = NoopTimeSync,
     // WP-WATCHADMIN: the "remove / re-provision this watch" seam (fake in tests).
     private val watchAdmin: WatchAdminSync = NoopWatchAdminSync,
     // WP-DEFAULTS: the "apply defaults profile to this watch" seam (fake in tests).
@@ -299,6 +301,15 @@ open class SettingsViewModel(
     fun syncAll(): Boolean {
         if (uiState.value.activeWatch == null) return false
         return fullSync.syncAll()
+    }
+
+    /**
+     * WP-TZSYNC: force-push the phone's time + UTC offset to the active watch. No-op (false)
+     * without an active watch.
+     */
+    fun syncTime(): Boolean {
+        if (uiState.value.activeWatch == null) return false
+        return timeSync.syncTime()
     }
 
     // ---- remove / re-provision this watch (WP-WATCHADMIN) ---------------------
@@ -751,6 +762,7 @@ open class SettingsViewModel(
                         lyrionDiscovery = qhybrid.android.music.lyrion.SystemLyrionDiscovery(context = appContext),
                         vibration = ServiceVibrationSync(appContext),
                         fullSync = ServiceFullSync(appContext),
+                        timeSync = ServiceTimeSync(appContext),
                         watchAdmin = ServiceWatchAdminSync(
                             context = appContext,
                             removeFromDb = { mac -> WatchRepository(appContext).deleteWatchAndPromote(mac) },

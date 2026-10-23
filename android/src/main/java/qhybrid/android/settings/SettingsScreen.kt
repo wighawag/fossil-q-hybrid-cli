@@ -93,6 +93,7 @@ fun SettingsScreen(
         onSetVibration = vm::setVibrationStrength,
         onVibrate = vm::vibrateWatch,
         onSyncAll = vm::syncAll,
+        onSyncTime = vm::syncTime,
         onApplyDefaults = vm::applyDefaultsToActiveWatch,
         onClearAlarms = vm::clearAlarmsOnActiveWatch,
         onSetNudge = vm::setNudge,
@@ -186,6 +187,8 @@ fun SettingsContent(
     onVibrate: (Int) -> Boolean = { false },
     // WP-PULLSYNC: manual "Sync all" (full reconcile). No-op default for previews/tests.
     onSyncAll: () -> Boolean = { false },
+    // WP-TZSYNC: manual "Sync time now". No-op default for previews/tests.
+    onSyncTime: () -> Boolean = { false },
     // WP-DEFAULTS: manual "Apply defaults to this watch" (overwrite buttons + filter). No-op default.
     onApplyDefaults: () -> Boolean = { false },
     // WP-CLEARALARMS: manual "Clear all alarms" (delete + blank the watch). No-op default.
@@ -261,6 +264,7 @@ fun SettingsContent(
             WaypointsEntryCard(onOpenWaypoints)
             HorizontalDivider()
             SyncAllCard(state, progress, onSyncAll) { note = it }
+            SyncTimeCard(state, progress, onSyncTime) { note = it }
             HorizontalDivider()
             DefaultsEntryCard(onOpenDefaults)
             HorizontalDivider()
@@ -1047,6 +1051,41 @@ private fun SyncAllCard(
             enabled = progress.saveEnabled(state.hasActiveWatch),
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Sync all") }
+    }
+}
+
+// ---- WP-TZSYNC: manual "Sync time now" ---------------------------------------
+
+/**
+ * WP-TZSYNC: force-push the phone's time + time zone to the watch. The app already does this on
+ * every connect, on a time-zone/clock change, and when the UTC offset moves (DST); this is the
+ * manual override (e.g. to correct drift). Not covered by "Sync all" (time is not a SyncSection).
+ */
+@Composable
+private fun SyncTimeCard(
+    state: SettingsUiState,
+    progress: SyncProgressUi,
+    onSyncTime: () -> Boolean,
+    onNote: (String) -> Unit,
+) {
+    SettingCard("Time & time zone") {
+        Text(
+            "The watch time follows the phone automatically (on connect, on time-zone or clock " +
+                "changes, and on daylight-saving switches). Use this to force an update now. " +
+                "Connects first if needed.",
+            style = MaterialTheme.typography.labelSmall,
+        )
+        Button(
+            onClick = {
+                val ok = onSyncTime()
+                onNote(
+                    if (ok) "Sending the phone's time to the watch (as soon as it is connected)…"
+                    else "No active watch to sync.",
+                )
+            },
+            enabled = progress.saveEnabled(state.hasActiveWatch),
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("Sync time now") }
     }
 }
 

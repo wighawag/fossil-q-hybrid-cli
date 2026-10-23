@@ -5,8 +5,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.os.Binder
 import android.os.Build
@@ -42,6 +44,7 @@ import qhybrid.android.sync.SyncSettings
 import qhybrid.android.sync.SyncState
 import qhybrid.android.sync.SyncStateReporter
 import qhybrid.android.sync.Uploader
+import qhybrid.android.time.TimeSyncPolicy
 import qhybrid.protocol.FossilController
 import qhybrid.protocol.model.NotificationFilterEntry
 import java.util.concurrent.CompletableFuture
@@ -114,6 +117,14 @@ class WatchConnectionService : Service() {
         // the on-connect hook, and the permission (re-)grant in Setup.
         const val ACTION_REFRESH_CALENDAR = "qhybrid.android.action.REFRESH_CALENDAR"
         const val ACTION_DEVICE_APPEARED = "qhybrid.android.action.DEVICE_APPEARED"
+        // WP-TZSYNC: user "Sync time now": push the phone's time + UTC offset to the watch
+        // (connect-then-sync if the link is down; the on-connect hook pushes the time).
+        const val ACTION_SYNC_TIME = "qhybrid.android.action.SYNC_TIME"
+        // WP-TZSYNC: our own AlarmManager alarm at the zone's next DST transition (Android sends
+        // no broadcast for DST). Delivered only to the service's non-exported dynamic receiver.
+        private const val ACTION_DST_ALARM = "qhybrid.android.action.DST_ALARM"
+        // How long the DST-alarm receiver keeps the alarm wakelock after queueing the time push.
+        private const val DST_ALARM_HOLD_MS = 8_000L
         const val ACTION_STOP = "qhybrid.android.action.STOP"
         const val EXTRA_MAC = "mac"
         const val EXTRA_KEEP = "keep"
@@ -178,6 +189,12 @@ class WatchConnectionService : Service() {
             }
             ContextCompatStartForeground(context, intent)
         }
+
+        /**
+         * WP-TZSYNC: force-push the phone's current time + UTC offset to the watch (TimeConfigItem
+         * 0x000C). If the link is down this connects first; link-up always pushes the time.
+         */
+        fun syncTimeNow(context: Context) = start(context, ACTION_SYNC_TIME)
 
         /** Connect+init to [mac] (or the associated mac if null). */
         fun connectNow(context: Context, mac: String? = null) =
@@ -479,6 +496,65 @@ class WatchConnectionService : Service() {
     /** The provider observer; registered when READ_CALENDAR is granted, unregistered in onDestroy. */
     private var calendarObserver: ContentObserver? = null
 
+    // ---- WP-TZSYNC: keep the watch's time / UTC offset current while the link stays up ----
+
+    /** UTC offset (minutes) last pushed on the CURRENT link; null = not pushed yet on this link. */
+    private val lastPushedOffsetMinutes = AtomicReference<Int?>(null)
+
+    /** elapsedRealtime() of the last push on the CURRENT link (TIME_SET debounce); null = none. */
+    private val lastPushElapsed = AtomicReference<Long?>(null)
+
+    /**
+     * Backstop periodic offset check. Its executor clock pauses while the CPU is suspended, so it
+     * is NOT relied on for DST (that's the [armDstAlarm] AlarmManager alarm); it only catches
+     * anything the alarm/broadcasts missed while the phone is awake.
+     */
+    private var offsetCheckFuture: java.util.concurrent.ScheduledFuture<*>? = null
+
+    /** PendingIntent for the next-DST-transition alarm (null = not armed). Main thread only. */
+    private var dstAlarmIntent: PendingIntent? = null
+
+    /**
+     * Time-related broadcasts:
+     *  - TIMEZONE_CHANGED: forced push (and re-arm the DST alarm for the new zone's rules).
+     *  - TIME_SET: forced push, debounced (NITZ/NTP can fire it repeatedly).
+     *  - SCREEN_ON / USER_PRESENT: cheap check, push only if the offset moved.
+     *  - [ACTION_DST_ALARM] (our own AlarmManager alarm): check + re-arm, holding the alarm's
+     *    wakelock via goAsync() until the BLE write has had time to go out.
+     */
+    private val timeChangeReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val action = intent?.action ?: return
+            Log.i(TAG, "time broadcast: $action")
+            when (action) {
+                Intent.ACTION_TIMEZONE_CHANGED -> {
+                    // The framework resets each process's default TimeZone asynchronously on a zone
+                    // change; reset it ourselves so the push can't race it and send the OLD offset.
+                    runCatching { java.util.TimeZone.setDefault(null) }
+                    armDstAlarm()
+                    submitTimeSync(force = true, connectIfDown = false, reason = action)
+                }
+                Intent.ACTION_TIME_CHANGED ->
+                    submitTimeSync(force = true, connectIfDown = false, reason = action, debounceForce = true)
+                ACTION_DST_ALARM -> {
+                    val pending = goAsync()
+                    armDstAlarm()
+                    submitTimeSync(force = false, connectIfDown = false, reason = "DST alarm") {
+                        // Keep the CPU awake (alarm wakelock) a little longer so the queued BLE
+                        // config put actually goes out before the device can suspend again.
+                        runCatching {
+                            reconnectScheduler.schedule(
+                                { runCatching { pending.finish() } }, DST_ALARM_HOLD_MS, TimeUnit.MILLISECONDS,
+                            )
+                        }.onFailure { runCatching { pending.finish() } }
+                    }
+                }
+                else -> submitTimeSync(force = false, connectIfDown = false, reason = action)
+            }
+        }
+    }
+    private var timeChangeReceiverRegistered = false
+
     // ---- lifecycle ----------------------------------------------------------
 
     override fun onCreate() {
@@ -491,6 +567,8 @@ class WatchConnectionService : Service() {
         // registers if READ_CALENDAR is already granted; a later grant in Setup pokes
         // ACTION_REFRESH_CALENDAR which (re-)registers via ensureCalendarObserver().
         ensureCalendarObserver()
+        // WP-TZSYNC: follow zone/clock changes + DST flips while the link stays up.
+        registerTimeChangeWatch()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -518,6 +596,7 @@ class WatchConnectionService : Service() {
                     }
                 }
             }
+            ACTION_SYNC_TIME -> submitTimeSync(force = true, connectIfDown = true, reason = "user")
             ACTION_SYNC_NOW -> submitSync(
                 parseSections(intent),
                 forceProvision = intent?.getBooleanExtra(EXTRA_FORCE_PROVISION, false) == true,
@@ -587,6 +666,8 @@ class WatchConnectionService : Service() {
         calendarObserver?.let { runCatching { contentResolver.unregisterContentObserver(it) } }
         calendarObserver = null
         calendarScope.cancel()
+        // WP-TZSYNC: stop following time changes.
+        unregisterTimeChangeWatch()
         // HYBRID-AUTOCONNECT: tear down the background auto-connect keep-alive (cancels its pending
         // GATT so the controller won't silently reconnect) + stop the fallback scheduler.
         cancelReconnect()
@@ -685,6 +766,159 @@ class WatchConnectionService : Service() {
     // ---- work ----------------------------------------------------------------
 
     private fun isLinkUp(): Boolean = transportRef.get()?.isConnected() == true
+
+    // ---- WP-TZSYNC: time / UTC offset sync ------------------------------------
+
+    /**
+     * Follow phone time changes while the link stays up. Before this, the time was pushed ONLY on
+     * link-up, and the link is long-lived, so a zone change or DST flip left the watch showing the
+     * old offset until the next reconnect (hours or days). Triggers:
+     *  - TIMEZONE_CHANGED / TIME_SET broadcasts: push immediately.
+     *  - DST: Android sends NO broadcast, so an AlarmManager alarm ([armDstAlarm]) wakes the phone
+     *    (even in Doze) just after the zone's next transition and pushes if the offset moved.
+     *  - Backstops, push only if the offset moved (no BLE traffic otherwise): screen-on / unlock,
+     *    and a periodic check while awake.
+     */
+    private fun registerTimeChangeWatch() {
+        if (!timeChangeReceiverRegistered) {
+            val filter = IntentFilter().apply {
+                addAction(Intent.ACTION_TIMEZONE_CHANGED)
+                addAction(Intent.ACTION_TIME_CHANGED)
+                addAction(Intent.ACTION_SCREEN_ON)
+                addAction(Intent.ACTION_USER_PRESENT)
+                addAction(ACTION_DST_ALARM)
+            }
+            runCatching {
+                androidx.core.content.ContextCompat.registerReceiver(
+                    this, timeChangeReceiver, filter,
+                    androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED,
+                )
+                timeChangeReceiverRegistered = true
+            }.onFailure { Log.w(TAG, "time-change receiver registration failed", it) }
+        }
+        if (offsetCheckFuture == null) {
+            offsetCheckFuture = runCatching {
+                reconnectScheduler.scheduleWithFixedDelay(
+                    { submitTimeSync(force = false, connectIfDown = false, reason = "offset check") },
+                    TimeSyncPolicy.OFFSET_CHECK_INTERVAL_MS,
+                    TimeSyncPolicy.OFFSET_CHECK_INTERVAL_MS,
+                    TimeUnit.MILLISECONDS,
+                )
+            }.onFailure { Log.w(TAG, "offset check scheduling failed", it) }.getOrNull()
+        }
+        armDstAlarm()
+    }
+
+    /**
+     * (Re-)arm a Doze-proof, inexact AlarmManager alarm just after the current zone's next UTC-offset
+     * transition (no SCHEDULE_EXACT_ALARM needed; a few minutes late is fine). Delivered as
+     * [ACTION_DST_ALARM] to [timeChangeReceiver] (package-scoped + non-exported receiver). If the
+     * process is dead when it fires, nothing is lost: the link is down too, and link-up pushes.
+     */
+    private fun armDstAlarm() {
+        runCatching {
+            val am = getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+            dstAlarmIntent?.let { am.cancel(it) }
+            val at = TimeSyncPolicy.nextOffsetChangeMillis()
+            if (at == null) {
+                dstAlarmIntent = null
+                Log.i(TAG, "DST alarm: zone has no upcoming offset transition — not armed")
+                return
+            }
+            val pi = PendingIntent.getBroadcast(
+                this, 0, Intent(ACTION_DST_ALARM).setPackage(packageName),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+            am.setAndAllowWhileIdle(android.app.AlarmManager.RTC_WAKEUP, at, pi)
+            dstAlarmIntent = pi
+            Log.i(TAG, "DST alarm armed for ${java.time.Instant.ofEpochMilli(at)}")
+        }.onFailure { Log.w(TAG, "DST alarm arming failed", it) }
+    }
+
+    private fun unregisterTimeChangeWatch() {
+        offsetCheckFuture?.cancel(false)
+        offsetCheckFuture = null
+        dstAlarmIntent?.let { pi ->
+            runCatching { (getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager).cancel(pi) }
+        }
+        dstAlarmIntent = null
+        if (timeChangeReceiverRegistered) {
+            runCatching { unregisterReceiver(timeChangeReceiver) }
+            timeChangeReceiverRegistered = false
+        }
+    }
+
+    /**
+     * Push the time on the ble-worker if [TimeSyncPolicy] says so. [force] = a user request or a
+     * time-change broadcast; otherwise only when the offset differs from the last one pushed on this
+     * link. [debounceForce] (TIME_SET) drops the force if a push went out within
+     * [TimeSyncPolicy.TIME_SET_DEBOUNCE_MS]. With the link down: [connectIfDown] (user request)
+     * connects, and link-up pushes the time; otherwise nothing to do, since the next link-up pushes
+     * it anyway. [onDone] runs on the worker after the decision/push (or immediately if the task
+     * could not be submitted).
+     */
+    private fun submitTimeSync(
+        force: Boolean,
+        connectIfDown: Boolean,
+        reason: String,
+        debounceForce: Boolean = false,
+        onDone: (() -> Unit)? = null,
+    ) {
+        runCatching {
+            worker.execute {
+                try {
+                    val c = controllerRef.get()
+                    if (c != null && isLinkUp()) {
+                        val effectiveForce = force && (!debounceForce || TimeSyncPolicy.timeSetForces(
+                            lastPushElapsed.get()?.let { SystemClock.elapsedRealtime() - it },
+                        ))
+                        val current = TimeSyncPolicy.currentOffsetMinutes()
+                        if (TimeSyncPolicy.shouldPush(effectiveForce, lastPushedOffsetMinutes.get(), current)) {
+                            pushTime(c, reason)
+                        } else {
+                            Log.d(TAG, "time sync ($reason): offset unchanged (${current}min) — skip")
+                        }
+                        return@execute
+                    }
+                    if (!connectIfDown) {
+                        Log.d(TAG, "time sync ($reason): link down — will push on next connect")
+                        return@execute
+                    }
+                    val mac = resolveTargetMac()
+                    if (mac == null) {
+                        Log.w(TAG, "time sync ($reason): no associated watch")
+                        return@execute
+                    }
+                    Log.i(TAG, "time sync ($reason): link down — connecting (link-up pushes the time)")
+                    submitConnect(mac)
+                } finally {
+                    onDone?.invoke()
+                }
+            }
+        }.onFailure {
+            Log.w(TAG, "time sync ($reason) not submitted", it)
+            onDone?.invoke()
+        }
+    }
+
+    /** Push the phone's time + current UTC offset (TimeConfigItem 0x000C). On the ble-worker. */
+    private fun pushTime(controller: FossilController, reason: String) {
+        val offset = TimeSyncPolicy.currentOffsetMinutes()
+        runCatching { controller.syncTime() }
+            .onSuccess {
+                // syncTime() does not throw when the link has just dropped (queueWrite logs and
+                // returns), so only record the push if the link is still up; otherwise the next
+                // link-up pushes anyway.
+                if (isLinkUp()) {
+                    lastPushedOffsetMinutes.set(offset)
+                    lastPushElapsed.set(SystemClock.elapsedRealtime())
+                    Log.i(TAG, "time pushed to watch ($reason), utcOffset=${offset}min")
+                } else {
+                    Log.w(TAG, "time sync ($reason): link dropped during push — not recorded")
+                }
+            }
+            .onFailure { e -> Log.w(TAG, "time sync ($reason) failed", e) }
+    }
 
     /**
      * Resolve the MAC to connect-then-do against (Save / buzz / play while the link is down).
@@ -1146,10 +1380,12 @@ class WatchConnectionService : Service() {
                 // So a stale offset (e.g. provisioned with a briefly-wrong phone offset, or a
                 // DST flip) silently leaves the displayed time off by an hour until a re-provision
                 // (observed on-device 2026-06-14: 1h behind). A single small CONFIGURATION put is
-                // cheap and self-heals it. POTENTIAL OPTIMIZATION (later): only push when the
-                // phone's current UTC offset differs from the last value we pushed for this watch.
-                runCatching { controller.syncTime() }
-                    .onFailure { e -> Log.w(TAG, "on-connect time sync failed", e) }
+                // cheap and self-heals it. Always pushed on connect (also corrects watch drift);
+                // WP-TZSYNC: while the link then stays up, [registerTimeChangeWatch] keeps it
+                // current (zone/clock-change broadcasts, a DST alarm, and offset-only checks).
+                lastPushedOffsetMinutes.set(null)
+                lastPushElapsed.set(null)
+                pushTime(controller, "connect")
                 // A connect requested by an explicit Save-to-watch is about to run the sync via
                 // the on-connect hook below; clear the pending flag so the failure paths don't
                 // also publish an error. Pick up the TARGETED sections it requested (null = full

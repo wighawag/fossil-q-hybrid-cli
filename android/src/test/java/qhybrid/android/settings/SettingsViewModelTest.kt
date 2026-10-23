@@ -191,6 +191,11 @@ class SettingsViewModelTest : DbTestBase() {
         override fun syncAll(): Boolean { count++; return wired }
     }
 
+    private class FakeTimeSync(private val wired: Boolean = true) : TimeSync {
+        var count = 0
+        override fun syncTime(): Boolean { count++; return wired }
+    }
+
     private class FakeApplyDefaults(private val wired: Boolean = true) : ApplyDefaultsSync {
         var count = 0
         override fun applyDefaultsToActiveWatch(): Boolean { count++; return wired }
@@ -217,6 +222,7 @@ class SettingsViewModelTest : DbTestBase() {
         syncSource: FakeSyncStateSource = FakeSyncStateSource(),
         vibration: VibrationSync = FakeVibration(),
         fullSync: FullSync = FakeFullSync(),
+        timeSync: TimeSync = FakeTimeSync(),
         watchAdmin: WatchAdminSync = FakeWatchAdmin(),
         applyDefaults: ApplyDefaultsSync = FakeApplyDefaults(),
         clearAlarms: ClearAlarmsSync = FakeClearAlarms(),
@@ -230,6 +236,7 @@ class SettingsViewModelTest : DbTestBase() {
         lyrionDiscovery = discovery,
         vibration = vibration,
         fullSync = fullSync,
+        timeSync = timeSync,
         watchAdmin = watchAdmin,
         applyDefaults = applyDefaults,
         clearAlarms = clearAlarms,
@@ -439,6 +446,28 @@ class SettingsViewModelTest : DbTestBase() {
         awaitState(model.uiState) { !it.hasActiveWatch }
         assertFalse(model.syncAll())
         assertEquals(0, full.count)
+    }
+
+    // ---- manual "Sync time now" (WP-TZSYNC) ----------------------------------
+
+    @Test
+    fun syncTimeHitsSeamWithActiveWatch() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = true)) }
+        val time = FakeTimeSync(wired = true)
+        val model = vm(timeSync = time)
+        awaitState(model.uiState) { it.hasActiveWatch }
+        assertTrue(model.syncTime())
+        assertEquals(1, time.count)
+    }
+
+    @Test
+    fun syncTimeNoOpWithoutActiveWatch() {
+        runBlocking { watchDao.upsert(watch("AA:00:00:00:00:01", active = false)) }
+        val time = FakeTimeSync()
+        val model = vm(timeSync = time)
+        awaitState(model.uiState) { !it.hasActiveWatch }
+        assertFalse(model.syncTime())
+        assertEquals(0, time.count)
     }
 
     // ---- remove / re-provision this watch (WP-WATCHADMIN) --------------------
