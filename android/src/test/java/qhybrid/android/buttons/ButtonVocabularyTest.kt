@@ -109,7 +109,9 @@ class ButtonVocabularyTest {
             )
             assertTrue("missing label for $id", ButtonActions.isKnown(id))
         }
-        assertEquals(11, ButtonActions.ALL.size)
+        // + 6 HID key-press actions (SELFIE micro-app, one per advertised consumer usage).
+        assertEquals(17, ButtonActions.ALL.size)
+        assertTrue(ButtonActions.ALL.containsAll(ButtonActions.HID_KEY_ACTIONS))
         // WP-TRACKER: the two new button-aware single-press actions are selectable + labelled.
         assertTrue(ButtonActions.LOG_WAYPOINT in ButtonActions.ALL)
         assertTrue(ButtonActions.SWITCH_MULTI_FUNCTION_MODE in ButtonActions.ALL)
@@ -151,6 +153,9 @@ class ButtonVocabularyTest {
         assertEquals("RING_PHONE", ButtonActions.payloadName(ButtonActions.RING_PHONE))
         assertEquals("RING_PHONE", ButtonActions.payloadName(ButtonActions.LOG_WAYPOINT))
         assertEquals("RING_PHONE", ButtonActions.payloadName(ButtonActions.SWITCH_MULTI_FUNCTION_MODE))
+        // HID key-press actions are their own (wire-distinct) payloads.
+        assertEquals("HID_VOLUME_DOWN", ButtonActions.payloadName(ButtonActions.HID_VOLUME_DOWN))
+        assertEquals("HID_VOLUME_UP", ButtonActions.payloadName(ButtonActions.HID_VOLUME_UP))
     }
 
     @Test

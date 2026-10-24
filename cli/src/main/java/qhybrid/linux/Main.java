@@ -2237,7 +2237,9 @@ public class Main implements Runnable {
     @Command(name = "buttons", mixinStandardHelpOptions = true,
              description = "Set button functions. Available: forward_to_phone, stopwatch, date, music, " +
                      "volume_up, volume_down, step_goal, last_notification, second_timezone, ring_phone, " +
-                     "goal_tracking, alarm_toggle, 24hr, 24hr_seq, mode_toggle")
+                     "goal_tracking, alarm_toggle, 24hr, 24hr_seq, mode_toggle, " +
+                     "take_picture (= hid_volume_up), hid_volume_down, hid_play_pause, hid_next_track, " +
+                     "hid_previous_track, hid_mute (HID key press to the bonded host; non-volume-up HID keys unconfirmed)")
     static class ButtonsCmd implements Callable<Integer> {
         @ParentCommand Main parent;
 
@@ -2325,6 +2327,14 @@ public class Main implements Runnable {
                 case "last_notification", "notification", "notif" -> ConfigPayload.LAST_NOTIFICATION;
                 case "second_timezone", "timezone2", "tz2" -> ConfigPayload.SECOND_TIMEZONE;
                 case "ring_phone", "ring" -> ConfigPayload.RING_PHONE;
+                // HID consumer key press sent straight to the bonded host (FINDINGS §26).
+                // hid_volume_up == the official "take a picture" entry (confirmed); others unconfirmed.
+                case "take_picture", "selfie", "camera", "hid_volume_up", "hid_vol_up" -> ConfigPayload.HID_VOLUME_UP;
+                case "hid_volume_down", "hid_vol_down" -> ConfigPayload.HID_VOLUME_DOWN;
+                case "hid_play_pause", "hid_play" -> ConfigPayload.HID_PLAY_PAUSE;
+                case "hid_next_track", "hid_next" -> ConfigPayload.HID_NEXT_TRACK;
+                case "hid_previous_track", "hid_prev" -> ConfigPayload.HID_PREVIOUS_TRACK;
+                case "hid_mute" -> ConfigPayload.HID_MUTE;
                 default -> null;
             };
             if (p != null) return ButtonConfigBuilder.entryFrom(p);
@@ -2351,7 +2361,9 @@ public class Main implements Runnable {
             System.err.printf("Unknown button function '%s' for %s button.%n", name, position);
             System.err.println("Available: forward_to_phone, stopwatch, date, music, volume_up, " +
                     "volume_down, step_goal, goal_tracking, alarm_toggle, last_notification, " +
-                    "second_timezone, ring_phone, 24hr, 24hr_seq, mode_toggle, or combine with + (e.g. second_timezone+date+alarm_toggle)");
+                    "second_timezone, ring_phone, 24hr, 24hr_seq, mode_toggle, take_picture, hid_volume_up, " +
+                    "hid_volume_down, hid_play_pause, hid_next_track, hid_previous_track, hid_mute, " +
+                    "or combine with + (e.g. second_timezone+date+alarm_toggle)");
             return null;
         }
     }

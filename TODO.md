@@ -95,9 +95,13 @@ Watch: Fossil Q Commuter (HW.0.0), Firmware HW0.0.2.9r.v3, Fossil protocol (2.x)
   report on char `0x2a4d` (handle 0x007a), `08`=key-down / `00`=up (NOT a `3dda0006` event). The
   config entry carries the HID usage byte `8c 01 <usage>` (E9=Vol+, EA=Vol-, and the Report Map also
   advertises B5 next, B6 prev, CD play/pause, E2 mute).
-  - [ ] Add a `ConfigPayload.TAKE_PICTURE` (SELFIE) entry: copy VOLUME_UP bytes, set declId
-    `01 01 10 00`, RECOMPUTE the CRC (do not copy VOLUME_UP's). Add a CLI keyword.
-  - [ ] FEATURE: configurable HID key. Expose a button choice in the app whose HID usage byte is
+  - [x] Add a TAKE_PICTURE (SELFIE) entry: `ConfigPayload.HID_VOLUME_UP`, built by
+    `HidKeyPayload` (VOLUME_UP template, declId `01 01 10 00`, CRC recomputed). Golden test proves the
+    builder reproduces the captured VOLUME_UP/VOLUME_DOWN entries byte-for-byte. CLI: `take_picture`.
+  - [~] FEATURE: configurable HID key. IMPLEMENTED (`ConfigPayload.HID_*`, CLI `hid_*`, Android
+    "Key press: ..." actions, non-volume-up labelled experimental) but the round-trip below is STILL
+    PENDING on hardware: press a `HID_VOLUME_DOWN` button and confirm usage `EA` (report byte `10`).
+    Original note: Expose a button choice in the app whose HID usage byte is
     user-selectable (default `E9` = volume up). Build the entry with the chosen usage at offsets
     51 & 64 (`8c 01 <usage>`). GATED on the round-trip experiment in FINDINGS §26c (confirm the
     firmware honors an arbitrary usage byte before shipping; menu limited to the advertised usages

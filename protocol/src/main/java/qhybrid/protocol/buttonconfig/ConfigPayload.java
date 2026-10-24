@@ -77,6 +77,17 @@ public enum ConfigPayload {
             new byte[]{(byte) 0x01, (byte) 0x02, (byte) 0x1C, (byte) 0x00},
             new byte[]{(byte) 0x01, (byte) 0x00, (byte) 0x01, (byte) 0x02, (byte) 0x1C, (byte) 0x3E, (byte) 0x00, (byte) 0x00, (byte) 0x00, (byte) 0x01, (byte) 0x00, (byte) 0x06, (byte) 0x00, (byte) 0x02, (byte) 0x00, (byte) 0x00, (byte) 0x07, (byte) 0x00, (byte) 0x01, (byte) 0x01, (byte) 0x27, (byte) 0x00, (byte) 0x89, (byte) 0x05, (byte) 0x01, (byte) 0x07, (byte) 0xB0, (byte) 0x08, (byte) 0x00, (byte) 0xB0, (byte) 0x08, (byte) 0x00, (byte) 0xB0, (byte) 0x08, (byte) 0x00, (byte) 0x08, (byte) 0x01, (byte) 0x05, (byte) 0x00, (byte) 0x89, (byte) 0x05, (byte) 0x01, (byte) 0x07, (byte) 0xF1, (byte) 0x04, (byte) 0x00, (byte) 0xF1, (byte) 0x04, (byte) 0x00, (byte) 0xF1, (byte) 0x04, (byte) 0x00, (byte) 0x08, (byte) 0x01, (byte) 0x50, (byte) 0x00, (byte) 0x01, (byte) 0x00, (byte) 0x0B, (byte) 0xD9, (byte) 0xCF, (byte) 0xDA}
     ),
+    // ---- HID consumer key press (SELFIE micro-app, declId 4097). See HidKeyPayload / FINDINGS §26.
+    // The watch emits a standard HID-over-GATT key press to the bonded phone (no app involvement),
+    // so e.g. a volume key triggers the phone camera shutter. All share header 01 01 10 00, so
+    // fromId(4097) resolves to the first of them (HID_VOLUME_UP). Only HID_VOLUME_UP is the
+    // on-wire-confirmed "take a picture" entry; the other usages are unconfirmed (FINDINGS §26c).
+    HID_VOLUME_UP("HID key: volume up (take picture)", HidKeyPayload.header(), HidKeyPayload.data(HidKeyPayload.HidKey.VOLUME_UP)),
+    HID_VOLUME_DOWN("HID key: volume down", HidKeyPayload.header(), HidKeyPayload.data(HidKeyPayload.HidKey.VOLUME_DOWN)),
+    HID_PLAY_PAUSE("HID key: play/pause", HidKeyPayload.header(), HidKeyPayload.data(HidKeyPayload.HidKey.PLAY_PAUSE)),
+    HID_NEXT_TRACK("HID key: next track", HidKeyPayload.header(), HidKeyPayload.data(HidKeyPayload.HidKey.NEXT_TRACK)),
+    HID_PREVIOUS_TRACK("HID key: previous track", HidKeyPayload.header(), HidKeyPayload.data(HidKeyPayload.HidKey.PREVIOUS_TRACK)),
+    HID_MUTE("HID key: mute", HidKeyPayload.header(), HidKeyPayload.data(HidKeyPayload.HidKey.MUTE)),
     RING_PHONE(
             "ring phone",  // Identical to FORWARD_TO_PHONE, but handled differently in FossilWatchAdapter
             new byte[]{(byte) 0x01, (byte) 0x01, (byte) 0x0C, (byte) 0x00},

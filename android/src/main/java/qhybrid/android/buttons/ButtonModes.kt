@@ -195,6 +195,30 @@ object ButtonActions {
      *  mode. Pure app-side state; wire-identical to RING_PHONE. */
     const val SWITCH_MULTI_FUNCTION_MODE = "SWITCH_MULTI_FUNCTION_MODE"
 
+    // ---- HID key press: the watch acts as a Bluetooth keyboard/remote key (FINDINGS §26) -------
+    /**
+     * The button emits a standard HID consumer key press straight to the bonded phone (SELFIE
+     * micro-app, [qhybrid.protocol.buttonconfig.HidKeyPayload]). The OS handles it like a key on a
+     * Bluetooth remote: no app-side handling, it works even when this app is not running, and a
+     * volume key acts as the shutter in the phone camera app. Unlike [VOLUME_UP]/[VOLUME_DOWN]
+     * (which send a Fossil event that THIS APP turns into a media-volume change), these are real
+     * key events. Ids equal their [qhybrid.protocol.buttonconfig.ConfigPayload] names.
+     *
+     * Only [HID_VOLUME_UP] (the official "take a picture" entry) is confirmed on the wire; the
+     * others reuse that entry with a different HID usage byte (FINDINGS §26c, unconfirmed).
+     */
+    const val HID_VOLUME_UP = "HID_VOLUME_UP"
+    const val HID_VOLUME_DOWN = "HID_VOLUME_DOWN"
+    const val HID_PLAY_PAUSE = "HID_PLAY_PAUSE"
+    const val HID_NEXT_TRACK = "HID_NEXT_TRACK"
+    const val HID_PREVIOUS_TRACK = "HID_PREVIOUS_TRACK"
+    const val HID_MUTE = "HID_MUTE"
+
+    /** The HID key-press actions, in display order. */
+    val HID_KEY_ACTIONS = listOf(
+        HID_VOLUME_UP, HID_VOLUME_DOWN, HID_PLAY_PAUSE, HID_NEXT_TRACK, HID_PREVIOUS_TRACK, HID_MUTE,
+    )
+
     // ---- retained legacy aliases (NOT shown; kept so old DB rows still decode/compile) --------
     /** @deprecated redundant with [RING_PHONE] (identical wire bytes). Legacy rows only. */
     const val FORWARD_TO_PHONE = "FORWARD_TO_PHONE"
@@ -227,7 +251,7 @@ object ButtonActions {
         RING_PHONE,
         LOG_WAYPOINT,
         SWITCH_MULTI_FUNCTION_MODE,
-    )
+    ) + HID_KEY_ACTIONS
 
     /**
      * WP-TRACKER — the Path-2 actions that ride the button-aware 0x08 `type:"button"` RING_PHONE
@@ -286,12 +310,18 @@ object ButtonActions {
         DATE to "Show date",
         LAST_NOTIFICATION to "Show last notification",
         SECOND_TIMEZONE to "Show second timezone",
-        VOLUME_UP to "Music volume up",
-        VOLUME_DOWN to "Music volume down",
+        VOLUME_UP to "Music volume up (via app)",
+        VOLUME_DOWN to "Music volume down (via app)",
         STEP_GOAL_COMPLETION to "Show step goal completion",
         RING_PHONE to "Ring phone",
         LOG_WAYPOINT to "Log GPS waypoint",
         SWITCH_MULTI_FUNCTION_MODE to "Switch multi-function mode",
+        HID_VOLUME_UP to "Key press: volume up (camera shutter)",
+        HID_VOLUME_DOWN to "Key press: volume down (camera shutter, experimental)",
+        HID_PLAY_PAUSE to "Key press: play/pause (experimental)",
+        HID_NEXT_TRACK to "Key press: next track (experimental)",
+        HID_PREVIOUS_TRACK to "Key press: previous track (experimental)",
+        HID_MUTE to "Key press: mute (experimental)",
         // Legacy aliases keep a readable label if an old row surfaces in a summary.
         FORWARD_TO_PHONE to "Ring phone",
         MULTI_FUNCTION to "Music control",
